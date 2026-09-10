@@ -97,8 +97,10 @@ FROM prepare_package AS prepare_code
 WORKDIR /app
 
 COPY . .
+# FRONTEND_REPO 默认官方仓库；个人 Fork 构建时通过 --build-arg 传入自有前端仓库
+ARG FRONTEND_REPO=jxxghp/MoviePilot-Frontend
 RUN FRONTEND_VERSION=$(sed -n "s/^FRONTEND_VERSION\s*=\s*'\([^']*\)'/\1/p" /app/version.py) \
-    && curl -sL "https://github.com/jxxghp/MoviePilot-Frontend/releases/download/${FRONTEND_VERSION}/dist.zip" | busybox unzip -d / - \
+    && curl -sL "https://github.com/${FRONTEND_REPO}/releases/download/${FRONTEND_VERSION}/dist.zip" | busybox unzip -d / - \
     && mv /dist /public \
     && curl -sL "https://github.com/jxxghp/MoviePilot-Plugins/archive/refs/heads/main.zip" | busybox unzip -d /tmp - \
     && mv -f /tmp/MoviePilot-Plugins-main/plugins.v2/* /app/app/plugins/ \
