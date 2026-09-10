@@ -1,13 +1,13 @@
 name: Unit Tests
 
 on:
-  # 个人 Fork：指向 custom 的 PR 与推送都跑全量单测，作为合并门禁
+  # 个人 Fork：指向 neo 的 PR 与推送都跑全量单测，作为合并门禁
   pull_request:
     branches:
-      - custom
+      - neo
   push:
     branches:
-      - custom
+      - neo
   # 允许手动触发
   workflow_dispatch:
 

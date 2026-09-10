@@ -1,10 +1,10 @@
 name: Build moviepilot-neo Image
 
 on:
-  # 每次合并/推送到 custom 都构建并覆盖 ghcr.io/4nest/moviepilot-neo:latest
+  # 每次合并/推送到 neo 都构建并覆盖 ghcr.io/4nest/moviepilot-neo:latest
   push:
     branches:
-      - custom
+      - neo
   workflow_dispatch:
 
 permissions:
