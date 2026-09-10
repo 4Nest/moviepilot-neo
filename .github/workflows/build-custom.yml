@@ -57,6 +57,8 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile
+          # 前端产物改从个人 Fork Release 下载（Dockerfile 默认官方仓库）
+          build-args: FRONTEND_REPO=4Nest/moviepilot-neo-frontend
           platforms: linux/amd64
           push: true
           # GHCR 要求全小写命名空间（4Nest -> 4nest）；固定 latest，不派生版本/edge 标签
