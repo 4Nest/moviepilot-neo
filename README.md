@@ -1,85 +1,61 @@
-# MoviePilot
+# MoviePilot Neo
 
-简体中文 | [English](README_EN.md)
+[MoviePilot](https://github.com/jxxghp/MoviePilot) v2 的个人定制分支（Fork），基于上游 `v2` 分支持续同步。
 
-![GitHub Repo stars](https://img.shields.io/github/stars/jxxghp/MoviePilot?style=for-the-badge)
-![GitHub forks](https://img.shields.io/github/forks/jxxghp/MoviePilot?style=for-the-badge)
-![GitHub contributors](https://img.shields.io/github/contributors/jxxghp/MoviePilot?style=for-the-badge)
-![GitHub repo size](https://img.shields.io/github/repo-size/jxxghp/MoviePilot?style=for-the-badge)
-![GitHub issues](https://img.shields.io/github/issues/jxxghp/MoviePilot?style=for-the-badge)
-![Docker Pulls](https://img.shields.io/docker/pulls/jxxghp/moviepilot?style=for-the-badge)
-![Docker Pulls V2](https://img.shields.io/docker/pulls/jxxghp/moviepilot-v2?style=for-the-badge)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Synology-blue?style=for-the-badge)
+<p>
+  <img src="https://raw.githubusercontent.com/4Nest/moviepilot-neo-frontend/neo/docs/neo-icon.png" width="96" alt="NEO" />
+</p>
 
-基于 [NAStool](https://github.com/NAStool/nas-tools) 部分代码重新设计，聚焦自动化核心需求，减少问题同时更易于扩展和维护。
+## 与官方版本的差异
 
-# 仅用于学习交流使用，请勿在任何国内平台宣传该项目！
+**品牌**
+- NEO 品牌标识（Logo、标题、图标、PWA manifest）
+- 「关于」弹窗精简并链接到本仓库
 
-发布频道：https://t.me/moviepilot_channel
+**界面精简**
+- 登录页去品牌装饰，只保留表单
+- 移除：日历页、热门订阅、分享统计、订阅分享筛选器、AI 助手悬浮入口、智能助手配置（含初始化向导步骤）
+- 通知渠道只保留 Telegram / 企业微信
+- 多语言精简为仅简体中文
 
-## 主要特性
+**功能增强**
+- 识别测试页重构：结果区重排（名称(年份)、突出季集、分类上移、识别标题区分、媒体 ID 徽章、查看详情直达官方页）
+- 订阅分享：批量管理模式（选择/批量删除）、详情页重排
+- 重命名格式：简易/进阶双模式编辑器（字段流拼接、jinja 表达式支持、实时预览、重置默认）
 
-- 聚焦影视自动化的核心流程：订阅、搜索、下载、整理、刮削、媒体库刷新与消息通知。
-- 前后端分离，后端基于 FastAPI，前端基于 Vue 3，部署和扩展边界更清晰。
-- 支持下载器、媒体服务器、元数据源、消息渠道、插件、工作流和 AI Agent 等能力组合。
-- 更完整的功能介绍、截图和使用入口见官网：https://movie-pilot.org
+**后端**
+- 识别接口失败时返回完整元信息（前端可展示识别词处理过程）
+- 自动更新源指向本仓库（`4Nest/moviepilot-neo`）
+- 通知渠道后端同步精简（删除 discord/feishu/qqbot/slack/synologychat/vocechat/webpush/wechatclawbot 模块）
 
-## 安装使用
+## Docker 镜像
 
-推荐优先使用 Docker 部署，常用镜像包括 `jxxghp/moviepilot-v2` 和 `jxxghp/moviepilot`。Compose 示例、环境变量、目录映射和升级方式以官方 Wiki 为准：
-
-- 官方 Wiki：https://wiki.movie-pilot.org
-- PostgreSQL 部署说明：[docs/postgresql-setup.md](docs/postgresql-setup.md)
-
-也可以使用本地 CLI 以源码模式安装和管理 MoviePilot：
-
-```shell
-curl -fsSL https://raw.githubusercontent.com/jxxghp/MoviePilot/v2/scripts/bootstrap-local.sh | bash
+```
+ghcr.io/4nest/moviepilot-neo:latest
 ```
 
-安装完成后使用 `moviepilot` 命令完成初始化、启动、停止、更新和配置查看。完整命令见 [docs/cli.md](docs/cli.md)。
+- 仅 `linux/amd64`（面向常见 x86 Unraid / NAS 主机）
+- 每次合并到 `neo` 分支自动构建并覆盖 `latest`
+- 前端产物来自 [moviepilot-neo-frontend](https://github.com/4Nest/moviepilot-neo-frontend) 的 Release
 
-## Agent
+**更新与回滚**：`latest` 会被持续覆盖，生产更新前请记录当前镜像 digest，回滚用 digest 部署：
 
-1. MoviePilot 自带智能体能力，可在完成模型配置后，通过自然语言调用系统工具，辅助完成搜索、订阅、下载、整理、排障等管理任务。
-2. 其它智能体可以导入本仓库的 `skills/` 目录以获得 MoviePilot 操作能力；支持 `skills` CLI 的环境可使用：
+```
+ghcr.io/4nest/moviepilot-neo@sha256:<digest>
+```
 
-   ```shell
-   npx skills add https://github.com/jxxghp/MoviePilot
-   ```
+## 开发与同步流程
 
-   内置 Skills 列表见 [skills/](skills/)，自定义 Skill 可参考 [skills/create-moviepilot-skill/SKILL.md](skills/create-moviepilot-skill/SKILL.md)。
-3. 其它 MCP 客户端可以通过 MoviePilot 的 MCP 端点 `/api/v1/mcp` 调用工具，认证方式、客户端配置和工具 API 见 [docs/mcp-api.md](docs/mcp-api.md)。
+- `neo` 分支：开发主线，CI 构建与发布都走它
+- 功能分支 `feature/<name>` → PR 到 `neo`（全量测试门禁）→ squash 合并触发镜像构建
+- 上游同步：`git fetch upstream && git merge upstream/v2`，冲突在本地 `neo` 解决，不强制推送
 
+## 文档与社区
 
-## 参与开发
+- 官方文档（功能通用）：[movie-pilot.org](https://movie-pilot.org)
+- 上游项目：[jxxghp/MoviePilot](https://github.com/jxxghp/MoviePilot)
+- 前端仓库：[4Nest/moviepilot-neo-frontend](https://github.com/4Nest/moviepilot-neo-frontend)
 
-开发前请先阅读仓库规则和本地环境说明，保持变更聚焦，通过测试后再提交 PR。常用入口：
+## License
 
-- 文档规则入口：[docs/rules/README.md](docs/rules/README.md)
-- 开发环境与本地源码运行：[docs/development-setup.md](docs/development-setup.md)
-- 测试说明：[docs/testing.md](docs/testing.md)
-- 新站点适配采集与 Feature Request 提交：[docs/site-adapter-capture.md](docs/site-adapter-capture.md)
-- REST API 文档：https://api.movie-pilot.org
-- 插件开发说明：https://wiki.movie-pilot.org/zh/plugindev
-
-## 相关项目
-
-- [MoviePilot-Frontend](https://github.com/jxxghp/MoviePilot-Frontend)
-- [MoviePilot-Resources](https://github.com/jxxghp/MoviePilot-Resources)
-- [MoviePilot-Plugins](https://github.com/jxxghp/MoviePilot-Plugins)
-- [MoviePilot-Server](https://github.com/jxxghp/MoviePilot-Server)
-- [MoviePilot-Rust](https://github.com/jxxghp/MoviePilot-Rust)
-- [MoviePilot-Wiki](https://github.com/jxxghp/MoviePilot-Wiki)
-
-## 免责申明
-
-- 本软件仅供学习交流使用，任何人不得将本软件用于商业用途，任何人不得将本软件用于违法犯罪活动，软件对用户行为不知情，一切责任由使用者承担。
-- 本软件代码开源，基于开源代码进行修改，人为去除相关限制导致软件被分发、传播并造成责任事件的，需由代码修改发布者承担全部责任，不建议对用户认证机制进行规避或修改并公开发布。
-- 本项目不接受捐赠，没有在任何地方发布捐赠信息页面，软件本身不收费也不提供任何收费相关服务，请仔细辨别避免误导。
-
-## 贡献者
-
-<a href="https://github.com/jxxghp/MoviePilot/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=jxxghp/MoviePilot" />
-</a>
+GPL-3.0（与上游一致）
