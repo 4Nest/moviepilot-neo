@@ -99,7 +99,10 @@ WORKDIR /app
 COPY . .
 # FRONTEND_REPO 默认官方仓库；个人 Fork 构建时通过 --build-arg 传入自有前端仓库
 ARG FRONTEND_REPO=jxxghp/MoviePilot-Frontend
-RUN FRONTEND_VERSION=$(sed -n "s/^FRONTEND_VERSION\s*=\s*'\([^']*\)'/\1/p" /app/version.py) \
+# 前端 dist.zip 在同一 URL 下会重建，嵌入构建标识防止该层缓存命中旧产物
+ARG FRONTEND_DIST_TAG=unknown
+RUN echo "frontend dist tag: ${FRONTEND_DIST_TAG}" \
+    && FRONTEND_VERSION=$(sed -n "s/^FRONTEND_VERSION\s*=\s*'\([^']*\)'/\1/p" /app/version.py) \
     && curl -sL "https://github.com/${FRONTEND_REPO}/releases/download/${FRONTEND_VERSION}/dist.zip" | busybox unzip -d / - \
     && mv /dist /public \
     && curl -sL "https://github.com/jxxghp/MoviePilot-Plugins/archive/refs/heads/main.zip" | busybox unzip -d /tmp - \
