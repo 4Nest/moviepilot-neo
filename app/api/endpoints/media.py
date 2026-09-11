@@ -113,9 +113,10 @@ async def recognize(
         metainfo,
         source=source,
     )
-    if mediainfo:
-        return Context(meta_info=metainfo, media_info=mediainfo).to_dict()
-    return schemas.Context()
+    if not mediainfo:
+        # 未匹配到媒体时仍返回元信息，前端据此展示识别词处理结果（识别标题、生效识别词）
+        return Context(meta_info=metainfo).to_dict()
+    return Context(meta_info=metainfo, media_info=mediainfo).to_dict()
 
 
 @router.get(

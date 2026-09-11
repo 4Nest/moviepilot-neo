@@ -1605,20 +1605,6 @@ class MessageChain(ChainBase):
                     filename = self._guess_audio_filename(
                         audio_ref, default="input.amr"
                     )
-                elif audio_ref.startswith("slack://file/"):
-                    content = self.run_module(
-                        "download_slack_file_bytes", file_ref=audio_ref, source=source
-                    )
-                    filename = self._guess_audio_filename(
-                        audio_ref, default="input.ogg"
-                    )
-                elif audio_ref.startswith("discord://file/"):
-                    content = self.run_module(
-                        "download_discord_file_bytes", file_ref=audio_ref, source=source
-                    )
-                    filename = self._guess_audio_filename(
-                        audio_ref, default="input.ogg"
-                    )
                 elif audio_ref.startswith("qq://file/"):
                     content = self.run_module(
                         "download_qq_file_bytes", file_ref=audio_ref, source=source
@@ -1626,33 +1612,8 @@ class MessageChain(ChainBase):
                     filename = self._guess_audio_filename(
                         audio_ref, default="input.ogg"
                     )
-                elif audio_ref.startswith("vocechat://file/"):
-                    content = self.run_module(
-                        "download_vocechat_file_bytes",
-                        file_ref=audio_ref,
-                        source=source,
-                    )
-                    filename = self._guess_audio_filename(
-                        audio_ref, default="input.ogg"
-                    )
-                elif audio_ref.startswith("synology://file/"):
-                    content = self.run_module(
-                        "download_synologychat_file_bytes",
-                        file_ref=audio_ref,
-                        source=source,
-                    )
-                    filename = self._guess_audio_filename(
-                        audio_ref, default="input.ogg"
-                    )
                 elif audio_ref.startswith("wxbot://voice"):
                     continue
-                elif audio_ref.startswith("feishu://file/"):
-                    content = self.run_module(
-                        "download_feishu_file_bytes", file_ref=audio_ref, source=source
-                    )
-                    filename = self._guess_audio_filename(
-                        audio_ref, default="input.opus"
-                    )
                 elif audio_ref.startswith("http"):
                     resp = RequestUtils(timeout=30).get_res(audio_ref)
                     content = resp.content if resp and resp.content else None
@@ -1748,30 +1709,6 @@ class MessageChain(ChainBase):
                 ):
                     data_url = self.run_module(
                         "download_wechat_image_to_data_url",
-                        image_ref=attachment_ref,
-                        source=source,
-                    )
-                    if data_url:
-                        data_urls.append(data_url)
-                elif attachment_ref.startswith("feishu://image/"):
-                    data_url = self.run_module(
-                        "download_feishu_image_to_data_url",
-                        image_ref=attachment_ref,
-                        source=source,
-                    )
-                    if data_url:
-                        data_urls.append(data_url)
-                elif channel == MessageChannel.Slack:
-                    data_url = self.run_module(
-                        "download_slack_file_to_data_url",
-                        file_url=attachment_ref,
-                        source=source,
-                    )
-                    if data_url:
-                        data_urls.append(data_url)
-                elif attachment_ref.startswith("vocechat://file/"):
-                    data_url = self.run_module(
-                        "download_vocechat_image_to_data_url",
                         image_ref=attachment_ref,
                         source=source,
                     )
@@ -1942,28 +1879,7 @@ class MessageChain(ChainBase):
             return self.run_module(
                 "download_slack_file_bytes", file_ref=file_ref, source=source
             )
-        if file_ref.startswith("discord://file/"):
-            return self.run_module(
-                "download_discord_file_bytes", file_ref=file_ref, source=source
-            )
-        if file_ref.startswith("qq://file/"):
-            return self.run_module(
-                "download_qq_file_bytes", file_ref=file_ref, source=source
-            )
-        if file_ref.startswith("vocechat://file/"):
-            return self.run_module(
-                "download_vocechat_file_bytes", file_ref=file_ref, source=source
-            )
-        if file_ref.startswith("synology://file/"):
-            return self.run_module(
-                "download_synologychat_file_bytes", file_ref=file_ref, source=source
-            )
         if file_ref.startswith("http"):
-            if channel == MessageChannel.Slack:
-                data_url = self.run_module(
-                    "download_slack_file_to_data_url", file_url=file_ref, source=source
-                )
-                return self._decode_data_url_bytes(data_url) if data_url else None
             resp = RequestUtils(timeout=30).get_res(file_ref)
             return resp.content if resp and resp.content else None
         logger.debug(

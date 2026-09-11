@@ -541,14 +541,7 @@ class MoviePilotTool(BaseTool, metaclass=ABCMeta):
 
         channel_type_map = {
             MessageChannel.Telegram: "telegram",
-            MessageChannel.Discord: "discord",
             MessageChannel.Wechat: "wechat",
-            MessageChannel.Feishu: "feishu",
-            MessageChannel.WechatClawBot: "wechatclawbot",
-            MessageChannel.Slack: "slack",
-            MessageChannel.VoceChat: "vocechat",
-            MessageChannel.SynologyChat: "synologychat",
-            MessageChannel.QQ: "qqbot",
         }
 
         channel_type = None

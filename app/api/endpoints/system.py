@@ -173,8 +173,8 @@ def _build_nettest_rules() -> list[dict[str, Any]]:
     tmdb_key = settings.TMDB_API_KEY
     tmdb_domain = settings.TMDB_API_DOMAIN or "api.themoviedb.org"
 
-    github_readme_url = "https://github.com/jxxghp/MoviePilot/blob/v2/README.md"
-    raw_readme_url = "https://raw.githubusercontent.com/jxxghp/MoviePilot/v2/README.md"
+    github_readme_url = "https://github.com/4Nest/moviepilot-neo/blob/custom/README.md"
+    raw_readme_url = "https://raw.githubusercontent.com/4Nest/moviepilot-neo/custom/README.md"
 
     rules = [
         {
@@ -1084,7 +1084,7 @@ async def latest_version(_: schemas.TokenPayload = Depends(verify_token)):
     """
     version_res = await AsyncRequestUtils(
         proxies=settings.PROXY, headers=settings.GITHUB_HEADERS
-    ).get_res(f"https://api.github.com/repos/jxxghp/MoviePilot/releases")
+    ).get_res(f"https://api.github.com/repos/4Nest/moviepilot-neo/releases")
     if version_res is not None and version_res.status_code == 200:
         ver_json = version_res.json()
         if ver_json:
