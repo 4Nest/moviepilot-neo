@@ -79,7 +79,7 @@ function download_and_unzip() {
 # 下载程序资源，$1: 后端版本路径
 function install_backend_and_download_resources() {
     # 更新后端程序
-    if ! download_and_unzip "${GITHUB_PROXY}https://github.com/jxxghp/MoviePilot/archive/refs/${1}" "App"; then
+    if ! download_and_unzip "${GITHUB_PROXY}https://github.com/4Nest/moviepilot-neo/archive/refs/${1}" "App"; then
         WARN "后端程序下载失败，继续使用旧的程序来启动..."
         return 1
     fi
@@ -118,11 +118,11 @@ function install_backend_and_download_resources() {
         WARN "未找到requirements.in文件，跳过依赖检查"
     fi
     
-    # 如果是"heads/v2.zip"，则查找v2开头的最新版本号
-    if [[ "${1}" == "heads/v2.zip" ]]; then
+    # 如果是"heads/custom.zip"，则查找v2开头的最新版本号
+    if [[ "${1}" == "heads/custom.zip" ]]; then
         INFO "→ 正在获取前端最新版本号..."
         # 获取所有发布的版本列表，并筛选出以v2开头的版本号
-        releases=$(curl ${CURL_OPTIONS} "https://api.github.com/repos/jxxghp/MoviePilot-Frontend/releases" ${CURL_HEADERS} | jq -r '.[].tag_name' | grep "^v2\.")
+        releases=$(curl ${CURL_OPTIONS} "https://api.github.com/repos/4Nest/moviepilot-neo-frontend/releases" ${CURL_HEADERS} | jq -r '.[].tag_name' | grep "^v2\.")
         if [ -z "$releases" ]; then
             WARN "未找到任何v2前端版本，继续启动..."
             return 1
@@ -142,7 +142,7 @@ function install_backend_and_download_resources() {
         INFO "前端版本号：${frontend_version}"
     fi
     # 更新前端程序
-    if ! download_and_unzip "${GITHUB_PROXY}https://github.com/jxxghp/MoviePilot-Frontend/releases/download/${frontend_version}/dist.zip" "dist"; then
+    if ! download_and_unzip "${GITHUB_PROXY}https://github.com/4Nest/moviepilot-neo-frontend/releases/download/${frontend_version}/dist.zip" "dist"; then
         WARN "前端程序下载失败，继续使用旧的程序来启动..."
         return 1
     fi
@@ -374,7 +374,7 @@ if [[ "${MOVIEPILOT_AUTO_UPDATE}" = "true" ]] || [[ "${MOVIEPILOT_AUTO_UPDATE}" 
     fi
     if [ "${MOVIEPILOT_AUTO_UPDATE}" = "dev" ]; then
         INFO "Dev 更新模式"
-        install_backend_and_download_resources "heads/v2.zip"
+        install_backend_and_download_resources "heads/custom.zip"
     else
         INFO "Release 更新模式"
         old_version=$(grep -m -1 "^\s*APP_VERSION\s*=\s*" /app/version.py | tr -d '\r\n' | awk -F'#' '{print $1}' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
@@ -382,7 +382,7 @@ if [[ "${MOVIEPILOT_AUTO_UPDATE}" = "true" ]] || [[ "${MOVIEPILOT_AUTO_UPDATE}" 
             current_version=$(echo "${old_version}" | sed -rn "s/APP_VERSION\s*=\s*['\"](.*)['\"]/\1/gp")
             INFO "当前版本号：${current_version}"
             # 获取所有发布的版本列表，并筛选出以v2开头的版本号
-            releases=$(curl ${CURL_OPTIONS} "https://api.github.com/repos/jxxghp/MoviePilot/releases" ${CURL_HEADERS} | jq -r '.[].tag_name' | grep "^v2\.")
+            releases=$(curl ${CURL_OPTIONS} "https://api.github.com/repos/4Nest/moviepilot-neo/releases" ${CURL_HEADERS} | jq -r '.[].tag_name' | grep "^v2\.")
             if [ -z "$releases" ]; then
                 WARN "未找到任何v2后端版本，继续启动..."
             else

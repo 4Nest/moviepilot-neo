@@ -69,11 +69,11 @@ class TestAgentAddSubscribeTool(unittest.TestCase):
         self.assertEqual(async_add.await_args.kwargs["username"], "tg_display_name")
         self.assertIn("成功添加订阅：The Matrix (1999)", result)
 
-    def test_feishu_subscription_uses_pre_resolved_username_when_openid_lookup_misses(self):
-        tool = AddSubscribeTool(session_id="session-1", user_id="ou_feishu_user")
+    def test_telegram_subscription_uses_pre_resolved_username_when_openid_lookup_misses(self):
+        tool = AddSubscribeTool(session_id="session-1", user_id="tg_user")
         tool.set_message_attr(
-            channel=MessageChannel.Feishu.value,
-            source="feishu-main",
+            channel=MessageChannel.Telegram.value,
+            source="telegram-main",
             username="moviepilot-user",
         )
 

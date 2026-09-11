@@ -243,24 +243,24 @@ def test_message_process_preserves_non_telegram_plain_message_id():
     """非 Telegram 渠道保持旧行为，普通消息 ID 仍向下传递给渠道实现自行解释。"""
     chain = MessageChain()
     incoming = CommingMessage(
-        channel=MessageChannel.Slack,
-        source="slack-test",
+        channel=MessageChannel.Web,
+        source="web-test",
         userid="10001",
         username="tester",
         text="hello",
-        message_id="slack-message-ts",
-        chat_id="slack-channel",
+        message_id="web-message-ts",
+        chat_id="web-channel",
     )
 
     with patch.object(chain, "message_parser", return_value=incoming), patch.object(
         chain, "handle_message"
     ) as handle_message:
-        chain.process(body=None, form=None, args={"source": "slack-test"})
+        chain.process(body=None, form=None, args={"source": "web-test"})
 
     handle_message.assert_called_once()
     kwargs = handle_message.call_args.kwargs
-    assert kwargs["original_message_id"] == "slack-message-ts"
-    assert kwargs["original_chat_id"] == "slack-channel"
+    assert kwargs["original_message_id"] == "web-message-ts"
+    assert kwargs["original_chat_id"] == "web-channel"
 
 
 def test_handle_message_keeps_legacy_positional_images_argument():
@@ -1367,21 +1367,21 @@ def test_plugin_input_create_or_replace_ignores_prompt_message_for_non_telegram_
     request = plugin_input_interaction_manager.create_or_replace(
         user_id="10001",
         plugin_id="demo_plugin",
-        channel=MessageChannel.Slack,
-        source="slack-test",
+        channel=MessageChannel.Web,
+        source="web-test",
         username="tester",
-        chat_id="slack-channel",
+        chat_id="web-channel",
         prompt_message_id="prompt-current",
     )
 
-    assert request.chat_id == "slack-channel"
+    assert request.chat_id == "web-channel"
     assert request.prompt_message_id is None
 
     consumed, status = plugin_input_interaction_manager.consume_by_user(
         "10001",
-        MessageChannel.Slack,
-        "slack-test",
-        "slack-channel",
+        MessageChannel.Web,
+        "web-test",
+        "web-channel",
     )
     assert consumed == request
     assert status == "active"

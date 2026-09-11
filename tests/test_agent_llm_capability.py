@@ -176,19 +176,8 @@ class AgentCapabilityManagerTest(unittest.TestCase):
         )
         self.assertTrue(
             AgentCapabilityManager.supports_native_voice_reply(
-                MessageChannel.Feishu.value, None
-            )
-        )
-        self.assertTrue(
-            AgentCapabilityManager.supports_native_voice_reply("Feishu", None)
-        )
-        self.assertTrue(
-            AgentCapabilityManager.supports_native_voice_reply(
                 MessageChannel.WebAgent.value, None
             )
-        )
-        self.assertFalse(
-            AgentCapabilityManager.supports_native_voice_reply("Slack", None)
         )
 
     def test_native_voice_reply_respects_wechat_mode(self):
@@ -222,7 +211,6 @@ class AgentCapabilityManagerTest(unittest.TestCase):
         """校验消息渠道能力显式声明原生语音输出支持。"""
         for channel in (
             MessageChannel.Telegram,
-            MessageChannel.Feishu,
             MessageChannel.Wechat,
             MessageChannel.WebAgent,
         ):
@@ -231,11 +219,6 @@ class AgentCapabilityManagerTest(unittest.TestCase):
                     channel, ChannelCapability.AUDIO_OUTPUT
                 )
             )
-        self.assertFalse(
-            ChannelCapabilityManager.supports_capability(
-                MessageChannel.Slack, ChannelCapability.AUDIO_OUTPUT
-            )
-        )
 
     def test_mimo_tts_uses_chat_completions_audio_payload(self):
         provider = MiMoAudioProvider()

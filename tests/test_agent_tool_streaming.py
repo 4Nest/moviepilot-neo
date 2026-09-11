@@ -309,8 +309,8 @@ class TestAgentToolStreaming:
         """校验停止流式输出会等待首条消息发送完成再编辑。"""
         async def _run():
             handler = StreamingHandler()
-            handler._channel = MessageChannel.Feishu.value
-            handler._source = "feishu-main"
+            handler._channel = MessageChannel.Telegram.value
+            handler._source = "telegram-main"
             handler._user_id = "ou_user"
             handler._streaming_enabled = True
             handler.emit("hello")
@@ -325,10 +325,10 @@ class TestAgentToolStreaming:
                     send_started.set()
                     await allow_send_finish.wait()
                     return MessageResponse(
-                        message_id="om_stream",
-                        chat_id="oc_stream",
-                        channel=MessageChannel.Feishu,
-                        source="feishu-main",
+                        message_id="42",
+                        chat_id="-100",
+                        channel=MessageChannel.Telegram,
+                        source="telegram-main",
                         success=True,
                     )
                 return True
@@ -361,17 +361,17 @@ class TestAgentToolStreaming:
             "finalize_message",
         ]
         edit_kwargs = calls[1][2]
-        assert edit_kwargs["message_id"] == "om_stream"
+        assert edit_kwargs["message_id"] == "42"
         assert edit_kwargs["text"] == "hello world"
 
     def test_stop_streaming_uses_generic_finalize_message(self):
         """校验停止流式输出会调用通用消息完成接口。"""
         handler = StreamingHandler()
         handler._message_response = MessageResponse(
-            message_id="om_stream",
-            chat_id="oc_stream",
-            channel=MessageChannel.Feishu,
-            source="feishu-main",
+            message_id="42",
+            chat_id="-100",
+            channel=MessageChannel.Telegram,
+            source="telegram-main",
             metadata={"feishu_streaming": {"card_id": "card_stream", "sequence": 2}},
             success=True,
         )
@@ -390,7 +390,7 @@ class TestAgentToolStreaming:
 
         assert run_in_threadpool_mock.await_count == 1
         assert run_in_threadpool_mock.await_args.args[0].__name__ == "finalize_message"
-        assert run_in_threadpool_mock.await_args.args[1].message_id == "om_stream"
+        assert run_in_threadpool_mock.await_args.args[1].message_id == "42"
 
     def test_flush_without_channel_context_does_not_send_direct_message(self):
         """校验缺少渠道上下文时不会发送直连消息。"""
@@ -434,8 +434,8 @@ class TestAgentToolStreaming:
     def test_flush_passes_original_message_context_to_send_direct_message(self):
         """校验刷新发送时保留原始消息上下文。"""
         handler = StreamingHandler()
-        handler._channel = MessageChannel.Feishu.value
-        handler._source = "feishu-main"
+        handler._channel = MessageChannel.Telegram.value
+        handler._source = "telegram-main"
         handler._user_id = "ou_user"
         handler._username = "tester"
         handler._original_message_id = "om_origin"
@@ -447,9 +447,9 @@ class TestAgentToolStreaming:
             "app.agent.callback.run_in_threadpool", new_callable=AsyncMock
         ) as run_in_threadpool_mock:
             run_in_threadpool_mock.return_value = MessageResponse(
-                message_id="om_stream",
+                message_id="42",
                 chat_id="oc_origin",
-                source="feishu-main",
+                source="telegram-main",
                 success=True,
             )
 
@@ -543,7 +543,7 @@ class TestAgentToolStreaming:
                 result = await tool.run("你好")
             return result, synthesize_speech, send_notification_message
 
-        for channel in (MessageChannel.Telegram, MessageChannel.Feishu, MessageChannel.WebAgent):
+        for channel in (MessageChannel.Telegram, MessageChannel.WebAgent):
             result, synthesize_speech, send_notification_message = asyncio.run(
                 _run(channel)
             )
@@ -566,7 +566,7 @@ class TestAgentToolStreaming:
             """运行不支持语音输出渠道的语音发送工具。"""
             tool = SendVoiceMessageTool(session_id="session-1", user_id="10001")
             tool.set_message_attr(
-                channel=MessageChannel.Slack.value, source="slack-main", username="tester"
+                channel=MessageChannel.Web.value, source="web-main", username="tester"
             )
 
             with (

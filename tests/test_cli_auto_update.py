@@ -93,7 +93,7 @@ class CliAutoUpdateTests(unittest.TestCase):
 
         latest_mock.assert_called_once_with(
             module.BACKEND_RELEASES_API,
-            repo="jxxghp/MoviePilot",
+            repo="4Nest/moviepilot-neo",
             prefix="v2",
         )
         self.assertEqual(backend_ref, "v2.10.12")

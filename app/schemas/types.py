@@ -344,17 +344,9 @@ class MessageChannel(Enum):
     消息渠道
     """
     Wechat = "微信"
-    Feishu = "飞书"
-    WechatClawBot = "微信ClawBot"
     Telegram = "Telegram"
-    Slack = "Slack"
-    Discord = "Discord"
-    SynologyChat = "SynologyChat"
-    VoceChat = "VoceChat"
     Web = "Web"
     WebAgent = "WebAgent"
-    WebPush = "WebPush"
-    QQ = "QQ"
 
 
 # 下载器类型

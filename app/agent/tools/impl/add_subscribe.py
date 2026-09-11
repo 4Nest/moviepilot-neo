@@ -121,14 +121,7 @@ class AddSubscribeTool(MoviePilotTool):
 
         binding_keys = {
             MessageChannel.Telegram: ("telegram_userid",),
-            MessageChannel.Discord: ("discord_userid",),
             MessageChannel.Wechat: ("wechat_userid",),
-            MessageChannel.Feishu: ("feishu_userid", "feishu_openid"),
-            MessageChannel.WechatClawBot: ("wechatclawbot_userid",),
-            MessageChannel.Slack: ("slack_userid",),
-            MessageChannel.VoceChat: ("vocechat_userid",),
-            MessageChannel.SynologyChat: ("synologychat_userid",),
-            MessageChannel.QQ: ("qq_userid", "qq_openid"),
         }.get(channel)
         if not binding_keys:
             return resolved_username
