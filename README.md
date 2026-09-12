@@ -3,7 +3,7 @@
 [MoviePilot](https://github.com/jxxghp/MoviePilot) v2 的个人分支（Fork），基于上游 `v2` 分支。
 
 <p>
-  <img src="https://raw.githubusercontent.com/4Nest/moviepilot-neo-frontend/neo/docs/neo-icon.png" width="96" alt="NEO" />
+  <img src="https://raw.githubusercontent.com/4Nest/moviepilot-neo-frontend/refs/heads/neo/public/apple-touch-icon.png" width="96" alt="NEO" />
 </p>
 
 ## 与官方版本的差异
