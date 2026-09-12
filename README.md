@@ -1,6 +1,6 @@
 # MoviePilot Neo
 
-[MoviePilot](https://github.com/jxxghp/MoviePilot) v2 的个人定制分支（Fork），基于上游 `v2` 分支持续同步。
+[MoviePilot](https://github.com/jxxghp/MoviePilot) v2 的个人分支（Fork），基于上游 `v2` 分支。
 
 <p>
   <img src="https://raw.githubusercontent.com/4Nest/moviepilot-neo-frontend/neo/docs/neo-icon.png" width="96" alt="NEO" />
@@ -8,12 +8,8 @@
 
 ## 与官方版本的差异
 
-**品牌**
-- NEO 品牌标识（Logo、标题、图标、PWA manifest）
-- 「关于」弹窗精简并链接到本仓库
-
 **界面精简**
-- 登录页去品牌装饰，只保留表单
+- 登录页去Logo，只保留表单
 - 移除：日历页、热门订阅、分享统计、订阅分享筛选器、AI 助手悬浮入口、智能助手配置（含初始化向导步骤）
 - 通知渠道只保留 Telegram / 企业微信
 - 多语言精简为仅简体中文
