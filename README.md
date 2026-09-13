@@ -17,7 +17,7 @@
 > [!NOTE]
 > 上游 MoviePilot v2 已停止维护；NEO 是 `4Nest` 基于 v2 的个人定制版本，不代表官方项目。
 
-### Docker / Unraid / NAS
+### Docker
 
 当前镜像面向 **x86-64** 主机，仅提供 `linux/amd64` 架构。
 
@@ -32,27 +32,6 @@ docker pull ghcr.io/4nest/moviepilot-neo:neo
 ```bash
 docker pull ghcr.io/4nest/moviepilot-neo:latest
 ```
-
-也可以固定到不可变版本：
-
-```bash
-docker pull ghcr.io/4nest/moviepilot-neo:v1.0.0
-```
-
-在 Unraid 或 NAS 的容器管理界面中创建容器时，正式环境建议使用 `:latest` 或具体版本标签，测试新提交时使用 `:neo`：
-
-| 配置 | 值 |
-| --- | --- |
-| Image | `ghcr.io/4nest/moviepilot-neo:latest` |
-| 前端端口 | `3000`（日常访问入口） |
-| 后端端口 | `3001`（通常无需映射） |
-| 持久化目录 | 宿主机目录 → `/config` |
-
-将 `/config` 映射到宿主机可读写目录。媒体目录和下载目录按自己的 NAS 路径配置；不要把数据留在容器可写层中。
-
-## 项目定位
-
-NEO 只做一件事：在保留 MoviePilot 核心能力的基础上，提供更精简、更聚焦的日常使用体验。
 
 ## 从源码运行
 
@@ -71,30 +50,6 @@ source venv/bin/activate
 
 ```bash
 docker pull ghcr.io/4nest/moviepilot-neo:latest
-```
-
-需要固定版本时使用具体版本标签：
-
-```bash
-docker pull ghcr.io/4nest/moviepilot-neo:v1.0.0
-```
-
-回滚时使用此前记录的不可变 digest，而不是重新拉取 `latest`：
-
-```text
-ghcr.io/4nest/moviepilot-neo@sha256:<digest>
-```
-
-更新：
-
-```bash
-docker pull ghcr.io/4nest/moviepilot-neo:latest
-```
-
-回滚时使用此前记录的不可变 digest，而不是重新拉取 `latest`：
-
-```text
-ghcr.io/4nest/moviepilot-neo@sha256:<digest>
 ```
 
 ## 项目入口
