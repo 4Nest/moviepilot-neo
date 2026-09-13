@@ -12,7 +12,16 @@ from app.schemas.response import Response
 
 API_V2_STR = "/api/v2"
 OPENAPI_V2_PATH = f"{API_V2_STR}/openapi.json"
+_PROTOCOL_PREFIXES = ("/openai", "/anthropic", "/mcp")
 _JSON_CONTENT_TYPES = ("application/json", "+json")
+
+def _is_protocol_path(path: str) -> bool:
+    """判断路径是否属于需要保留原始协议响应的接口。"""
+    relative_path = path.removeprefix(API_V2_STR)
+    return any(
+        relative_path == prefix or relative_path.startswith(f"{prefix}/")
+        for prefix in _PROTOCOL_PREFIXES
+    )
 
 
 
@@ -84,7 +93,8 @@ class V2ResponseMiddleware(BaseHTTPMiddleware):
     """
     为 v2 REST 接口适配统一的 Response 响应结构。
 
-    已经返回项目 Response 模型的成功响应保持原样，避免改变既有接口语义。
+    已经返回项目 Response 模型的成功响应保持原样，避免改变既有接口语义；
+    OpenAI、Anthropic 和 MCP 协议接口也保持原始协议响应。
     """
 
     async def dispatch(
@@ -95,6 +105,8 @@ class V2ResponseMiddleware(BaseHTTPMiddleware):
         """处理 v2 请求并在必要时封装 JSON 响应。"""
         response = await call_next(request)
         if not request.url.path.startswith(f"{API_V2_STR}/"):
+            return response
+        if _is_protocol_path(request.url.path):
             return response
         if request.url.path == OPENAPI_V2_PATH:
             return response

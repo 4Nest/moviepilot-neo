@@ -22,6 +22,8 @@ from app.helper.interaction import (
 )
 from app.helper.torrent import TorrentHelper
 from app.log import logger
+from app.db.transferhistory_oper import TransferHistoryOper
+from app.helper.directory import DirectoryHelper
 from app.schemas import CommingMessage, DownloadDirectory, FileURI, NotExistMediaInfo, Notification
 from app.schemas.message import ChannelCapabilityManager, ChannelCapability
 from app.schemas.system import TransferDirectoryConf
@@ -429,7 +431,6 @@ class MessageChain(ChainBase):
         )
         return True
 
-    @classmethod
 
     def _mark_message_processing_started(
             self,

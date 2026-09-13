@@ -310,9 +310,18 @@ class NotificationType(Enum):
     Organize = "整理入库"
     # 订阅
     Subscribe = "订阅"
+    # 站点消息
+    SiteMessage = "站点"
+    # 媒体服务器通知
+    MediaServer = "媒体服务器"
+    # 处理失败需要人工干预
+    Manual = "手动处理"
+    # 插件消息
+    Plugin = "插件"
+    # 智能体消息（保留通知数据兼容性；Agent 运行时已移除）
+    Agent = "智能体"
     # 其它消息
     Other = "其它"
-
 
 class ContentType(str, Enum):
     """

@@ -41,15 +41,19 @@ def _parse_site_list(sites: Optional[str]) -> Optional[List[int]]:
 
 
 def _parse_media_type(mtype: Optional[str]) -> Optional[MediaType]:
-    """
-    解析媒体类型。
-    """
+    """解析中文枚举及前端/Agent 使用的媒体类型值。"""
     if not mtype:
         return None
     try:
         return MediaType(mtype)
     except ValueError:
-        return None
+        normalized = mtype.strip().lower()
+        return {
+            "movie": MediaType.MOVIE,
+            "tv": MediaType.TV,
+            "show": MediaType.TV,
+            "series": MediaType.TV,
+        }.get(normalized)
 
 
 def _resolve_media_season(

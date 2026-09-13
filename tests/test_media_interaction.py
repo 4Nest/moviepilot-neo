@@ -156,37 +156,6 @@ def test_rebuild_download_scope_keeps_special_season_zero():
     assert no_exists["tmdb:1"][0].total_episode == 2
 
 
-def test_message_routes_text_reply_to_media_interaction_before_ai():
-    """已有传统媒体交互时，用户回复应优先交给传统交互处理。"""
-    chain = MessageChain()
-    request = media_interaction_manager.create_or_replace(
-        user_id="10001",
-        channel=MessageChannel.Wechat,
-        source="wechat-test",
-        username="tester",
-        action="Search",
-        keyword="星际穿越",
-        title="星际穿越",
-        meta=_build_meta("星际穿越"),
-        items=[MediaInfo(title="星际穿越", year="2014")],
-    )
-    assert request is not None
-
-    with patch.object(chain, "_record_user_message"), patch(
-        "app.chain.message.MediaInteractionChain.handle_text_interaction",
-        return_value=True,
-    ) as handle_text, patch.object(chain, "_handle_ai_message") as handle_ai:
-        chain.handle_message(
-            channel=MessageChannel.Wechat,
-            source="wechat-test",
-            userid="10001",
-            username="tester",
-            text="1",
-        )
-
-    handle_text.assert_called_once()
-    handle_ai.assert_not_called()
-
 
 def test_message_process_preserves_parser_message_id_context():
     """消息链不按渠道解释 message_id，只透传解析器给出的原消息上下文。"""

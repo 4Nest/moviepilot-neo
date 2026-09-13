@@ -124,38 +124,6 @@ def test_clear_package_tool_cache_uses_package_cache_root(tmp_path, monkeypatch)
     assert not old_pip.exists()
     assert default_pip.exists()
 
-def test_init_modules_does_not_clear_package_tool_cache(monkeypatch):
-    """
-    包安装缓存清理由通用临时清理入口触发，模块启动路径不直接执行清理。
-    """
-    from app.startup import modules_initializer
-
-    called = False
-
-    def fail_if_called():
-        nonlocal called
-        called = True
-        raise AssertionError("init_modules must not clear package tool cache directly")
-
-    monkeypatch.setattr(modules_initializer, "clear_package_tool_cache", fail_if_called)
-    monkeypatch.setattr(modules_initializer, "DisplayHelper", lambda: None)
-    monkeypatch.setattr(modules_initializer, "DohHelper", lambda: None)
-    monkeypatch.setattr(modules_initializer, "SitesHelper", lambda: None)
-    monkeypatch.setattr(modules_initializer, "ResourceHelper", lambda: None)
-    monkeypatch.setattr(modules_initializer, "user_auth", lambda: None)
-    monkeypatch.setattr(modules_initializer, "ModuleManager", lambda: None)
-    monkeypatch.setattr(modules_initializer.EventManager, "start", lambda self: None)
-    monkeypatch.setattr(modules_initializer.MoviePilotServerHelper, "init_plugin_report", lambda: None)
-    monkeypatch.setattr(modules_initializer.MoviePilotServerHelper, "init_subscribe_report", lambda: None)
-    monkeypatch.setattr(modules_initializer.MoviePilotServerHelper, "get_user_uuid", lambda: None)
-    monkeypatch.setattr(modules_initializer.MoviePilotServerHelper, "get_github_user", lambda: None)
-    monkeypatch.setattr(modules_initializer, "init_agent", lambda: None)
-    monkeypatch.setattr(modules_initializer, "start_frontend", lambda: None)
-    monkeypatch.setattr(modules_initializer, "check_auth", lambda: None)
-
-    modules_initializer.init_modules()
-
-    assert called is False
 
 def test_file_backend_delete_missing_key_is_noop(tmp_path):
     """

@@ -50,7 +50,6 @@ def test_meta_cache_expire_does_not_schedule_bulk_cache_clear(monkeypatch):
     )
     monkeypatch.setattr(Scheduler, "stop", lambda self: None)
     monkeypatch.setattr(Scheduler, "init_workflow_jobs", lambda self: None)
-    monkeypatch.setattr(Scheduler, "init_agent_task_jobs", lambda self: None)
     monkeypatch.setattr(Scheduler, "init_plugin_jobs", lambda self: None)
     monkeypatch.setattr(scheduler_module.settings, "DEV", False)
     monkeypatch.setattr(scheduler_module.settings, "COOKIECLOUD_INTERVAL", 0)
