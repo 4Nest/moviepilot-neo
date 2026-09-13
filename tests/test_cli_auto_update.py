@@ -88,22 +88,22 @@ class CliAutoUpdateTests(unittest.TestCase):
     def test_resolve_auto_update_targets_only_queries_backend_release(self):
         module = load_cli_module()
 
-        with patch.object(module, "_latest_release_tag", return_value="v2.10.12") as latest_mock:
+        with patch.object(module, "_latest_release_tag", return_value="neo-v2.10.12") as latest_mock:
             backend_ref = module._resolve_auto_update_targets("release")
 
         latest_mock.assert_called_once_with(
             module.BACKEND_RELEASES_API,
             repo="4Nest/moviepilot-neo",
-            prefix="v2",
+            prefix="neo-v2",
         )
-        self.assertEqual(backend_ref, "v2.10.12")
+        self.assertEqual(backend_ref, "neo-v2.10.12")
 
     def test_best_effort_auto_update_does_not_pass_frontend_version_override(self):
         module = load_cli_module()
         run_result = SimpleNamespace(returncode=0, stdout="ok")
 
         with patch.object(module, "_auto_update_mode", return_value="release"), patch.object(
-            module, "_resolve_auto_update_targets", return_value="v2.10.12"
+            module, "_resolve_auto_update_targets", return_value="neo-v2.10.12"
         ), patch.object(module.subprocess, "run", return_value=run_result) as run_mock, patch.object(
             module.click, "echo"
         ):
@@ -121,7 +121,9 @@ class CliAutoUpdateTests(unittest.TestCase):
 
         with patch.dict(module.os.environ, {"HTTPS_PROXY": "http://old.example:8080"}, clear=False), patch.object(
             module, "_auto_update_mode", return_value="release"
-        ), patch.object(module, "_resolve_auto_update_targets", return_value="v2.10.12"), patch.object(
+        ), patch.object(
+            module, "_resolve_auto_update_targets", return_value="neo-v2.10.12"
+        ), patch.object(
             module.subprocess, "run", return_value=run_result
         ) as run_mock, patch.object(
             module.click, "echo"
@@ -147,7 +149,7 @@ class CliAutoUpdateTests(unittest.TestCase):
             },
             clear=False,
         ), patch.object(module, "_auto_update_mode", return_value="release"), patch.object(
-            module, "_resolve_auto_update_targets", return_value="v2.10.12"
+            module, "_resolve_auto_update_targets", return_value="neo-v2.10.12"
         ), patch.object(module.subprocess, "run", return_value=run_result) as run_mock, patch.object(
             module.click, "echo"
         ):

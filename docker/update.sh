@@ -118,16 +118,14 @@ function install_backend_and_download_resources() {
         WARN "未找到requirements.in文件，跳过依赖检查"
     fi
     
-    # 如果是"heads/custom.zip"，则查找v2开头的最新版本号
-    if [[ "${1}" == "heads/custom.zip" ]]; then
+    # 开发分支更新时使用 NEO 前端最新 v2 Release。
+    if [[ "${1}" == "heads/neo.zip" ]]; then
         INFO "→ 正在获取前端最新版本号..."
-        # 获取所有发布的版本列表，并筛选出以v2开头的版本号
         releases=$(curl ${CURL_OPTIONS} "https://api.github.com/repos/4Nest/moviepilot-neo-frontend/releases" ${CURL_HEADERS} | jq -r '.[].tag_name' | grep "^v2\.")
         if [ -z "$releases" ]; then
-            WARN "未找到任何v2前端版本，继续启动..."
+            WARN "未找到任何 v2 前端版本，继续启动..."
             return 1
         else
-            # 找到最新的v2版本
             frontend_version=$(echo "$releases" | sort -V | tail -n 1)
         fi
         INFO "前端最新版本号：${frontend_version}"
@@ -243,7 +241,8 @@ function test_connectivity_github() {
     case "$1" in
     0)
         if [[ -n "${GITHUB_PROXY}" ]]; then
-            if curl -sL "${GITHUB_PROXY}https://raw.githubusercontent.com/jxxghp/MoviePilot/main/README.md" > /dev/null 2>&1; then
+            if curl -sL "${GITHUB_PROXY}https://raw.githubusercontent.com/4Nest/moviepilot-neo/neo/README.md" > /dev/null 2>&1; then
+                CURL_OPTIONS="-sL"
                 GITHUB_LOG="镜像代理模式"
                 return 0
             fi
@@ -252,7 +251,7 @@ function test_connectivity_github() {
         ;;
     1)
         if [[ -n "${PROXY_HOST}" ]]; then
-            if curl -sL -x ${PROXY_HOST} https://raw.githubusercontent.com/jxxghp/MoviePilot/main/README.md > /dev/null 2>&1; then
+            if curl -sL -x ${PROXY_HOST} https://raw.githubusercontent.com/4Nest/moviepilot-neo/neo/README.md > /dev/null 2>&1; then
                 CURL_OPTIONS="-sL -x ${PROXY_HOST}"
                 GITHUB_LOG="全局代理模式"
                 return 0
@@ -272,6 +271,7 @@ function test_connectivity_github() {
 function compare_versions() {
     local v1="$1"
     local v2="$2"
+    local release_tag="${3:-$2}"
     # 去掉开头的 v 或 V
     v1="${v1#[vV]}"
     v2="${v2#[vV]}"
@@ -284,27 +284,21 @@ function compare_versions() {
     local release_ver
 
     for ((i = 0; i < ${#current_ver_parts[@]} || i < ${#release_ver_parts[@]}; i++)); do
-        # 版本号不足位补 0
         local current_ver_part="${current_ver_parts[i]:-0}"
         local release_ver_part="${release_ver_parts[i]:-0}"
         current_ver=$(get_priority "$current_ver_part")
         release_ver=$(get_priority "$release_ver_part")
 
-        # 任意一个为-5，不在合法版本号内，无法比较
         if (( current_ver == -5 || release_ver == -5 )); then
             ERROR "存在不合法版本号，无法判断，跳过更新步骤..."
             return 1
-        else
-            if (( current_ver > release_ver )); then
-                WARN "当前版本高于远程版本，跳过更新步骤..."
-                return 1
-            elif (( current_ver < release_ver )); then
-                INFO "发现新版本，开始自动升级..."
-                install_backend_and_download_resources "tags/$2.zip"
-                return 0
-            else
-                continue
-            fi
+        elif (( current_ver > release_ver )); then
+            WARN "当前版本高于远程版本，跳过更新步骤..."
+            return 1
+        elif (( current_ver < release_ver )); then
+            INFO "发现新版本，开始自动升级..."
+            install_backend_and_download_resources "tags/${release_tag}.zip"
+            return 0
         fi
     done
     WARN "当前版本已是最新版本，跳过更新步骤..."
@@ -374,23 +368,20 @@ if [[ "${MOVIEPILOT_AUTO_UPDATE}" = "true" ]] || [[ "${MOVIEPILOT_AUTO_UPDATE}" 
     fi
     if [ "${MOVIEPILOT_AUTO_UPDATE}" = "dev" ]; then
         INFO "Dev 更新模式"
-        install_backend_and_download_resources "heads/custom.zip"
+        install_backend_and_download_resources "heads/neo.zip"
     else
         INFO "Release 更新模式"
         old_version=$(grep -m -1 "^\s*APP_VERSION\s*=\s*" /app/version.py | tr -d '\r\n' | awk -F'#' '{print $1}' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
         if [[ "${old_version}" == *APP_VERSION* ]]; then
             current_version=$(echo "${old_version}" | sed -rn "s/APP_VERSION\s*=\s*['\"](.*)['\"]/\1/gp")
             INFO "当前版本号：${current_version}"
-            # 获取所有发布的版本列表，并筛选出以v2开头的版本号
-            releases=$(curl ${CURL_OPTIONS} "https://api.github.com/repos/4Nest/moviepilot-neo/releases" ${CURL_HEADERS} | jq -r '.[].tag_name' | grep "^v2\.")
+            releases=$(curl ${CURL_OPTIONS} "https://api.github.com/repos/4Nest/moviepilot-neo/releases" ${CURL_HEADERS} | jq -r '.[].tag_name' | grep "^neo-v2\.")
             if [ -z "$releases" ]; then
-                WARN "未找到任何v2后端版本，继续启动..."
+                WARN "未找到任何 Neo v2 后端版本，继续启动..."
             else
-                # 找到最新的v2版本
-                latest_v2=$(echo "$releases" | sort -V | tail -n 1)
-                INFO "最新的v2后端版本号：${latest_v2}"
-                # 使用版本号比较函数进行比较，并下载最新版本
-                compare_versions "${current_version}" "${latest_v2}"
+                latest_release=$(echo "$releases" | sort -V | tail -n 1)
+                latest_version=${latest_release#neo-}
+                compare_versions "${current_version}" "${latest_version}" "${latest_release}"
             fi
         else
             WARN "当前版本号获取失败，继续启动..."

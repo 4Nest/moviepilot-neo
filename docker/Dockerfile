@@ -97,8 +97,8 @@ FROM prepare_package AS prepare_code
 WORKDIR /app
 
 COPY . .
-# FRONTEND_REPO 默认官方仓库；个人 Fork 构建时通过 --build-arg 传入自有前端仓库
-ARG FRONTEND_REPO=jxxghp/MoviePilot-Frontend
+# 前端 dist.zip 默认来自 NEO 前端仓库；官方构建可通过 build-arg 覆盖
+ARG FRONTEND_REPO=4Nest/moviepilot-neo-frontend
 # 前端 dist.zip 在同一 URL 下会重建，嵌入构建标识防止该层缓存命中旧产物
 ARG FRONTEND_DIST_TAG=unknown
 RUN echo "frontend dist tag: ${FRONTEND_DIST_TAG}" \

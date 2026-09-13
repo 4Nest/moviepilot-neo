@@ -167,7 +167,8 @@ class SystemChain(ChainBase):
         获取版本信息文本
         """
         server_release_version = self.__get_server_release_version()
-        front_release_version = self.__get_front_release_version()
+        if server_release_version:
+            server_release_version = server_release_version.removeprefix("neo-")
         server_local_version = self.get_server_local_version()
         front_local_version = self.get_frontend_version()
         if server_release_version == server_local_version:
@@ -219,55 +220,51 @@ class SystemChain(ChainBase):
     @staticmethod
     def __get_server_release_version():
         """
-        获取后端V2最新版本
+        获取 Neo 后端最新版本。
         """
         try:
-            # 获取所有发布的版本列表
             response = RequestUtils(
                 proxies=settings.PROXY,
                 headers=settings.GITHUB_HEADERS
             ).get_res("https://api.github.com/repos/4Nest/moviepilot-neo/releases")
             if response:
                 releases = [release['tag_name'] for release in response.json()]
-                v2_releases = [tag for tag in releases if re.match(r"^v2\.", tag)]
-                if not v2_releases:
-                    logger.warn("获取v2后端最新版本版本出错！")
+                neo_releases = [tag for tag in releases if re.match(r"^neo-v2\.", tag)]
+                if not neo_releases:
+                    logger.warn("获取 Neo 后端最新版本出错！")
                 else:
-                    # 找到最新的v2版本
-                    latest_v2 = sorted(v2_releases, key=lambda s: list(map(int, re.findall(r'\d+', s))))[-1]
-                    logger.info(f"获取到后端最新版本：{latest_v2}")
-                    return latest_v2
+                    latest_release = sorted(neo_releases, key=lambda s: list(map(int, re.findall(r'\d+', s))))[-1]
+                    logger.info(f"获取到 Neo 后端最新版本：{latest_release}")
+                    return latest_release
             else:
-                logger.error("无法获取后端版本信息，请检查网络连接或GitHub API请求。")
+                logger.error("无法获取 Neo 后端版本信息，请检查网络连接或 GitHub API 请求。")
         except Exception as err:
-            logger.error(f"获取后端最新版本失败：{str(err)}")
+            logger.error(f"获取 Neo 后端最新版本失败：{str(err)}")
         return None
 
     @staticmethod
     def __get_front_release_version():
         """
-        获取前端V2最新版本
+        获取 Neo 前端最新版本。
         """
         try:
-            # 获取所有发布的版本列表
             response = RequestUtils(
                 proxies=settings.PROXY,
                 headers=settings.GITHUB_HEADERS
             ).get_res("https://api.github.com/repos/4Nest/moviepilot-neo-frontend/releases")
             if response:
                 releases = [release['tag_name'] for release in response.json()]
-                v2_releases = [tag for tag in releases if re.match(r"^v2\.", tag)]
-                if not v2_releases:
-                    logger.warn("获取v2前端最新版本版本出错！")
+                frontend_releases = [tag for tag in releases if re.match(r"^v2\.", tag)]
+                if not frontend_releases:
+                    logger.warn("获取 Neo 前端最新版本出错！")
                 else:
-                    # 找到最新的v2版本
-                    latest_v2 = sorted(v2_releases, key=lambda s: list(map(int, re.findall(r'\d+', s))))[-1]
-                    logger.info(f"获取到前端最新版本：{latest_v2}")
-                    return latest_v2
+                    latest_release = sorted(frontend_releases, key=lambda s: list(map(int, re.findall(r'\d+', s))))[-1]
+                    logger.info(f"获取到 Neo 前端最新版本：{latest_release}")
+                    return latest_release
             else:
-                logger.error("无法获取前端版本信息，请检查网络连接或GitHub API请求。")
+                logger.error("无法获取 Neo 前端版本信息，请检查网络连接或 GitHub API 请求。")
         except Exception as err:
-            logger.error(f"获取前端最新版本失败：{str(err)}")
+            logger.error(f"获取 Neo 前端最新版本失败：{str(err)}")
         return None
 
     @staticmethod

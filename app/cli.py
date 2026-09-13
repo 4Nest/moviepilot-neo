@@ -279,14 +279,14 @@ def _auto_update_mode() -> str:
 
 
 def _resolve_auto_update_targets(mode: str) -> Optional[str]:
-    backend_prefix = _release_prefix(APP_VERSION)
+    backend_prefix = f"neo-{_release_prefix(APP_VERSION)}"
 
     if mode == "dev":
         current_branch = _git_current_branch()
         backend_ref = "latest"
         if not current_branch or current_branch == "HEAD":
             # 从 release 模式切回 dev 时，detached HEAD 需要一个明确分支。
-            backend_ref = backend_prefix
+            backend_ref = "neo"
     else:
         backend_ref = _latest_release_tag(
             BACKEND_RELEASES_API,
