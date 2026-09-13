@@ -1,6 +1,6 @@
 from abc import ABCMeta, abstractmethod
 from pathlib import Path
-from typing import Any, List, Dict, Tuple, Optional, Type
+from typing import Any, List, Dict, Tuple, Optional
 
 from app.chain import ChainBase
 from app.core.config import settings
@@ -215,19 +215,6 @@ class _PluginBase(metaclass=ABCMeta):
         """
         pass
 
-    def get_agent_tools(self) -> List[Type]:
-        """
-        获取插件智能体工具
-        返回工具类列表，每个工具类必须继承自 MoviePilotTool
-        [ToolClass1, ToolClass2, ...]
-
-        对工具类的要求：
-        1、工具类必须继承自 app.agent.tools.base.MoviePilotTool
-        2、工具类需要实现 run 方法（异步方法）
-        3、工具类需要定义 name 和 description 属性
-        4、工具类可以定义 args_schema 来指定输入参数模型
-        """
-        pass
 
     @abstractmethod
     def stop_service(self):

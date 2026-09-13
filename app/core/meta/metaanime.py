@@ -26,6 +26,35 @@ TV_EPISODE_BRACKET_RE = re.compile(r"\[TV\s+(\d{1,4})", re.IGNORECASE)
 FOUR_K_BRACKET_RE = re.compile(r'\[4k]', re.IGNORECASE)
 NUMERIC_BRACKET_RE = re.compile(r"\[\d+", re.IGNORECASE)
 MIXED_CHINESE_TOKEN_RE = re.compile(r'[\d|#:：\-()（）\u4e00-\u9fff]')
+VERSIONED_ANIME_EPISODE_RE = re.compile(
+    r"(?P<episode>"
+    r"(?<![A-Za-z0-9])(?:S\d{1,3}E\d{1,4}|EP?\d{1,4})|"
+    r"(?:(?<=^)|(?<=[\[【._-])|(?<=\s-\s))\d{1,3}"
+    r")(?P<close>[\]】]?)"
+    r"(?:\s*[._-]?\s*v\d{1,3}|\s*[\[【]v\d{1,3}[\]】])"
+    r"(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def has_versioned_anime_episode(title: str) -> bool:
+    """标题是否包含与动漫集数绑定的 vN 发布修订标记。"""
+    return bool(title and VERSIONED_ANIME_EPISODE_RE.search(title))
+
+
+def normalize_versioned_anime_episode(title: str) -> str:
+    """移除集数后的发布修订标记，保留季集编号供 anitopy 解析。"""
+    if not title:
+        return title
+
+    def replace(match: re.Match) -> str:
+        episode = match.group("episode")
+        close = match.group("close")
+        if match.start() == 0 and episode.isdigit() and not close:
+            return f"E{episode}"
+        return f"{episode}{close}"
+
+    return VERSIONED_ANIME_EPISODE_RE.sub(replace, title)
 
 
 class MetaAnime(MetaBase):
@@ -53,10 +82,19 @@ class MetaAnime(MetaBase):
         # 调用第三方模块识别动漫
         try:
             original_title = title
+            normalized_title = normalize_versioned_anime_episode(title)
             # 字幕组信息会被预处理掉
             anitopy_info_origin = anitopy.parse(title)
             title = self.__prepare_title(title)
             anitopy_info = anitopy.parse(title)
+            # 中文正文与 SxxExx 混排时，既有标题清理可能误删季集字符；仅在
+            # 预处理结果未识别出集号时，以只移除 vN 的原始标题做保守回退。
+            if has_versioned_anime_episode(original_title) \
+                    and not (anitopy_info or {}).get("episode_number"):
+                normalized_info = anitopy.parse(normalized_title)
+                if normalized_info and normalized_info.get("episode_number"):
+                    anitopy_info = normalized_info
+                    title = normalized_title
             if anitopy_info:
                 # 名称
                 name = anitopy_info.get("anime_title")
@@ -234,6 +272,9 @@ class MetaAnime(MetaBase):
             return title
         # 所有【】换成[]
         title = title.replace("【", "[").replace("】", "]").strip()
+        # v2/v3 是发布修订标记而非集数内容；anitopy 对紧邻写法支持不一致，
+        # 统一移除版本部分后再解析，原始标题仍用于字幕组等字段识别。
+        title = normalize_versioned_anime_episode(title)
         # 截掉xx番剧漫
         match = ANIME_MARK_RE.search(title)
         if match and match.span()[1] < len(title) - 1:

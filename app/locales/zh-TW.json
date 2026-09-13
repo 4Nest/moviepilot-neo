@@ -4,9 +4,6 @@
       "BangumiModule": {
         "name": "Bangumi"
       },
-      "DiscordModule": {
-        "name": "Discord"
-      },
       "DoubanModule": {
         "name": "豆瓣"
       },
@@ -15,9 +12,6 @@
       },
       "FanartModule": {
         "name": "Fanart"
-      },
-      "FeishuModule": {
-        "name": "飛書"
       },
       "FileManagerModule": {
         "name": "檔案整理"
@@ -40,23 +34,14 @@
       "QbittorrentModule": {
         "name": "Qbittorrent"
       },
-      "QQBotModule": {
-        "name": "QQ"
-      },
       "RedisModule": {
         "name": "Redis 快取"
       },
       "RtorrentModule": {
         "name": "Rtorrent"
       },
-      "SlackModule": {
-        "name": "Slack"
-      },
       "SubtitleModule": {
         "name": "站點字幕"
-      },
-      "SynologyChatModule": {
-        "name": "Synology Chat"
       },
       "TelegramModule": {
         "name": "Telegram"
@@ -76,17 +61,8 @@
       "UgreenModule": {
         "name": "綠聯影視"
       },
-      "VoceChatModule": {
-        "name": "VoceChat"
-      },
-      "WebPushModule": {
-        "name": "WebPush"
-      },
       "WechatModule": {
         "name": "企業微信"
-      },
-      "WechatClawBotModule": {
-        "name": "微信 ClawBot"
       },
       "ZSpaceModule": {
         "name": "極影視"
@@ -126,8 +102,6 @@
     "刮削路径不存在": "刮削路徑不存在",
     "保存成功": "儲存成功",
     "保存失败": "儲存失敗",
-    "保存MCP配置成功": "MCP 設定儲存成功",
-    "保存MCP配置失败": "MCP 設定儲存失敗",
     "参数错误": "參數錯誤",
     "未配置媒体服务器": "未設定媒體伺服器",
     "未找到播放地址": "未找到播放位址",
@@ -273,7 +247,6 @@
     "字幕站点信息不存在": "字幕站點資訊不存在",
     "附件不存在或已过期": "附件不存在或已過期",
     "附件超过 32MB，无法发送给智能助手": "附件超過 32MB，無法傳送給智慧助手",
-    "附件保存失败": "附件儲存失敗",
     "认证票据无效或已过期": "認證票據無效或已過期",
     "用户不存在或已禁用": "使用者不存在或已停用",
     "用户权限不足": "使用者權限不足",
@@ -286,7 +259,6 @@
     "智能助手未启用，请先在系统设置中开启。": "智慧助手未啟用，請先在系統設定中開啟。",
     "语音识别失败，请稍后重试。": "語音識別失敗，請稍後重試。",
     "请输入要发送给智能助手的内容或选择附件。": "請輸入要傳送給智慧助手的內容或選擇附件。",
-    "微信 ClawBot 通知未启用或配置尚未保存，请先保存并启用当前渠道": "微信 ClawBot 通知未啟用或設定尚未儲存，請先儲存並啟用目前渠道",
     "请输入至少一个有效的站点 ID": "請輸入至少一個有效的站點 ID",
     "所有订阅搜索完成": "所有訂閱搜尋完成",
     "请输入订阅 ID，多个 ID 用空格分隔，或输入 all": "請輸入訂閱 ID，多個 ID 以空格分隔，或輸入 all",
@@ -341,7 +313,6 @@
     "未登录，请先扫码完成绑定": "未登入，請先掃碼完成綁定",
     "旧名称或新名称不能为空": "舊名稱或新名稱不能為空",
     "通知名称未变化，无需迁移登录缓存": "通知名稱未變更，無需遷移登入快取",
-    "未找到可迁移的微信 ClawBot 登录缓存": "未找到可遷移的微信 ClawBot 登入快取",
     "新名称下已存在登录缓存，跳过迁移": "新名稱下已存在登入快取，跳過遷移",
     "[系统]": "[系統]",
     "工作流": "工作流",
@@ -410,10 +381,6 @@
     {
       "source": "获取工具Schema失败: {reason}",
       "target": "取得工具 Schema 失敗: {reason}"
-    },
-    {
-      "source": "测试MCP服务器失败: {reason}",
-      "target": "測試 MCP 伺服器失敗: {reason}"
     },
     {
       "source": "插件 {plugin} 不存在或未安装",
@@ -496,36 +463,8 @@
       "target": "Telegram {name} 尚未就緒"
     },
     {
-      "source": "飞书 {name} 未就绪",
-      "target": "飛書 {name} 尚未就緒"
-    },
-    {
-      "source": "Discord {name} Bot 未就绪",
-      "target": "Discord {name} Bot 尚未就緒"
-    },
-    {
-      "source": "Slack {name} 未就绪",
-      "target": "Slack {name} 尚未就緒"
-    },
-    {
-      "source": "QQ Bot {name} 未就绪",
-      "target": "QQ Bot {name} 尚未就緒"
-    },
-    {
-      "source": "VoceChat {name} 未就绪",
-      "target": "VoceChat {name} 尚未就緒"
-    },
-    {
       "source": "企业微信 {name} 未就绪",
       "target": "企業微信 {name} 尚未就緒"
-    },
-    {
-      "source": "微信 ClawBot {name} 未就绪：{reason}",
-      "target": "微信 ClawBot {name} 尚未就緒：{reason}"
-    },
-    {
-      "source": "Synology Chat {name} 未就绪",
-      "target": "Synology Chat {name} 尚未就緒"
     },
     {
       "source": "无法连接Bangumi，错误码：{code}",
@@ -892,10 +831,6 @@
       "target": "整理記錄不存在: {ids}"
     },
     {
-      "source": "未找到名为 {name} 的微信 ClawBot 通知配置",
-      "target": "未找到名為 {name} 的微信 ClawBot 通知設定"
-    },
-    {
       "source": "下载字幕文件失败：{reason}",
       "target": "下載字幕檔案失敗：{reason}"
     },
@@ -1090,10 +1025,6 @@
     {
       "source": "下载任务添加成功，但获取rTorrent任务信息失败：{reason}",
       "target": "下載任務新增成功，但取得 rTorrent 任務資訊失敗：{reason}"
-    },
-    {
-      "source": "已将微信 ClawBot 登录缓存从 {old_name} 迁移到 {new_name}",
-      "target": "已將微信 ClawBot 登入快取從 {old_name} 遷移到 {new_name}"
     },
     {
       "source": "数据表 {name} 跳过清理",

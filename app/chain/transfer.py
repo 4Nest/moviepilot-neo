@@ -10,7 +10,6 @@ from time import monotonic
 from typing import List, Optional, Tuple, Union, Dict, Callable, Any
 
 from app import schemas
-from app.agent import ReplyMode, prompt_manager, agent_manager
 from app.chain import ChainBase
 from app.chain.media import MediaChain
 from app.chain.storage import StorageChain
@@ -798,107 +797,6 @@ class JobManager:
             return self._season_episodes.get(__mediaid__) or []
 
 
-class FailedRetryScheduler:
-    """
-    负责失败整理记录的 debounce 聚合与 AI 重试调度。
-    """
-
-    RETRY_TRANSFER_DEBOUNCE_SECONDS = 300
-
-    def __init__(self):
-        super().__init__()
-        self._retry_transfer_buffer: dict[str, list[int]] = {}
-        self._retry_transfer_timers: dict[str, asyncio.TimerHandle] = {}
-        self._retry_transfer_lock = asyncio.Lock()
-
-    async def close(self):
-        async with self._retry_transfer_lock:
-            timers = list(self._retry_transfer_timers.values())
-            self._retry_transfer_timers.clear()
-            self._retry_transfer_buffer.clear()
-
-        for timer in timers:
-            timer.cancel()
-
-    @staticmethod
-    def _build_retry_transfer_template_context(
-            history_ids: list[int],
-    ) -> tuple[str, dict[str, int | str]]:
-        """仅负责把失败重试任务的动态数据映射成模板变量。"""
-        is_batch = len(history_ids) > 1
-        task_type = "batch_transfer_failed_retry" if is_batch else "transfer_failed_retry"
-        template_context: dict[str, int | str] = {
-            "history_ids_csv": ", ".join(str(item) for item in history_ids),
-            "history_count": len(history_ids),
-        }
-        if not is_batch:
-            template_context["history_id"] = history_ids[0]
-        return task_type, template_context
-
-    def _build_retry_transfer_prompt(self, history_ids: list[int]) -> str:
-        """根据失败记录数量构建统一的重试整理后台任务提示词。"""
-        task_type, template_context = self._build_retry_transfer_template_context(history_ids)
-        return prompt_manager.render_system_task_message(
-            task_type,
-            template_context=template_context,
-        )
-
-    async def schedule_retry(self, history_id: int, group_key: str = ""):
-        """
-        同一 group_key 的失败记录会在缓冲期内合并为一次 agent 调用。
-        """
-        if not group_key:
-            group_key = f"_default_{history_id}"
-
-        async with self._retry_transfer_lock:
-            if group_key not in self._retry_transfer_buffer:
-                self._retry_transfer_buffer[group_key] = []
-            if history_id not in self._retry_transfer_buffer[group_key]:
-                self._retry_transfer_buffer[group_key].append(history_id)
-                logger.info(
-                    f"智能体重试整理：记录 ID={history_id} 已加入缓冲区 "
-                    f"(group={group_key}, 当前{len(self._retry_transfer_buffer[group_key])}条)"
-                )
-
-            if group_key in self._retry_transfer_timers:
-                self._retry_transfer_timers[group_key].cancel()
-
-            loop = asyncio.get_running_loop()
-            self._retry_transfer_timers[group_key] = loop.call_later(
-                self.RETRY_TRANSFER_DEBOUNCE_SECONDS,
-                lambda gk=group_key: asyncio.create_task(self._flush_retry_transfer(gk)),
-            )
-
-    async def _flush_retry_transfer(self, group_key: str):
-        """
-        延迟定时器到期后，取出该分组的所有 history_id 并合并为一次 agent 调用。
-        """
-        async with self._retry_transfer_lock:
-            history_ids = self._retry_transfer_buffer.pop(group_key, [])
-            self._retry_transfer_timers.pop(group_key, None)
-
-        if not history_ids:
-            return
-
-        ids_str = ", ".join(str(item) for item in history_ids)
-        logger.info(
-            f"智能体重试整理：开始批量处理失败记录 IDs=[{ids_str}] (group={group_key})"
-        )
-
-        try:
-            await agent_manager.run_background_prompt(
-                message=self._build_retry_transfer_prompt(history_ids),
-                session_prefix="__agent_retry_transfer_batch",
-                reply_mode=ReplyMode.DISPATCH,
-            )
-            logger.info(
-                f"智能体重试整理：批量处理完成 IDs=[{ids_str}] (group={group_key})"
-            )
-        except Exception as err:
-            logger.error(
-                f"智能体重试整理失败 (IDs=[{ids_str}], group={group_key}): {err}"
-            )
-
 
 class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
     """
@@ -945,8 +843,6 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
         self._transfer_interval = 15
         # 事件管理器
         self.jobview = JobManager()
-        # Agent重试管理器
-        self.retry_scheduler = FailedRetryScheduler()
         # 转移成功的文件清单
         self._success_target_files: Dict[str, List[str]] = {}
         # 批次级刮削缓冲，避免同一批多文件入库重复触发目录刮削
@@ -1218,29 +1114,6 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
             # 设置任务失败
             self.jobview.fail_task(task)
 
-            # AI智能体自动重试整理
-            if (
-                    history
-                    and settings.AI_AGENT_ENABLE
-                    and settings.AI_AGENT_RETRY_TRANSFER
-            ):
-                try:
-                    # 使用 download_hash 或源文件父目录作为分组键，
-                    # 同一批次（如同一个种子）的失败记录会被合并为一次agent调用
-                    group_key = (
-                        task.download_hash or str(task.fileitem.path).rsplit("/", 1)[0]
-                        if task.fileitem
-                        else ""
-                    )
-                    asyncio.run_coroutine_threadsafe(
-                        self.retry_scheduler.schedule_retry(
-                            history.id, group_key=group_key
-                        ),
-                        global_vars.loop,
-                    )
-                    logger.info(f"已触发AI智能体重试整理历史记录 #{history.id}")
-                except Exception as e:
-                    logger.error(f"触发AI智能体重试整理失败: {e}")
 
             # 返回失败
             ret_status = False
@@ -1889,29 +1762,6 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                         task.download_hash, task.downloader
                     )
 
-                    # AI智能体自动重试整理
-                    if (
-                            his
-                            and settings.AI_AGENT_ENABLE
-                            and settings.AI_AGENT_RETRY_TRANSFER
-                    ):
-                        try:
-                            # 使用 download_hash 或源文件父目录作为分组键
-                            group_key = (
-                                task.download_hash
-                                or str(task.fileitem.path).rsplit("/", 1)[0]
-                                if task.fileitem
-                                else ""
-                            )
-                            asyncio.run_coroutine_threadsafe(
-                                self.retry_scheduler.schedule_retry(
-                                    his.id, group_key=group_key
-                                ),
-                                global_vars.loop,
-                            )
-                            logger.info(f"已触发AI智能体重试整理历史记录 #{his.id}")
-                        except Exception as e:
-                            logger.error(f"触发AI智能体重试整理失败: {e}")
 
                     return False, "未识别到媒体信息"
 
@@ -3783,13 +3633,7 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
         if not history_id:
             return None
         return [
-            [
-                {"text": "重试", "callback_data": f"transfer_retry_{history_id}"},
-                {
-                    "text": "智能助手接管",
-                    "callback_data": f"transfer_ai_retry_{history_id}",
-                },
-            ]
+            [{"text": "重试", "callback_data": f"transfer_retry_{history_id}"}]
         ]
 
     def redo_transfer_history(self, history_id: int) -> Tuple[bool, str]:

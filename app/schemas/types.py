@@ -131,8 +131,6 @@ class EventType(Enum):
     MessageAction = "message.action"
     # 执行工作流
     WorkflowExecute = "workflow.execute"
-    # Agent Tokens 用量
-    AgentTokensUsage = "agent.tokens.usage"
 
 
 # EventType中文名称翻译字典
@@ -167,7 +165,6 @@ EVENT_TYPE_NAMES = {
     EventType.ConfigChanged: "配置项更新",
     EventType.MessageAction: "消息交互动作",
     EventType.WorkflowExecute: "执行工作流",
-    EventType.AgentTokensUsage: "Agent Tokens 用量",
 }
 
 
@@ -205,8 +202,6 @@ class ChainEventType(Enum):
     WorkflowExecution = "workflow.execution"
     # 存储操作选择
     StorageOperSelection = "storage.operation"
-    # Agent LLM 供应商选择
-    AgentLLMProvider = "agent.llm.provider"
     # 订阅总集数刷新
     SubscribeEpisodesRefresh = "subscribe.episodes.refresh"
     # 订阅完成检查
@@ -275,10 +270,6 @@ class SystemConfigKey(Enum):
     FollowSubscribers = "FollowSubscribers"
     # 通知发送时间
     NotificationSendTime = "NotificationSendTime"
-    # AI智能体配置
-    AIAgentConfig = "AIAgentConfig"
-    # AI智能体外部MCP服务器配置
-    AIAgentMcpServers = "AIAgentMcpServers"
     # 通知消息格式模板
     NotificationTemplates = "NotificationTemplates"
     # 通知中心清理时间
@@ -319,16 +310,6 @@ class NotificationType(Enum):
     Organize = "整理入库"
     # 订阅
     Subscribe = "订阅"
-    # 站点消息
-    SiteMessage = "站点"
-    # 媒体服务器通知
-    MediaServer = "媒体服务器"
-    # 处理失败需要人工干预
-    Manual = "手动处理"
-    # 插件消息
-    Plugin = "插件"
-    # 智能体消息
-    Agent = "智能体"
     # 其它消息
     Other = "其它"
 
@@ -356,7 +337,6 @@ class MessageChannel(Enum):
     Wechat = "微信"
     Telegram = "Telegram"
     Web = "Web"
-    WebAgent = "WebAgent"
 
 
 # 下载器类型

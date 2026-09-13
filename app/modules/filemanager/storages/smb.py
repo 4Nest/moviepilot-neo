@@ -163,9 +163,9 @@ class SMB(StorageBase, metaclass=WeakSingleton):
 
         # 构建完整的SMB路径
         if path_str:
-            return f"{self._server_path}\\{path_str.replace('/', '\\')}"
-        else:
-            return self._server_path
+            normalized_path = path_str.replace('/', '\\')
+            return f"{self._server_path}\\{normalized_path}"
+        return self._server_path
 
     def _create_fileitem(
         self, stat_result, file_path: str, name: str

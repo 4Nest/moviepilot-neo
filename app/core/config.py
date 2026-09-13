@@ -443,14 +443,6 @@ class ConfigModel(BaseModel):
     # 本地插件仓库目录，多个地址使用,分隔
     PLUGIN_LOCAL_REPO_PATHS: Optional[str] = None
 
-    # ==================== 技能配置 ====================
-    # 技能市场仓库地址，多个地址使用,分隔
-    SKILL_MARKET: str = (
-        "https://clawhub.ai,"
-        "https://github.com/openai/skills,"
-        "https://github.com/anthropics/skills,"
-        "https://github.com/vercel-labs/agent-skills"
-    )
 
     # ==================== Github & PIP ====================
     # Github token，提高请求api限流阈值 ghp_****
@@ -462,21 +454,6 @@ class ConfigModel(BaseModel):
     # 指定的仓库Github token，多个仓库使用,分隔，格式：{user1}/{repo1}:ghp_****,{user2}/{repo2}:github_pat_****
     REPO_GITHUB_TOKEN: Optional[str] = None
 
-    # ==================== 飞书通知配置 ====================
-    # 飞书应用 App ID
-    FEISHU_APP_ID: Optional[str] = None
-    # 飞书应用 App Secret
-    FEISHU_APP_SECRET: Optional[str] = None
-    # 飞书默认接收用户 Open ID
-    FEISHU_OPEN_ID: Optional[str] = None
-    # 飞书默认接收群聊 Chat ID
-    FEISHU_CHAT_ID: Optional[str] = None
-    # 飞书管理员 Open ID 列表，多个使用 , 分隔
-    FEISHU_ADMINS: Optional[str] = None
-    # 飞书事件校验 Token
-    FEISHU_VERIFICATION_TOKEN: Optional[str] = None
-    # 飞书事件加密 Key
-    FEISHU_ENCRYPT_KEY: Optional[str] = None
 
     # ==================== 性能配置 ====================
     # 大内存模式
@@ -536,92 +513,9 @@ class ConfigModel(BaseModel):
     # ==================== Docker配置 ====================
     # Docker Client API地址
     DOCKER_CLIENT_API: Optional[str] = "tcp://127.0.0.1:38379"
-    # Playwright浏览器类型，供智能体浏览器工具和插件直接使用 Playwright 时读取
+    # Playwright浏览器类型，供插件直接使用 Playwright 时读取
     PLAYWRIGHT_BROWSER_TYPE: str = "chromium"
 
-    # ==================== AI智能体配置 ====================
-    # AI智能体开关
-    AI_AGENT_ENABLE: bool = False
-    # 合局AI智能体
-    AI_AGENT_GLOBAL: bool = False
-    # 是否隐藏前端全局智能体入口
-    AI_AGENT_HIDE_ENTRY: bool = False
-    # LLM提供商（支持内置 provider，以及从 models.dev 动态补充的平台）
-    LLM_PROVIDER: str = "deepseek"
-    # LLM模型名称
-    LLM_MODEL: str = "deepseek-chat"
-    # 思考模式/深度配置：off/auto/minimal/low/medium/high/max/xhigh
-    LLM_THINKING_LEVEL: Optional[str] = "off"
-    # OpenAI兼容接口API协议：auto（自动）/ chat_completions / responses
-    LLM_API_PROTOCOL: str = "auto"
-    # 联网搜索模式：local（本地）/ builtin（模型服务端）/ auto（自动）/ disabled（关闭）
-    LLM_WEB_SEARCH_MODE: str = "local"
-    # LLM是否支持图片输入，开启后消息图片会按多模态输入发送给模型
-    LLM_SUPPORT_IMAGE_INPUT: bool = True
-    # 是否启用音频输入，开启后用户语音会先转写为文本再进入 Agent
-    LLM_SUPPORT_AUDIO_INPUT: bool = False
-    # 是否启用音频输出，开启后 Agent 可在支持渠道发送语音回复
-    LLM_SUPPORT_AUDIO_OUTPUT: bool = False
-    # LLM API密钥
-    LLM_API_KEY: Optional[str] = None
-    # LLM基础URL（用于自定义API端点）
-    LLM_BASE_URL: Optional[str] = "https://api.deepseek.com"
-    # LLM调用是否使用系统代理
-    LLM_USE_PROXY: bool = True
-    # LLM Base URL 预设标识，用于区分同一 Base URL 下的不同模型目录
-    LLM_BASE_URL_PRESET: Optional[str] = None
-    # LLM最大上下文Token数量（K），仅在模型目录未提供规格时作为回退值
-    LLM_MAX_CONTEXT_TOKENS: int = 256
-    # LLM OpenAI兼容接口请求User-Agent
-    LLM_USER_AGENT: Optional[str] = None
-    # LLM温度参数
-    LLM_TEMPERATURE: float = 0.3
-    # LLM最大迭代次数
-    LLM_MAX_ITERATIONS: int = 512
-    # LLM工具调用超时时间（秒）
-    LLM_TOOL_TIMEOUT: int = 300
-    # 是否启用详细日志
-    LLM_VERBOSE: bool = False
-    # 内存记忆保留天数
-    LLM_MEMORY_RETENTION_DAYS: int = 1
-    # 是否启用AI推荐
-    AI_RECOMMEND_ENABLED: bool = False
-    # AI推荐用户偏好
-    AI_RECOMMEND_USER_PREFERENCE: str = ""
-
-    # AI推荐条目数量限制
-    AI_RECOMMEND_MAX_ITEMS: int = 50
-    # LLM工具选择中间件最大工具数量，0为不启用工具选择中间件
-    LLM_MAX_TOOLS: int = 0
-    # AI智能体定时任务检查间隔（小时），0为不启用，默认24小时
-    AI_AGENT_JOB_INTERVAL: int = 0
-    # AI智能体啰嗦模式，开启后会回复工具调用过程
-    AI_AGENT_VERBOSE: bool = False
-    # AI智能体自动重试整理失败记录开关
-    AI_AGENT_RETRY_TRANSFER: bool = False
-
-    # 音频输入提供商：openai/openai_chat_audio/mimo/minimax
-    AUDIO_INPUT_PROVIDER: str = "openai"
-    # 音频输入 API 密钥
-    AUDIO_INPUT_API_KEY: Optional[str] = None
-    # 音频输入基础URL
-    AUDIO_INPUT_BASE_URL: Optional[str] = None
-    # 音频输入模型
-    AUDIO_INPUT_MODEL: str = "gpt-4o-mini-transcribe"
-    # 音频输入识别语言
-    AUDIO_INPUT_LANGUAGE: str = "zh"
-    # 音频输出提供商：openai/openai_chat_audio/mimo/minimax
-    AUDIO_OUTPUT_PROVIDER: str = "openai"
-    # 音频输出 API 密钥
-    AUDIO_OUTPUT_API_KEY: Optional[str] = None
-    # 音频输出基础URL
-    AUDIO_OUTPUT_BASE_URL: Optional[str] = None
-    # 音频输出模型
-    AUDIO_OUTPUT_MODEL: str = "gpt-4o-mini-tts"
-    # 音频输出音色/发音人
-    AUDIO_OUTPUT_VOICE: str = "alloy"
-    # 回复语音时是否同时附带文字说明
-    AUDIO_OUTPUT_INCLUDE_TEXT: bool = False
 
 
 class Settings(BaseSettings, ConfigModel, LogConfigModel):
@@ -1120,13 +1014,6 @@ class Settings(BaseSettings, ConfigModel, LogConfigModel):
         # 如果传入了指定的仓库名称，则返回该仓库的请求头信息，否则返回默认请求头
         return headers.get(repo, self.GITHUB_HEADERS)
 
-    @property
-    def VAPID(self):
-        return {
-            "subject": f"mailto:{self.SUPERUSER}@movie-pilot.org",
-            "publicKey": "BH3w49sZA6jXUnE-yt4jO6VKh73lsdsvwoJ6Hx7fmPIDKoqGiUl2GEoZzy-iJfn4SfQQcx7yQdHf9RknwrL_lSM",
-            "privateKey": "JTixnYY0vEw97t9uukfO3UWKfHKJdT5kCQDiv3gu894",
-        }
 
     def MP_DOMAIN(self, url: str = None):
         if not self.APP_DOMAIN:
@@ -1176,10 +1063,6 @@ class GlobalVar(object):
 
     # 系统停止事件
     STOP_EVENT: threading.Event = threading.Event()
-    # webpush订阅
-    SUBSCRIPTIONS: List[dict] = []
-    # webpush订阅读写锁
-    SUBSCRIPTIONS_LOCK: threading.Lock = threading.Lock()
     # 需应急停止的工作流
     EMERGENCY_STOP_WORKFLOWS: List[int] = []
     # 需应急停止文件整理
@@ -1209,41 +1092,6 @@ class GlobalVar(object):
         """
         return self.STOP_EVENT.is_set()
 
-    def get_subscriptions(self):
-        """
-        获取webpush订阅
-        """
-        with self.SUBSCRIPTIONS_LOCK:
-            return list(self.SUBSCRIPTIONS)
-
-    def push_subscription(self, subscription: dict):
-        """
-        添加或更新webpush订阅。
-        """
-        endpoint = subscription.get("endpoint") if subscription else None
-        if not endpoint:
-            return
-        with self.SUBSCRIPTIONS_LOCK:
-            for index, current in enumerate(self.SUBSCRIPTIONS):
-                if current.get("endpoint") == endpoint:
-                    self.SUBSCRIPTIONS[index] = subscription
-                    return
-            self.SUBSCRIPTIONS.append(subscription)
-
-    def remove_subscription(self, subscription: dict) -> bool:
-        """
-        根据 endpoint 移除webpush订阅，返回是否实际删除。
-        """
-        endpoint = subscription.get("endpoint") if subscription else None
-        if not endpoint:
-            return False
-        with self.SUBSCRIPTIONS_LOCK:
-            before_count = len(self.SUBSCRIPTIONS)
-            self.SUBSCRIPTIONS[:] = [
-                current for current in self.SUBSCRIPTIONS
-                if current.get("endpoint") != endpoint
-            ]
-            return len(self.SUBSCRIPTIONS) != before_count
 
     def stop_workflow(self, workflow_id: int):
         """

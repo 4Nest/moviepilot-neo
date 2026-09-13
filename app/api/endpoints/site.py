@@ -1,4 +1,5 @@
-from typing import List, Any, Dict, Optional
+from asyncio import Lock
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,7 @@ from app.api.endpoints.plugin import register_plugin_api
 from app.chain.site import SiteChain
 from app.chain.torrents import TorrentsChain
 from app.command import Command
+from app.core.config import settings
 from app.core.event import eventmanager
 from app.core.plugin import PluginManager
 from app.core.security import verify_token
@@ -30,10 +32,12 @@ from app.db.user_oper import (
 from app.helper.sites import SitesHelper  # noqa
 from app.log import logger
 from app.scheduler import Scheduler
-from app.schemas.types import SystemConfigKey, EventType
+from app.schemas.event import ConfigChangeEventData
+from app.schemas.types import EventType, SystemConfigKey
 from app.utils.string import StringUtils
 
 router = APIRouter()
+_cookiecloud_blacklist_lock = Lock()
 
 
 @router.get("/", summary="所有站点", response_model=List[schemas.Site])
@@ -115,6 +119,66 @@ async def update_site(
         },
     )
     return schemas.Response(success=True)
+
+@router.post(
+    "/{site_id}/cookiecloud-blacklist",
+    summary="将站点加入CookieCloud同步域名黑名单",
+    response_model=schemas.Response,
+)
+async def add_site_to_cookiecloud_blacklist(
+    site_id: int,
+    db: AsyncSession = Depends(get_async_db),
+    _: User = Depends(get_current_active_manage_user_async),
+) -> Any:
+    """将已保存站点的规范域名原子追加到 CookieCloud 同步黑名单。"""
+    site = await Site.async_get(db, site_id)
+    if not site:
+        return schemas.Response(success=False, message="站点不存在")
+
+    domain = StringUtils.get_url_domain(site.url).strip().lower()
+    if not domain:
+        return schemas.Response(success=False, message="站点域名无效")
+
+    async with _cookiecloud_blacklist_lock:
+        blacklist = [
+            item.strip()
+            for item in str(settings.COOKIECLOUD_BLACKLIST or "").split(",")
+            if item.strip()
+        ]
+        exists = any(
+            StringUtils.get_url_domain(item).strip().lower() == domain
+            for item in blacklist
+        )
+        if exists:
+            return schemas.Response(
+                success=True,
+                message=f"{domain} 已在 CookieCloud 同步域名黑名单中",
+                data={
+                    "added": False,
+                    "domain": domain,
+                    "value": ",".join(blacklist),
+                },
+            )
+
+        blacklist.append(domain)
+        value = ",".join(blacklist)
+        success, message = settings.update_setting("COOKIECLOUD_BLACKLIST", value)
+        if success is False:
+            return schemas.Response(success=False, message=message)
+
+    await eventmanager.async_send_event(
+        etype=EventType.ConfigChanged,
+        data=ConfigChangeEventData(
+            key="COOKIECLOUD_BLACKLIST",
+            value=value,
+            change_type="update",
+        ),
+    )
+    return schemas.Response(
+        success=True,
+        message=f"已将 {domain} 加入 CookieCloud 同步域名黑名单",
+        data={"added": True, "domain": domain, "value": value},
+    )
 
 
 @router.get("/cookiecloud", summary="CookieCloud同步", response_model=schemas.Response)

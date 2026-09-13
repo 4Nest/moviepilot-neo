@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Iterable, Optional, Dict, Any, List, Set, Callable
+from typing import Dict, Iterable, Optional, Any, List, Set, Callable
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -77,60 +77,6 @@ class PluginDataResetEventData(ChainEventData):
     reset_data: bool = Field(default=False, description="是否即将重置插件数据")
 
 
-class AgentLLMProviderEventData(ChainEventData):
-    """
-    Agent LLM 供应商选择事件数据。
-
-    事件发出方会带入当前系统配置作为默认值；插件可覆盖 provider、base_url、
-    api_key、model、user_agent、use_proxy 等字段，并通过 selected_provider_id 标记本次选择，方便
-    后续用量事件精确回写到同一个配额条目。
-    """
-
-    provider: Optional[str] = Field(default=None, description="LLM provider ID")
-    base_url: Optional[str] = Field(default=None, description="API Base URL")
-    api_key: Optional[str] = Field(default=None, description="API Key")
-    model: Optional[str] = Field(default=None, description="模型名称")
-    base_url_preset: Optional[str] = Field(default=None, description="Base URL 预设ID")
-    user_agent: Optional[str] = Field(default=None, description="OpenAI兼容接口User-Agent")
-    use_proxy: Optional[bool] = Field(default=None, description="是否使用系统代理")
-    thinking_level: Optional[str] = Field(default=None, description="思考模式级别")
-    api_protocol: Optional[str] = Field(default=None, description="OpenAI兼容接口API协议：auto/chat_completions/responses")
-    web_search_mode: Optional[str] = Field(default=None, description="联网搜索模式：local/builtin/auto/disabled")
-    selected_provider_id: Optional[str] = Field(default=None, description="插件侧供应商ID")
-    selected_provider_name: Optional[str] = Field(default=None, description="插件侧供应商名称")
-    source: Optional[str] = Field(default=None, description="选择来源")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="扩展元数据")
-
-
-class AgentTokensUsageEventData(BaseEventData):
-    """
-    Agent Tokens 用量广播事件数据。
-
-    用量事件不携带 API Key，只携带选择事件返回的 selected_provider_id 以及
-    聚合后的 token 统计，避免把密钥扩散给广播订阅者。
-    """
-
-    session_id: str = Field(..., description="Agent 会话ID")
-    selected_provider_id: Optional[str] = Field(default=None, description="插件侧供应商ID")
-    selected_provider_name: Optional[str] = Field(default=None, description="插件侧供应商名称")
-    provider: Optional[str] = Field(default=None, description="实际 LLM provider ID")
-    base_url: Optional[str] = Field(default=None, description="API Base URL")
-    model: Optional[str] = Field(default=None, description="模型名称")
-    input_tokens: int = Field(default=0, description="输入 tokens")
-    output_tokens: int = Field(default=0, description="输出 tokens")
-    total_tokens: int = Field(default=0, description="总 tokens")
-    cache_read_input_tokens: int = Field(default=0, description="从提示词缓存读取的输入 tokens")
-    cache_write_input_tokens: int = Field(default=0, description="写入提示词缓存的输入 tokens")
-    uncached_input_tokens: int = Field(default=0, description="未命中缓存的输入 tokens")
-    cache_hit_ratio: Optional[float] = Field(default=None, description="提示词缓存命中率")
-    cache_usage_available: bool = Field(default=False, description="供应商是否返回缓存用量明细")
-    model_call_count: int = Field(default=0, description="模型调用次数")
-    success: bool = Field(default=False, description="Agent 执行是否成功")
-    error: Optional[str] = Field(default=None, description="失败原因")
-    started_at: Optional[str] = Field(default=None, description="开始时间")
-    finished_at: Optional[str] = Field(default=None, description="结束时间")
-    source: str = Field(default="agent", description="事件来源")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="扩展元数据")
 
 
 class AuthCredentials(ChainEventData):
@@ -621,14 +567,14 @@ class SubscribeModifiedEventData(BaseEventData):
     """
     SubscribeModified 广播事件数据。
 
-    主程序在订阅字段被普通更新、状态入口、重置或 Agent 更新后发出。payload
+    主程序在订阅字段被普通更新、状态入口或重置后发出。payload
     继续保持 dict 形态，scene 用于表达操作场景，fields 表达最终快照里的真实字段差异。
     """
 
     subscribe_id: int = Field(description="订阅 ID")
     old_subscribe_info: Dict[str, Any] = Field(default_factory=dict, description="更新前订阅快照")
     subscribe_info: Dict[str, Any] = Field(default_factory=dict, description="更新后订阅快照")
-    scene: str = Field(default="update", description="触发场景：update/status/reset/agent_update")
+    scene: str = Field(default="update", description="触发场景：update/status/reset")
     fields: List[str] = Field(default_factory=list, description="真实变更字段")
 
     @model_validator(mode="after")

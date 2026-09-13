@@ -26,7 +26,7 @@ class NotificationHelper(ServiceBaseHelper[NotificationConf]):
         """
         通用的消息通知服务类型判断方法
 
-        :param service_type: 消息通知服务的类型名称（如 'wechat', 'voicechat', 'telegram', 等）
+        :param service_type: 消息通知服务的类型名称（如 'wechat'、'telegram' 等）
         :param service: 要判断的服务信息
         :param name: 服务的名称
         :return: 如果服务类型或实例为指定类型，返回 True；否则返回 False

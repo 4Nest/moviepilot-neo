@@ -1923,21 +1923,6 @@ class ChainBase(metaclass=ABCMeta):
         :param metadata: 其他消息元数据
         :return: 编辑是否成功
         """
-        if channel == MessageChannel.WebAgent:
-            try:
-                from app.helper.agent import edit_web_agent_message
-
-                return edit_web_agent_message(
-                    user_id=str((metadata or {}).get("userid") or ""),
-                    message_id=message_id,
-                    title=title,
-                    text=text,
-                    buttons=buttons,
-                )
-            except Exception as err:
-                logger.debug(f"编辑 WebAgent 消息失败: {err}")
-                return False
-
         return self.run_module(
             "edit_message",
             channel=channel,

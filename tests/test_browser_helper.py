@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
@@ -8,7 +7,6 @@ from unittest.mock import patch
 
 import pytest
 
-from app.agent.tools.impl.browse_webpage import BrowserAction, BrowseWebpageTool
 from app.helper.browser import BrowserSessionHelper, PlaywrightHelper
 
 
@@ -305,57 +303,3 @@ def test_browser_session_helper_closes_session_on_worker_thread():
     assert context.close_thread_id == session_thread_id
 
 
-def test_browse_webpage_returns_snapshot_with_refs_after_goto():
-    """goto 后应返回包含可交互元素 ref 的页面快照。"""
-    page = _FakePage()
-    context = _FakeContext([page])
-    tool = BrowseWebpageTool(session_id="session-1", user_id="10001")
-
-    with patch.object(BrowserSessionHelper, "_launch_context", return_value=context):
-        result = tool._execute_browser_action(
-            browser_action=BrowserAction.GOTO,
-            url="https://example.com",
-            selector=None,
-            ref=None,
-            value=None,
-            script=None,
-            content_type="text",
-            timeout=3,
-            cookies=None,
-            user_agent=None,
-            session_key="session-1",
-            tab_index=None,
-            allow_private_network=False,
-        )
-
-    payload = json.loads(result)
-    assert payload["url"] == "https://example.com"
-    assert payload["interactive_elements"][0]["ref"] == "e1"
-
-
-def test_browse_webpage_click_ref_uses_snapshot_selector():
-    """click_ref 应将 ref 转换为快照注入的稳定选择器。"""
-    page = _FakePage()
-    context = _FakeContext([page])
-    tool = BrowseWebpageTool(session_id="session-1", user_id="10001")
-
-    with patch.object(BrowserSessionHelper, "_launch_context", return_value=context):
-        result = tool._execute_browser_action(
-            browser_action=BrowserAction.CLICK_REF,
-            url=None,
-            selector=None,
-            ref="e1",
-            value=None,
-            script=None,
-            content_type="text",
-            timeout=3,
-            cookies=None,
-            user_agent=None,
-            session_key="session-1",
-            tab_index=None,
-            allow_private_network=False,
-        )
-
-    payload = json.loads(result)
-    assert payload["success"] is True
-    assert page.clicks == ['[data-moviepilot-agent-ref="e1"]']

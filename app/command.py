@@ -5,9 +5,7 @@ from typing import Any, Union, Dict, Optional
 
 from app.chain import ChainBase
 from app.chain.download import DownloadChain
-from app.chain.message import MessageChain
 from app.chain.site import SiteChain
-from app.chain.skills import SkillsChain
 from app.chain.subscribe import SubscribeChain
 from app.chain.system import SystemChain
 from app.chain.transfer import TransferChain
@@ -111,30 +109,6 @@ class Command(metaclass=Singleton):
                 "func": SystemChain().version,
                 "description": "当前版本",
                 "category": "管理",
-                "data": {},
-            },
-            "/clear_session": {
-                "func": MessageChain().remote_clear_session,
-                "description": "清除会话",
-                "category": "管理",
-                "data": {},
-            },
-            "/stop_agent": {
-                "func": MessageChain().remote_stop_agent,
-                "description": "停止推理",
-                "category": "管理",
-                "data": {},
-            },
-            "/session_status": {
-                "func": MessageChain().remote_session_status,
-                "description": "会话状态",
-                "category": "智能体",
-                "data": {},
-            },
-            "/skills": {
-                "func": SkillsChain().remote_manage,
-                "description": "管理技能",
-                "category": "智能体",
                 "data": {},
             },
         }

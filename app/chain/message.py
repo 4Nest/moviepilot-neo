@@ -1,36 +1,21 @@
-import asyncio
-import base64
 import math
-import mimetypes
 import re
 import time
-import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any, Optional, Dict, Union, List, Tuple
-from urllib.parse import unquote, urlparse
 
-from app.agent import ReplyMode, agent_manager
-from app.agent.llm import AgentCapabilityManager, LLMHelper
-from app.agent.prompt.transfer_redo import build_manual_redo_prompt
 from app.chain import ChainBase
 from app.chain.download import DownloadChain
 from app.chain.media import MediaChain
 from app.chain.search import SearchChain
 from app.chain.site import SiteChain, site_interaction_manager
-from app.chain.skills import SkillsChain, skills_interaction_manager
 from app.chain.subscribe import SubscribeChain, subscribe_interaction_manager
 from app.chain.transfer import TransferChain
 from app.core.config import settings, global_vars
 from app.core.context import MediaInfo, Context
 from app.core.meta import MetaBase
-from app.db.models import TransferHistory
-from app.db.transferhistory_oper import TransferHistoryOper
 from app.db.user_oper import UserOper
-from app.helper.directory import DirectoryHelper
 from app.helper.interaction import (
-    agent_interaction_manager,
     media_interaction_manager,
     plugin_input_interaction_manager,
     PendingMediaInteraction,
@@ -41,7 +26,6 @@ from app.schemas import CommingMessage, DownloadDirectory, FileURI, NotExistMedi
 from app.schemas.message import ChannelCapabilityManager, ChannelCapability
 from app.schemas.system import TransferDirectoryConf
 from app.schemas.types import EventType, MessageChannel, MediaType
-from app.utils.http import RequestUtils
 from app.utils.media import build_media_key, resolve_media_identity
 from app.utils.string import StringUtils
 
@@ -51,42 +35,6 @@ class MessageChain(ChainBase):
     外来消息处理链
     """
 
-    _ai_prefix = "/ai"
-    _no_ai_prefix = "/noai"
-    # 用户会话信息 {userid: (session_id, last_time)}
-    _user_sessions: Dict[Union[str, int], tuple] = {}
-    # 会话超时时间（分钟）
-    _session_timeout_minutes: int = 24 * 60
-
-    @staticmethod
-    def _schedule_agent_session_clear(session_id: str, userid: Union[str, int]) -> None:
-        """
-        异步调度 Agent 会话清理，避免同步消息链阻塞在模型资源释放上。
-        """
-        if not session_id:
-            return
-        clear_task = None
-        try:
-            clear_task = agent_manager.clear_session(session_id=session_id, user_id=str(userid))
-            asyncio.run_coroutine_threadsafe(
-                clear_task,
-                global_vars.loop,
-            )
-        except Exception as e:
-            if clear_task:
-                clear_task.close()
-            logger.warning(f"调度清理智能体会话失败: {e}")
-
-    def _cleanup_expired_user_sessions(self, current_time: datetime) -> None:
-        """
-        清理超过复用窗口的用户会话映射，并同步释放旧 Agent 实例。
-        """
-        timeout = timedelta(minutes=self._session_timeout_minutes)
-        for userid, (session_id, last_time) in list(self._user_sessions.items()):
-            if current_time - last_time <= timeout:
-                continue
-            self._user_sessions.pop(userid, None)
-            self._schedule_agent_session_clear(session_id, userid)
 
     @dataclass
     class _ProcessingStatus:
@@ -183,32 +131,7 @@ class MessageChain(ChainBase):
         processing_status = None
         processing_finish_deferred = False
         try:
-            # 语音输入只用于转写为文本，不默认改变回复形式。
             has_audio_input = bool(audio_refs)
-            if audio_refs:
-                transcript = self._transcribe_audio_refs(audio_refs, channel, source)
-                merged_parts = []
-                seen_parts = set()
-                for item in [text.strip() if text else "", transcript or ""]:
-                    normalized = item.strip()
-                    if not normalized or normalized in seen_parts:
-                        continue
-                    seen_parts.add(normalized)
-                    merged_parts.append(normalized)
-                text = "\n".join(merged_parts).strip()
-                if not text:
-                    self.post_message(
-                        Notification(
-                            channel=channel,
-                            source=source,
-                            userid=userid,
-                            username=username,
-                            title="语音识别失败，请稍后重试",
-                            save_history=False,
-                        )
-                    )
-                    return
-
             if self._handle_plugin_input_interaction(
                     channel=channel,
                     source=source,
@@ -224,15 +147,7 @@ class MessageChain(ChainBase):
             ):
                 return
 
-            is_agent_message = self._is_agent_message(
-                userid=userid,
-                text=text,
-                images=images,
-                files=files,
-                has_audio_input=has_audio_input,
-            )
-
-            if not text.startswith("CALLBACK:") and not is_agent_message:
+            if not text.startswith("CALLBACK:"):
                 self._record_user_message(
                     channel=channel,
                     source=source,
@@ -241,15 +156,14 @@ class MessageChain(ChainBase):
                     text=text,
                 )
 
-            if not is_agent_message:
-                processing_status = self._mark_message_processing_started(
-                    channel=channel,
-                    source=source,
-                    userid=userid,
-                    original_message_id=original_message_id,
-                    original_chat_id=original_chat_id,
-                    text=text,
-                )
+            processing_status = self._mark_message_processing_started(
+                channel=channel,
+                source=source,
+                userid=userid,
+                original_message_id=original_message_id,
+                original_chat_id=original_chat_id,
+                text=text,
+            )
 
             processing_finish_deferred = self._handle_message_core(
                 channel=channel,
@@ -330,23 +244,7 @@ class MessageChain(ChainBase):
         ):
             return False
 
-        no_ai_requested, no_ai_text = self._strip_no_ai_prefix(text)
-        if no_ai_requested:
-            text = no_ai_text
-            if not text:
-                self.post_message(
-                    Notification(
-                        channel=channel,
-                        source=source,
-                        userid=userid,
-                        username=username,
-                        title="请输入要使用传统交互处理的内容",
-                        save_history=False,
-                    )
-                )
-                return False
-
-        if text.startswith("/") and not self._has_ai_prefix(text):
+        if text.startswith("/"):
             self.eventmanager.send_event(
                 EventType.CommandExcute,
                 {
@@ -360,20 +258,6 @@ class MessageChain(ChainBase):
                 },
             )
             return bool(processing_status)
-
-        if not no_ai_requested and self._has_ai_prefix(text):
-            return self._handle_ai_message(
-                text=text,
-                channel=channel,
-                source=source,
-                userid=userid,
-                username=username,
-                original_message_id=original_message_id,
-                original_chat_id=original_chat_id,
-                images=images,
-                files=files,
-                has_audio_input=has_audio_input,
-            )
 
         latest_slash_interaction = self._get_latest_slash_interaction(userid)
         if latest_slash_interaction == "sites":
@@ -396,15 +280,6 @@ class MessageChain(ChainBase):
             ):
                 return False
 
-        if latest_slash_interaction == "skills":
-            if SkillsChain().handle_text_interaction(
-                    channel=channel,
-                    source=source,
-                    userid=userid,
-                    username=username,
-                    text=text,
-            ):
-                return False
 
         if media_interaction_manager.get_by_user(userid):
             if MediaInteractionChain().handle_text_interaction(
@@ -415,25 +290,6 @@ class MessageChain(ChainBase):
                     text=text,
             ):
                 return False
-
-        if (
-                not no_ai_requested
-                and
-                settings.AI_AGENT_ENABLE
-                and (settings.AI_AGENT_GLOBAL or images or files or has_audio_input)
-        ):
-            return self._handle_ai_message(
-                text=text,
-                channel=channel,
-                source=source,
-                userid=userid,
-                username=username,
-                original_message_id=original_message_id,
-                original_chat_id=original_chat_id,
-                images=images,
-                files=files,
-                has_audio_input=has_audio_input,
-            )
 
         if MediaInteractionChain().handle_text_interaction(
                 channel=channel,
@@ -574,51 +430,6 @@ class MessageChain(ChainBase):
         return True
 
     @classmethod
-    def _strip_no_ai_prefix(cls, text: str) -> Tuple[bool, str]:
-        """
-        解析 /noai 前缀，显式要求本条消息绕过全局智能体。
-        """
-        normalized = (text or "").strip()
-        pattern = rf"^{re.escape(cls._no_ai_prefix)}(?:\s+|[:：]\s*|$)(.*)$"
-        match = re.match(pattern, normalized, re.IGNORECASE | re.DOTALL)
-        if not match:
-            return False, text
-        return True, match.group(1).strip()
-
-    @classmethod
-    def _has_ai_prefix(cls, text: str) -> bool:
-        """
-        判断消息是否使用显式 AI 前缀。
-        """
-        return (text or "").lower().startswith(cls._ai_prefix)
-
-    def _is_agent_message(
-            self,
-            userid: Union[str, int],
-            text: str,
-            images: Optional[List[CommingMessage.MessageImage]] = None,
-            files: Optional[List[CommingMessage.MessageAttachment]] = None,
-            has_audio_input: bool = False,
-    ) -> bool:
-        """
-        判断本条消息是否会进入 Agent worker，由 Agent worker 管理 typing 生命周期。
-        """
-        if text.startswith("CALLBACK:"):
-            return self._parse_agent_choice_callback(text[9:]) is not None
-        if self._has_ai_prefix(text):
-            return True
-        if text.startswith("/"):
-            return False
-        if not (
-                settings.AI_AGENT_ENABLE
-                and (settings.AI_AGENT_GLOBAL or images or files or has_audio_input)
-        ):
-            return False
-        if self._get_latest_slash_interaction(userid):
-            return False
-        if media_interaction_manager.get_by_user(userid):
-            return False
-        return True
 
     def _mark_message_processing_started(
             self,
@@ -703,16 +514,6 @@ class MessageChain(ChainBase):
         ):
             return False
 
-        if SkillsChain().handle_callback_interaction(
-                callback_data=callback_data,
-                channel=channel,
-                source=source,
-                userid=userid,
-                username=username,
-                original_message_id=original_message_id,
-                original_chat_id=original_chat_id,
-        ):
-            return False
 
         if SiteChain().handle_callback_interaction(
                 callback_data=callback_data,
@@ -747,16 +548,6 @@ class MessageChain(ChainBase):
         ):
             return False
 
-        if self._handle_agent_choice_callback(
-                callback_data=callback_data,
-                channel=channel,
-                source=source,
-                userid=userid,
-                username=username,
-                original_message_id=original_message_id,
-                original_chat_id=original_chat_id,
-        ):
-            return True
 
         # 插件消息的事件回调 [PLUGIN]插件ID|内容
         if callback_data.startswith("[PLUGIN]"):
@@ -799,7 +590,6 @@ class MessageChain(ChainBase):
         for name, manager in (
                 ("sites", site_interaction_manager),
                 ("subscribes", subscribe_interaction_manager),
-                ("skills", skills_interaction_manager),
         ):
             request = manager.get_by_user(userid)
             if request:
@@ -815,14 +605,11 @@ class MessageChain(ChainBase):
         """
         解析整理失败通知按钮回调。
         """
-        for prefix, action in (
-                ("transfer_retry_", "retry"),
-                ("transfer_ai_retry_", "ai_retry"),
-        ):
-            if callback_data.startswith(prefix):
-                history_id = callback_data.replace(prefix, "", 1)
-                if history_id.isdigit():
-                    return action, int(history_id)
+        prefix = "transfer_retry_"
+        if callback_data.startswith(prefix):
+            history_id = callback_data.replace(prefix, "", 1)
+            if history_id.isdigit():
+                return "retry", int(history_id)
         return None
 
     def _handle_transfer_callback(
@@ -840,105 +627,17 @@ class MessageChain(ChainBase):
         if not callback:
             return False
 
-        action, history_id = callback
-        if action == "retry":
-            self._retry_transfer_history(
-                history_id=history_id,
-                channel=channel,
-                source=source,
-                userid=userid,
-                username=username,
-            )
-        else:
-            self._take_over_transfer_history_by_ai(
-                history_id=history_id,
-                channel=channel,
-                source=source,
-                userid=userid,
-                username=username,
-            )
-        return True
-
-    @staticmethod
-    def _parse_agent_choice_callback(
-            callback_data: str,
-    ) -> Optional[tuple[str, int]]:
-        """
-        解析 Agent 按钮选择回调。
-        """
-        if callback_data.startswith("agent_interaction:choice:"):
-            try:
-                _, _, request_id, option_index = callback_data.split(":", 3)
-            except ValueError:
-                return None
-        elif callback_data.startswith("agent_choice:"):
-            # 兼容旧格式，避免已发送的按钮失效
-            try:
-                _, request_id, option_index = callback_data.split(":", 2)
-            except ValueError:
-                return None
-        else:
-            return None
-        if not request_id or not option_index.isdigit():
-            return None
-        return request_id, int(option_index)
-
-    def _handle_agent_choice_callback(
-            self,
-            callback_data: str,
-            channel: MessageChannel,
-            source: str,
-            userid: Union[str, int],
-            username: str,
-            original_message_id: Optional[Union[str, int]] = None,
-            original_chat_id: Optional[str] = None,
-    ) -> bool:
-        """
-        将 Agent 按钮选择回传为同一会话中的下一条用户消息。
-        """
-        callback = self._parse_agent_choice_callback(callback_data)
-        if not callback:
-            return False
-
-        request_id, option_index = callback
-        resolved = agent_interaction_manager.resolve(
-            request_id=request_id,
-            option_index=option_index,
-            user_id=str(userid),
-        )
-        if not resolved:
-            self.post_message(
-                Notification(
-                    channel=channel,
-                    source=source,
-                    userid=userid,
-                    username=username,
-                    title="该选择已失效，请重新发起选择",
-                    save_history=False,
-                )
-            )
-            return False
-
-        request, option = resolved
-        selected_text = option.value
-        self._update_interaction_message_feedback(
-            channel=channel,
-            source=source,
-            original_message_id=original_message_id,
-            original_chat_id=original_chat_id,
-            title=request.title,
-            prompt=request.prompt,
-            selected_label=option.label,
-        )
-        self._bind_session_id(userid, request.session_id)
-        return self._handle_ai_message(
-            text=selected_text,
+        _, history_id = callback
+        self._retry_transfer_history(
+            history_id=history_id,
             channel=channel,
             source=source,
             userid=userid,
             username=username,
-            session_id=request.session_id,
         )
+        return True
+
+    @staticmethod
 
     def _update_interaction_message_feedback(
             self,
@@ -1019,153 +718,6 @@ class MessageChain(ChainBase):
             )
         )
 
-    def _take_over_transfer_history_by_ai(
-            self,
-            history_id: int,
-            channel: MessageChannel,
-            source: str,
-            userid: Union[str, int],
-            username: str,
-    ) -> None:
-        """
-        由智能助手接管一条失败的整理记录。
-        """
-
-        if not settings.AI_AGENT_ENABLE:
-            self.post_message(
-                Notification(
-                    channel=channel,
-                    source=source,
-                    userid=userid,
-                    username=username,
-                    title="MoviePilot智能助手未启用，请在系统设置中启用",
-                    save_history=False,
-                )
-            )
-            return
-
-        history = TransferHistoryOper().get(history_id)
-        if not history:
-            self.post_message(
-                Notification(
-                    channel=channel,
-                    source=source,
-                    userid=userid,
-                    username=username,
-                    title="重新整理失败",
-                    text=f"整理记录 #{history_id} 不存在",
-                    link=settings.MP_DOMAIN("#/history"),
-                    save_history=False,
-                )
-            )
-            return
-
-        redo_prompt = build_manual_redo_prompt(history)
-
-        self.post_message(
-            Notification(
-                channel=channel,
-                source=source,
-                userid=userid,
-                username=username,
-                title=f"已将整理记录 #{history_id} 交给智能助手处理",
-                text="处理完成后会在这里回复结果。",
-                link=settings.MP_DOMAIN("#/history"),
-                save_history=False,
-            )
-        )
-
-        async def _run_ai_takeover():
-            final_output = ""
-
-            def _capture_output(text_output: str):
-                nonlocal final_output
-                final_output = text_output or ""
-
-            try:
-                await agent_manager.run_background_prompt(
-                    message=redo_prompt,
-                    session_prefix=f"__agent_manual_redo_{history_id}",
-                    output_callback=_capture_output,
-                    reply_mode=ReplyMode.CAPTURE_ONLY,
-                    allow_message_tools=False,
-                )
-                await self.async_post_message(
-                    Notification(
-                        channel=channel,
-                        source=source,
-                        userid=userid,
-                        username=username,
-                        title="智能助手整理完成",
-                        text=final_output.strip()
-                             or f"整理记录 #{history_id} 已由智能助手处理完成。",
-                        link=settings.MP_DOMAIN("#/history"),
-                        save_history=False,
-                    )
-                )
-            except Exception as e:
-                await self.async_post_message(
-                    Notification(
-                        channel=channel,
-                        source=source,
-                        userid=userid,
-                        username=username,
-                        title="智能助手整理失败",
-                        text=str(e),
-                        link=settings.MP_DOMAIN("#/history"),
-                        save_history=False,
-                    )
-                )
-
-        asyncio.run_coroutine_threadsafe(_run_ai_takeover(), global_vars.loop)
-
-    def _get_or_create_session_id(self, userid: Union[str, int]) -> str:
-        """
-        获取或创建会话ID
-        如果用户上次会话在15分钟内，则复用相同的会话ID；否则创建新的会话ID
-        """
-        current_time = datetime.now()
-        self._cleanup_expired_user_sessions(current_time)
-
-        # 检查用户是否有已存在的会话
-        if userid in self._user_sessions:
-            session_id, last_time = self._user_sessions[userid]
-
-            # 计算时间差
-            time_diff = current_time - last_time
-
-            # 如果时间差小于等于xx分钟，复用会话ID
-            if time_diff <= timedelta(minutes=self._session_timeout_minutes):
-                # 更新最后使用时间
-                self._user_sessions[userid] = (session_id, current_time)
-                logger.info(
-                    f"复用会话ID: {session_id}, 用户: {userid}, 距离上次会话: {time_diff.total_seconds() / 60:.1f}分钟"
-                )
-                return session_id
-
-        # 创建新的会话ID
-        new_session_id = f"user_{userid}_{int(time.time())}"
-        self._user_sessions[userid] = (new_session_id, current_time)
-        logger.info(f"创建新会话ID: {new_session_id}, 用户: {userid}")
-        return new_session_id
-
-    def _bind_session_id(self, userid: Union[str, int], session_id: str) -> None:
-        """
-        将用户会话绑定到指定的 session_id，并刷新最后活动时间。
-        """
-        old_session = self._user_sessions.get(userid)
-        if old_session and old_session[0] != session_id:
-            self._schedule_agent_session_clear(old_session[0], userid)
-        self._user_sessions[userid] = (session_id, datetime.now())
-
-    def bind_user_session(self, userid: Union[str, int], session_id: str) -> None:
-        """
-        绑定用户与指定智能体会话，供非传统入口复用远程命令状态查询。
-
-        :param userid: 用户 ID
-        :param session_id: 智能体会话 ID
-        """
-        self._bind_session_id(userid, session_id)
 
     def _record_user_message(
             self,
@@ -1196,794 +748,6 @@ class MessageChain(ChainBase):
             action=0,
         )
 
-    def clear_user_session(self, userid: Union[str, int]) -> bool:
-        """
-        清除指定用户的会话信息
-        返回是否成功清除
-        """
-        if userid in self._user_sessions:
-            session_id, _ = self._user_sessions.pop(userid)
-            logger.info(f"已清除用户 {userid} 的会话: {session_id}")
-            return True
-        return False
-
-    def remote_clear_session(
-            self,
-            channel: MessageChannel,
-            userid: Union[str, int],
-            source: Optional[str] = None,
-    ):
-        """
-        清除用户会话（远程命令接口）
-        """
-        # 获取并清除会话信息
-        session_id = None
-        if userid in self._user_sessions:
-            session_id, _ = self._user_sessions.pop(userid)
-            logger.info(f"已清除用户 {userid} 的会话: {session_id}")
-
-        # 如果有会话ID，同时清除智能体的会话记忆
-        if session_id:
-            clear_task = None
-            try:
-                clear_task = agent_manager.clear_session(
-                    session_id=session_id, user_id=str(userid)
-                )
-                asyncio.run_coroutine_threadsafe(
-                    clear_task,
-                    global_vars.loop,
-                )
-            except Exception as e:
-                if clear_task:
-                    clear_task.close()
-                logger.warning(f"清除智能体会话记忆失败: {e}")
-
-            self.post_message(
-                Notification(
-                    channel=channel,
-                    source=source,
-                    title="智能体会话已清除，下次将创建新的会话",
-                    userid=userid,
-                    save_history=False,
-                )
-            )
-        else:
-            self.post_message(
-                Notification(
-                    channel=channel,
-                    source=source,
-                    title="您当前没有活跃的智能体会话",
-                    userid=userid,
-                    save_history=False,
-                )
-            )
-
-    def remote_stop_agent(
-            self,
-            channel: MessageChannel,
-            userid: Union[str, int],
-            source: Optional[str] = None,
-    ):
-        """
-        应急停止当前正在执行的Agent推理（远程命令接口）。
-        与 /clear_session 不同，此命令不会清除会话和记忆，
-        停止后用户仍可继续对话。
-        """
-        # 查找用户的会话ID（不弹出，保留会话）
-        session_info = self._user_sessions.get(userid)
-        if session_info:
-            session_id, _ = session_info
-            try:
-                future = asyncio.run_coroutine_threadsafe(
-                    agent_manager.stop_current_task(session_id=session_id),
-                    global_vars.loop,
-                )
-                stopped = future.result(timeout=10)
-            except Exception as e:
-                logger.warning(f"停止Agent推理失败: {e}")
-                stopped = False
-
-            if stopped:
-                self.post_message(
-                    Notification(
-                        channel=channel,
-                        source=source,
-                        title="智能体推理已应急停止，会话记忆已保留，您可以继续对话",
-                        userid=userid,
-                        save_history=False,
-                    )
-                )
-            else:
-                self.post_message(
-                    Notification(
-                        channel=channel,
-                        source=source,
-                        title="当前没有正在执行的智能体任务",
-                        userid=userid,
-                        save_history=False,
-                    )
-                )
-        else:
-            self.post_message(
-                Notification(
-                    channel=channel,
-                    source=source,
-                    title="您当前没有活跃的智能体会话",
-                    userid=userid,
-                    save_history=False,
-                )
-            )
-
-    @staticmethod
-    def _format_token_count(value: Optional[int]) -> str:
-        return f"{value:,}" if value is not None else "未知"
-
-    @classmethod
-    def _format_session_status_text(cls, status: Dict[str, Any]) -> str:
-        context_window_tokens = status.get("context_window_tokens")
-        last_input_tokens = status.get("last_input_tokens")
-        if context_window_tokens and status.get("model_call_count"):
-            context_ratio = status.get("last_context_usage_ratio")
-            if context_ratio is None and last_input_tokens is not None:
-                context_ratio = last_input_tokens / context_window_tokens
-            context_usage_text = (
-                f"{cls._format_token_count(last_input_tokens)} / "
-                f"{cls._format_token_count(context_window_tokens)} "
-                f"({context_ratio * 100:.2f}%)"
-                if context_ratio is not None
-                else f"{cls._format_token_count(last_input_tokens)} / "
-                     f"{cls._format_token_count(context_window_tokens)}"
-            )
-        else:
-            context_usage_text = "暂无模型调用数据"
-
-        lines = [
-            f"会话ID: {status.get('session_id') or '未知'}",
-            f"执行状态: {'运行中' if status.get('is_processing') else '空闲'}",
-            f"当前模型: {status.get('model') or '未知'}",
-            f"上下文窗口: {cls._format_token_count(context_window_tokens)} tokens",
-            f"最近一次上下文占用: {context_usage_text}",
-            f"最近一次 tokens: 输入 {cls._format_token_count(status.get('last_input_tokens'))} / 输出 {cls._format_token_count(status.get('last_output_tokens'))} / 总计 {cls._format_token_count(status.get('last_total_tokens'))}",
-            f"当前会话累计 tokens: 输入 {cls._format_token_count(status.get('total_input_tokens'))} / 输出 {cls._format_token_count(status.get('total_output_tokens'))} / 总计 {cls._format_token_count(status.get('total_tokens'))}",
-            f"模型调用次数: {status.get('model_call_count', 0)}",
-            f"排队消息数: {status.get('pending_messages', 0)}",
-            f"最后更新: {status.get('last_updated_at') or '暂无'}",
-        ]
-        if status.get("cache_usage_available"):
-            last_cache_ratio = status.get("last_cache_hit_ratio")
-            total_cache_ratio = status.get("total_cache_hit_ratio")
-            lines.insert(
-                6,
-                "最近一次缓存: "
-                f"命中 {cls._format_token_count(status.get('last_cache_read_input_tokens'))} / "
-                f"写入 {cls._format_token_count(status.get('last_cache_write_input_tokens'))} / "
-                f"未命中 {cls._format_token_count(status.get('last_uncached_input_tokens'))}"
-                + (
-                    f" ({last_cache_ratio * 100:.2f}%)"
-                    if last_cache_ratio is not None
-                    else ""
-                ),
-            )
-            lines.insert(
-                8,
-                "当前会话累计缓存: "
-                f"命中 {cls._format_token_count(status.get('total_cache_read_input_tokens'))} / "
-                f"写入 {cls._format_token_count(status.get('total_cache_write_input_tokens'))} / "
-                f"未命中 {cls._format_token_count(status.get('total_uncached_input_tokens'))}"
-                + (
-                    f" ({total_cache_ratio * 100:.2f}%)"
-                    if total_cache_ratio is not None
-                    else ""
-                ),
-            )
-        return "\n".join(lines)
-
-    def remote_session_status(
-            self,
-            channel: MessageChannel,
-            userid: Union[str, int],
-            source: Optional[str] = None,
-    ):
-        """查询当前用户的智能体会话状态。"""
-        session_info = self._user_sessions.get(userid)
-        if not session_info:
-            self.post_message(
-                Notification(
-                    channel=channel,
-                    source=source,
-                    title="您当前没有活跃的智能体会话",
-                    userid=userid,
-                    save_history=False,
-                )
-            )
-            return
-
-        session_id, _ = session_info
-        status = agent_manager.get_session_status(session_id=session_id)
-        self.post_message(
-            Notification(
-                channel=channel,
-                source=source,
-                title="当前智能体会话状态",
-                text=self._format_session_status_text(status),
-                userid=userid,
-                save_history=False,
-            )
-        )
-
-    def _handle_ai_message(
-            self,
-            text: str,
-            channel: MessageChannel,
-            source: str,
-            userid: Union[str, int],
-            username: str,
-            original_message_id: Optional[Union[str, int]] = None,
-            original_chat_id: Optional[str] = None,
-            images: Optional[List[CommingMessage.MessageImage]] = None,
-            files: Optional[List[CommingMessage.MessageAttachment]] = None,
-            session_id: Optional[str] = None,
-            has_audio_input: bool = False,
-    ) -> bool:
-        """
-        处理AI智能体消息
-        """
-        try:
-            # 检查AI智能体是否启用
-            if not settings.AI_AGENT_ENABLE:
-                self.post_message(
-                    Notification(
-                        channel=channel,
-                        source=source,
-                        userid=userid,
-                        username=username,
-                        title="MoviePilot智能助手未启用，请在系统设置中启用",
-                        save_history=False,
-                    )
-                )
-                return False
-
-            images = CommingMessage.MessageImage.normalize_list(images)
-
-            # 提取用户消息
-            if self._has_ai_prefix(text):
-                # 前缀匹配不区分大小写，但保留原始正文避免改变用户输入内容。
-                user_message = text[len(self._ai_prefix):].strip()
-            else:
-                user_message = text.strip()  # 按原消息处理
-
-            if not user_message and not images and not files:
-                self.post_message(
-                    Notification(
-                        channel=channel,
-                        source=source,
-                        userid=userid,
-                        username=username,
-                        title="请输入您的问题或需求",
-                        save_history=False,
-                    )
-                )
-                return False
-
-            # 生成或复用会话ID
-            session_id = session_id or self._get_or_create_session_id(userid)
-            self._bind_session_id(userid, session_id)
-
-            # 将可直接输入给 LLM 的附件统一转换为 data URL
-            original_images = images
-            all_files = list(files or [])
-            if images and LLMHelper.supports_image_input(
-                    provider=settings.LLM_PROVIDER,
-                    model=settings.LLM_MODEL,
-            ):
-                images = self._download_attachments_to_data_urls(
-                    images, channel, source
-                )
-                if original_images and not images and not user_message and not files:
-                    self.post_message(
-                        Notification(
-                            channel=channel,
-                            source=source,
-                            userid=userid,
-                            username=username,
-                            title="附件读取失败，请稍后重试",
-                            save_history=False,
-                        )
-                    )
-                    return False
-            elif images:
-                image_attachments = self._build_image_attachments(images)
-                if (
-                        original_images
-                        and not image_attachments
-                        and not user_message
-                        and not files
-                ):
-                    self.post_message(
-                        Notification(
-                            channel=channel,
-                            source=source,
-                            userid=userid,
-                            username=username,
-                            title="附件读取失败，请稍后重试",
-                            save_history=False,
-                        )
-                    )
-                    return False
-                all_files.extend(image_attachments)
-                images = None
-
-            prepared_files = self._prepare_agent_files(
-                session_id=session_id,
-                files=all_files,
-                channel=channel,
-                source=source,
-            )
-            if all_files and not prepared_files and not user_message and not images:
-                self.post_message(
-                    Notification(
-                        channel=channel,
-                        source=source,
-                        userid=userid,
-                        username=username,
-                        title="文件读取失败，请稍后重试",
-                        save_history=False,
-                    )
-                )
-                return False
-
-            process_kwargs = {
-                "session_id": session_id,
-                "user_id": str(userid),
-                "message": user_message,
-                "images": images,
-                "files": prepared_files,
-                "channel": channel.value if channel else None,
-                "source": source,
-                "username": username,
-                "original_message_id": str(original_message_id)
-                if original_message_id
-                else None,
-                "original_chat_id": original_chat_id,
-            }
-            if has_audio_input:
-                process_kwargs["has_audio_input"] = True
-            # 在事件循环中处理
-            asyncio.run_coroutine_threadsafe(
-                agent_manager.process_message(**process_kwargs),
-                global_vars.loop,
-            )
-            return True
-
-        except Exception as e:
-            logger.error(f"处理AI智能体消息失败: {e}")
-            self.messagehelper.put(
-                f"AI智能体处理失败: {str(e)}", role="system", title="MoviePilot助手"
-            )
-            return False
-
-    def _transcribe_audio_refs(
-            self, audio_refs: List[str], channel: MessageChannel, source: str
-    ) -> Optional[str]:
-        """
-        下载并识别语音消息，仅处理当前已接入的渠道。
-        """
-        if not audio_refs:
-            return None
-        if not AgentCapabilityManager.is_audio_input_available():
-            logger.warning("音频输入能力未配置或未启用，跳过语音识别")
-            return None
-
-        transcripts = []
-        for audio_ref in audio_refs:
-            try:
-                if audio_ref.startswith("tg://voice_file_id/"):
-                    file_id = audio_ref.replace("tg://voice_file_id/", "", 1)
-                    content = self.run_module(
-                        "download_telegram_file_bytes", file_id=file_id, source=source
-                    )
-                    filename = "input.ogg"
-                elif audio_ref.startswith("tg://audio_file_id/"):
-                    file_id = audio_ref.replace("tg://audio_file_id/", "", 1)
-                    content = self.run_module(
-                        "download_telegram_file_bytes", file_id=file_id, source=source
-                    )
-                    filename = "input.mp3"
-                elif audio_ref.startswith("wxwork://voice_media_id/"):
-                    content = self.run_module(
-                        "download_wechat_media_bytes",
-                        media_ref=audio_ref,
-                        source=source,
-                    )
-                    filename = "input.amr"
-                elif audio_ref.startswith("wxclaw://voice/"):
-                    content = self.run_module(
-                        "download_wechat_media_bytes",
-                        media_ref=audio_ref,
-                        source=source,
-                    )
-                    filename = self._guess_audio_filename(
-                        audio_ref, default="input.amr"
-                    )
-                elif audio_ref.startswith("qq://file/"):
-                    content = self.run_module(
-                        "download_qq_file_bytes", file_ref=audio_ref, source=source
-                    )
-                    filename = self._guess_audio_filename(
-                        audio_ref, default="input.ogg"
-                    )
-                elif audio_ref.startswith("wxbot://voice"):
-                    continue
-                elif audio_ref.startswith("http"):
-                    resp = RequestUtils(timeout=30).get_res(audio_ref)
-                    content = resp.content if resp and resp.content else None
-                    filename = self._guess_audio_filename(
-                        audio_ref, default="input.ogg"
-                    )
-                else:
-                    logger.debug(
-                        "暂不支持的语音引用: channel=%s, source=%s, ref=%s",
-                        channel.value if channel else None,
-                        source,
-                        audio_ref,
-                    )
-                    continue
-
-                if not content:
-                    logger.warning(
-                        "语音下载失败，跳过识别: channel=%s, source=%s, ref=%s",
-                        channel.value if channel else None,
-                        source,
-                        audio_ref,
-                    )
-                    continue
-
-                transcript = AgentCapabilityManager.transcribe_audio(
-                    content=content, filename=filename
-                )
-                if transcript:
-                    transcripts.append(transcript)
-                    logger.info(
-                        "语音识别成功: channel=%s, source=%s, ref=%s, text_len=%s",
-                        channel.value if channel else None,
-                        source,
-                        audio_ref,
-                        len(transcript),
-                    )
-            except Exception as err:
-                logger.error(f"语音识别失败: {err}")
-
-        return "\n".join(transcripts).strip() if transcripts else None
-
-    @staticmethod
-    def _guess_audio_filename(audio_ref: str, default: str = "input.ogg") -> str:
-        """
-        根据引用中的扩展名推测音频文件名，便于 STT 服务识别格式。
-        """
-        if not audio_ref:
-            return default
-        raw_ref = unquote(audio_ref).split("?", 1)[0].split("#", 1)[0]
-        match = re.search(
-            r"([^/]+\.(mp3|m4a|wav|ogg|oga|opus|aac|amr|flac|mpga|mpeg|webm))$",
-            raw_ref,
-            flags=re.IGNORECASE,
-        )
-        if match:
-            return match.group(1)
-        return default
-
-    def _download_attachments_to_data_urls(
-            self,
-            attachments: List[CommingMessage.MessageImage],
-            channel: MessageChannel,
-            source: str,
-    ) -> Optional[List[str]]:
-        """
-        下载可直接提供给 LLM 的附件内容，并统一转换为 data URL。
-        """
-        normalized_attachments = CommingMessage.MessageImage.normalize_list(attachments) or []
-        if not normalized_attachments:
-            return None
-        data_urls = []
-        for attachment in normalized_attachments:
-            attachment_ref = attachment.ref
-            try:
-                before_count = len(data_urls)
-                if attachment_ref.startswith("data:"):
-                    data_urls.append(attachment_ref)
-                elif attachment_ref.startswith("tg://file_id/"):
-                    file_id = attachment_ref.replace("tg://file_id/", "")
-                    base64_data = self.run_module(
-                        "download_telegram_file_to_base64",
-                        file_id=file_id,
-                        source=source,
-                    )
-                    if base64_data:
-                        data_urls.append(f"data:image/jpeg;base64,{base64_data}")
-                elif attachment_ref.startswith(
-                        "wxwork://media_id/"
-                ) or attachment_ref.startswith(
-                    "wxbot://image/"
-                ) or attachment_ref.startswith(
-                    "wxclaw://image/"
-                ):
-                    data_url = self.run_module(
-                        "download_wechat_image_to_data_url",
-                        image_ref=attachment_ref,
-                        source=source,
-                    )
-                    if data_url:
-                        data_urls.append(data_url)
-                elif attachment_ref.startswith("http"):
-                    resp = RequestUtils(timeout=30).get_res(attachment_ref)
-                    if resp and resp.content:
-                        base64_data = base64.b64encode(resp.content).decode()
-                        mime_type = resp.headers.get("Content-Type", "image/jpeg")
-                        data_urls.append(f"data:{mime_type};base64,{base64_data}")
-                else:
-                    logger.debug(
-                        "暂不支持直接转换为 data URL 的附件引用: channel=%s, source=%s, ref=%s",
-                        channel.value if channel else None,
-                        source,
-                        attachment_ref,
-                    )
-                    continue
-
-                if len(data_urls) > before_count:
-                    logger.info(
-                        "附件读取成功并已转换为 data URL: channel=%s, source=%s, ref=%s, mime_type=%s",
-                        channel.value if channel else None,
-                        source,
-                        attachment_ref,
-                        attachment.mime_type,
-                    )
-            except Exception as err:
-                logger.error(
-                    "附件读取失败，无法转换为 data URL: channel=%s, source=%s, ref=%s, error=%s",
-                    channel.value if channel else None,
-                    source,
-                    attachment_ref,
-                    err,
-                )
-        return data_urls if data_urls else None
-
-    def _build_image_attachments(
-            self, images: List[CommingMessage.MessageImage]
-    ) -> List[CommingMessage.MessageAttachment]:
-        """
-        将图片引用转换为附件描述，以便按文件方式交给 Agent 处理。
-        """
-        images = CommingMessage.MessageImage.normalize_list(images)
-        if not images:
-            return []
-
-        attachments = []
-        for index, image in enumerate(images, start=1):
-            image_ref = image.ref
-            if not image_ref:
-                continue
-            name = image.name or self._guess_image_attachment_name(image_ref, index)
-            mime_type = image.mime_type or self._guess_image_mime_type(image_ref, name)
-            attachments.append(
-                CommingMessage.MessageAttachment(
-                    ref=image_ref,
-                    name=name,
-                    mime_type=mime_type,
-                    size=image.size,
-                )
-            )
-        return attachments
-
-    def _prepare_agent_files(
-            self,
-            session_id: str,
-            files: Optional[List[CommingMessage.MessageAttachment]],
-            channel: MessageChannel,
-            source: str,
-    ) -> Optional[List[dict]]:
-        """
-        下载用户上传的附件，落盘到临时目录，并生成 Agent 可消费的文件描述。
-        """
-        if not files:
-            return None
-
-        prepared_files = []
-        for attachment in files:
-            payload = {
-                "name": attachment.name,
-                "mime_type": attachment.mime_type,
-                "size": attachment.size,
-                "ref": attachment.ref,
-                "status": "download_failed",
-            }
-            try:
-                content = self._download_message_file_bytes(
-                    file_ref=attachment.ref,
-                    channel=channel,
-                    source=source,
-                )
-                if not content:
-                    prepared_files.append(payload)
-                    continue
-
-                local_path = self._save_agent_attachment(
-                    session_id=session_id,
-                    filename=attachment.name,
-                    content=content,
-                    mime_type=attachment.mime_type,
-                )
-                payload.update(
-                    {
-                        "local_path": str(local_path),
-                        "status": "ready",
-                    }
-                )
-            except Exception as err:
-                logger.error(f"准备附件上下文失败: {attachment.ref}, error: {err}")
-                payload["error"] = str(err)
-            prepared_files.append(payload)
-
-        return prepared_files or None
-
-    def _download_message_file_bytes(
-            self, file_ref: str, channel: MessageChannel, source: str
-    ) -> Optional[bytes]:
-        """
-        下载消息附件的原始字节内容。
-        """
-        if not file_ref:
-            return None
-        if file_ref.startswith("data:"):
-            return self._decode_data_url_bytes(file_ref)
-        if file_ref.startswith("tg://file_id/"):
-            file_id = file_ref.replace("tg://file_id/", "", 1)
-            return self.run_module(
-                "download_telegram_file_bytes", file_id=file_id, source=source
-            )
-        if file_ref.startswith("tg://document_file_id/"):
-            file_id = file_ref.replace("tg://document_file_id/", "", 1)
-            return self.run_module(
-                "download_telegram_file_bytes", file_id=file_id, source=source
-            )
-        if file_ref.startswith("wxwork://media_id/"):
-            return self.run_module(
-                "download_wechat_media_bytes", media_ref=file_ref, source=source
-            )
-        if file_ref.startswith("wxwork://file_media_id/"):
-            return self.run_module(
-                "download_wechat_media_bytes", media_ref=file_ref, source=source
-            )
-        if file_ref.startswith("wxbot://image/"):
-            data_url = self.run_module(
-                "download_wechat_image_to_data_url", image_ref=file_ref, source=source
-            )
-            return self._decode_data_url_bytes(data_url) if data_url else None
-        if file_ref.startswith("wxclaw://image/"):
-            data_url = self.run_module(
-                "download_wechat_image_to_data_url", image_ref=file_ref, source=source
-            )
-            return self._decode_data_url_bytes(data_url) if data_url else None
-        if file_ref.startswith("wxbot://file/"):
-            file_url = unquote(file_ref.replace("wxbot://file/", "", 1))
-            resp = RequestUtils(timeout=30).get_res(file_url)
-            return resp.content if resp and resp.content else None
-        if file_ref.startswith("wxclaw://file/") or file_ref.startswith("wxclaw://voice/"):
-            return self.run_module(
-                "download_wechat_media_bytes", media_ref=file_ref, source=source
-            )
-        if file_ref.startswith("feishu://file/"):
-            return self.run_module(
-                "download_feishu_file_bytes", file_ref=file_ref, source=source
-            )
-        if file_ref.startswith("slack://file/"):
-            return self.run_module(
-                "download_slack_file_bytes", file_ref=file_ref, source=source
-            )
-        if file_ref.startswith("http"):
-            resp = RequestUtils(timeout=30).get_res(file_ref)
-            return resp.content if resp and resp.content else None
-        logger.debug(
-            "暂不支持的附件引用: channel=%s, source=%s, ref=%s",
-            channel.value if channel else None,
-            source,
-            file_ref,
-        )
-        return None
-
-    def _save_agent_attachment(
-            self,
-            session_id: str,
-            filename: Optional[str],
-            content: bytes,
-            mime_type: Optional[str] = None,
-    ) -> Path:
-        """
-        将用户上传文件写入临时目录，并返回本地路径。
-        """
-        safe_name = self._sanitize_attachment_name(filename, mime_type)
-        base_dir = settings.TEMP_PATH / "agent_uploads" / session_id
-        base_dir.mkdir(parents=True, exist_ok=True)
-
-        file_id = uuid.uuid4().hex[:8]
-        local_path = base_dir / f"{file_id}_{safe_name}"
-        local_path.write_bytes(content or b"")
-        return local_path
-
-    @staticmethod
-    def _sanitize_attachment_name(
-            filename: Optional[str], mime_type: Optional[str] = None
-    ) -> str:
-        """
-        规范化附件文件名，避免路径穿越和非法字符。
-        """
-        name = Path(filename or "attachment").name
-        name = re.sub(r"[^\w.\-]+", "_", name, flags=re.ASCII).strip("._")
-        if not name:
-            name = "attachment"
-        if "." not in name:
-            mime = (mime_type or "").split(";", 1)[0].strip().lower()
-            default_ext = {
-                "image/jpeg": ".jpg",
-                "image/png": ".png",
-                "image/gif": ".gif",
-                "image/webp": ".webp",
-                "image/bmp": ".bmp",
-                "application/json": ".json",
-                "text/plain": ".txt",
-                "text/markdown": ".md",
-                "text/csv": ".csv",
-            }.get(mime)
-            if default_ext:
-                name = f"{name}{default_ext}"
-        return name
-
-    @staticmethod
-    def _guess_image_attachment_name(image_ref: str, index: int) -> str:
-        """
-        根据图片引用推测附件名。
-        """
-        if not image_ref:
-            return f"image_{index}.jpg"
-        if image_ref.startswith("data:"):
-            mime_part = image_ref[5:].split(";", 1)[0].strip().lower()
-            ext = mimetypes.guess_extension(mime_part) or ".jpg"
-            return f"image_{index}{ext}"
-
-        parsed = urlparse(unquote(image_ref))
-        name = Path(parsed.path).name if parsed.path else ""
-        if name and "." in name:
-            return name
-        return f"image_{index}.jpg"
-
-    @staticmethod
-    def _guess_image_mime_type(image_ref: str, filename: Optional[str]) -> str:
-        """
-        根据图片引用或文件名推测 MIME 类型。
-        """
-        if image_ref and image_ref.startswith("data:"):
-            mime = image_ref[5:].split(";", 1)[0].strip().lower()
-            return mime or "image/jpeg"
-        guessed, _ = mimetypes.guess_type(filename or "")
-        if guessed and guessed.startswith("image/"):
-            return guessed
-        return "image/jpeg"
-
-    @staticmethod
-    def _decode_data_url_bytes(data_url: Optional[str]) -> Optional[bytes]:
-        """
-        将 data URL 解码为原始字节。
-        """
-        if not data_url or not data_url.startswith("data:"):
-            return None
-        try:
-            _, payload = data_url.split(",", 1)
-        except ValueError:
-            return None
-        try:
-            return base64.b64decode(payload)
-        except Exception as e:
-            logger.error(e)
-            return None
 
 
 class MediaInteractionChain(ChainBase):
@@ -3421,11 +2185,7 @@ class MediaInteractionChain(ChainBase):
             return True
 
         if dir_info.media_type:
-            media_type_values = (
-                {media_info.type.value, media_info.type.to_agent()}
-                if isinstance(media_info.type, MediaType)
-                else {str(media_info.type)}
-            )
+            media_type_values = {media_info.type.value} if isinstance(media_info.type, MediaType) else {str(media_info.type)}
             if dir_info.media_type not in media_type_values:
                 return False
 

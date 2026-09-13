@@ -177,17 +177,11 @@ def test_locale_helper_translates_dynamic_message_patterns():
         "无法连接 api.themoviedb.org，错误码：403",
         locale="en-US",
     ) == "Unable to connect to api.themoviedb.org, error code: 403"
-    assert LocaleHelper.translate_text(
-        "飞书 工作 未就绪",
-        locale="zh-TW",
-    ) == "飛書 工作 尚未就緒"
 
 
 def test_locale_helper_translates_common_backend_response_messages():
     """常见后端链路消息应能生成英文展示文本。"""
     samples = {
-        "QQ Bot 默认 未就绪": "QQ Bot 默认 is not ready",
-        "微信 ClawBot 工作 未就绪：未登录": "WeChat ClawBot 工作 is not ready: 未登录",
         "无法打开网站！": "Unable to open the site!",
         "错误：403 Forbidden": "Error: 403 Forbidden",
         "站点【https://example.com】不存在": "Site [https://example.com] does not exist",
@@ -200,18 +194,12 @@ def test_locale_helper_translates_common_backend_response_messages():
         "文件 /tmp/a.mkv 不存在": "File /tmp/a.mkv does not exist",
         "添加种子任务失败：种子无效": "Failed to add torrent task: 种子无效",
         "检查授权状态失败: timeout": "Failed to check authorization status: timeout",
-        "未找到名为 工作 的微信 ClawBot 通知配置": (
-            "No WeChat ClawBot notification configuration named 工作 was found"
-        ),
         "整理记录不存在: 1, 2": "Organization record does not exist: 1, 2",
         "插件要求 MoviePilot 版本 >=2.14.0，当前版本 2.13.0 不满足，已拒绝安装": (
             "The plugin requires MoviePilot version >=2.14.0, but current version 2.13.0 "
             "does not satisfy it. Installation was rejected"
         ),
         "已安排一次性 release 升级并重启": "Scheduled one-shot release upgrade and restart",
-        "已将微信 ClawBot 登录缓存从 old 迁移到 new": (
-            "Migrated WeChat ClawBot login cache from old to new"
-        ),
         "搜索完成，共 3 个资源": "Search completed, 3 resources",
         "正在搜索关键字，已完成 1 / 6 个请求 ...": (
             "Searching 关键字, completed 1/6 requests ..."

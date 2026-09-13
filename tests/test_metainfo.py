@@ -414,6 +414,45 @@ def test_anime_parser_ignores_empty_and_invalid_season_values():
     assert invalid_meta.begin_season is None
 
 
+def test_versioned_anime_episode_formats_keep_episode_identity():
+    """动漫发布修订号不得污染片名、季号或集号。"""
+    cases = [
+        ("[绿茶字幕组] 无职转生 第三季 [01v2][1080p]", 3, 1, None),
+        ("[绿茶字幕组] 无职转生 第三季 - 02 v3 [1080p]", 3, 2, None),
+        ("[绿茶字幕组] 无职转生 第三季 S03E01 [V3] 1080p", 3, 1, None),
+        ("[绿茶字幕组] 无职转生 第三季 [01-02v2] 1080p", 3, 1, 2),
+    ]
+
+    for title, season, begin_episode, end_episode in cases:
+        meta = MetaInfo(title)
+
+        assert isinstance(meta, MetaAnime)
+        assert meta.name == "无职转生"
+        assert meta.type == MediaType.TV
+        assert meta.begin_season == season
+        assert meta.begin_episode == begin_episode
+        assert meta.end_episode == end_episode
+
+
+def test_versioned_anime_episode_file_uses_parent_title():
+    """只有版本化集号的文件名仍应识别集数，并从父目录补片名。"""
+    meta = MetaInfoPath(Path("/downloads/无职转生 第三季/01.v3.mkv"))
+
+    assert isinstance(meta, MetaAnime)
+    assert meta.name == "无职转生"
+    assert meta.begin_season == 3
+    assert meta.begin_episode == 1
+
+
+def test_v2_in_movie_title_does_not_trigger_anime_parser():
+    """片名自身的 V2 不应被视为动漫发布修订号。"""
+    meta = MetaInfo("V2. Escape from Hell 2021 1080p WEB-DL")
+
+    assert not isinstance(meta, MetaAnime)
+    assert meta.name == "V2 Escape From Hell"
+    assert meta.year == "2021"
+
+
 def test_hdr_vivid_effect_extracted_for_video_title():
     """测试合并写法 HDRVivid 可识别为资源效果。"""
     with patch("app.core.metainfo.rust_accel.parse_metainfo", return_value=None):

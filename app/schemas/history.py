@@ -1,6 +1,6 @@
 from typing import Optional, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 
 class DownloadHistory(BaseModel):
@@ -125,5 +125,3 @@ class TransferHistory(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class BatchTransferHistoryRedoRequest(BaseModel):
-    history_ids: list[int] = Field(default_factory=list)

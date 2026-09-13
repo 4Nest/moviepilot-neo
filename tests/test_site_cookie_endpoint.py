@@ -1,5 +1,7 @@
+import asyncio
+
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from app import schemas
 from app.api.endpoints import site as site_endpoint
@@ -62,3 +64,87 @@ def test_update_cookie_legacy_get_keeps_query_params():
         password="password",
         two_step_code=None,
     )
+
+
+def test_add_site_to_cookiecloud_blacklist_appends_normalized_domain():
+    fake_site = SimpleNamespace(id=1, url="https://tracker.example.com/path")
+
+    with (
+        patch.object(
+            site_endpoint.Site,
+            "async_get",
+            new=AsyncMock(return_value=fake_site),
+        ),
+        patch.object(
+            site_endpoint.settings,
+            "COOKIECLOUD_BLACKLIST",
+            "other.example.org",
+        ),
+        patch.object(
+            type(site_endpoint.settings),
+            "update_setting",
+            return_value=(True, ""),
+        ) as update_setting,
+        patch.object(
+            site_endpoint.eventmanager,
+            "async_send_event",
+            new=AsyncMock(),
+        ) as send_event,
+    ):
+        response = asyncio.run(
+            site_endpoint.add_site_to_cookiecloud_blacklist(
+                site_id=1,
+                db=Mock(),
+                _=Mock(),
+            )
+        )
+
+    assert response.success is True
+    assert response.data == {
+        "added": True,
+        "domain": "example.com",
+        "value": "other.example.org,example.com",
+    }
+    update_setting.assert_called_once_with(
+        "COOKIECLOUD_BLACKLIST", "other.example.org,example.com"
+    )
+    send_event.assert_awaited_once()
+
+
+def test_add_site_to_cookiecloud_blacklist_is_idempotent():
+    fake_site = SimpleNamespace(id=1, url="https://tracker.example.com/")
+
+    with (
+        patch.object(
+            site_endpoint.Site,
+            "async_get",
+            new=AsyncMock(return_value=fake_site),
+        ),
+        patch.object(
+            site_endpoint.settings,
+            "COOKIECLOUD_BLACKLIST",
+            "other.example.org,EXAMPLE.COM",
+        ),
+        patch.object(type(site_endpoint.settings), "update_setting") as update_setting,
+        patch.object(
+            site_endpoint.eventmanager,
+            "async_send_event",
+            new=AsyncMock(),
+        ) as send_event,
+    ):
+        response = asyncio.run(
+            site_endpoint.add_site_to_cookiecloud_blacklist(
+                site_id=1,
+                db=Mock(),
+                _=Mock(),
+            )
+        )
+
+    assert response.success is True
+    assert response.data == {
+        "added": False,
+        "domain": "example.com",
+        "value": "other.example.org,EXAMPLE.COM",
+    }
+    update_setting.assert_not_called()
+    send_event.assert_not_awaited()

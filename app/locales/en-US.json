@@ -4,9 +4,6 @@
       "BangumiModule": {
         "name": "Bangumi"
       },
-      "DiscordModule": {
-        "name": "Discord"
-      },
       "DoubanModule": {
         "name": "Douban"
       },
@@ -15,9 +12,6 @@
       },
       "FanartModule": {
         "name": "Fanart"
-      },
-      "FeishuModule": {
-        "name": "Feishu"
       },
       "FileManagerModule": {
         "name": "File Organization"
@@ -40,23 +34,14 @@
       "QbittorrentModule": {
         "name": "qBittorrent"
       },
-      "QQBotModule": {
-        "name": "QQ"
-      },
       "RedisModule": {
         "name": "Redis Cache"
       },
       "RtorrentModule": {
         "name": "rTorrent"
       },
-      "SlackModule": {
-        "name": "Slack"
-      },
       "SubtitleModule": {
         "name": "Site Subtitle"
-      },
-      "SynologyChatModule": {
-        "name": "Synology Chat"
       },
       "TelegramModule": {
         "name": "Telegram"
@@ -76,17 +61,8 @@
       "UgreenModule": {
         "name": "UGREEN"
       },
-      "VoceChatModule": {
-        "name": "VoceChat"
-      },
-      "WebPushModule": {
-        "name": "WebPush"
-      },
       "WechatModule": {
         "name": "WeCom"
-      },
-      "WechatClawBotModule": {
-        "name": "WeChat ClawBot"
       },
       "ZSpaceModule": {
         "name": "Zspace"
@@ -126,8 +102,6 @@
     "刮削路径不存在": "Scraping path does not exist",
     "保存成功": "Saved successfully",
     "保存失败": "Failed to save",
-    "保存MCP配置成功": "MCP configuration saved successfully",
-    "保存MCP配置失败": "Failed to save MCP configuration",
     "参数错误": "Invalid parameters",
     "未配置媒体服务器": "Media server is not configured",
     "未找到播放地址": "Playback URL not found",
@@ -273,7 +247,6 @@
     "字幕站点信息不存在": "Subtitle site information does not exist",
     "附件不存在或已过期": "Attachment does not exist or has expired",
     "附件超过 32MB，无法发送给智能助手": "The attachment exceeds 32MB and cannot be sent to the assistant",
-    "附件保存失败": "Failed to save attachment",
     "认证票据无效或已过期": "Authentication ticket is invalid or has expired",
     "用户不存在或已禁用": "The user does not exist or has been disabled",
     "用户权限不足": "Insufficient user permissions",
@@ -286,7 +259,6 @@
     "智能助手未启用，请先在系统设置中开启。": "The assistant is not enabled. Enable it in system settings first.",
     "语音识别失败，请稍后重试。": "Speech recognition failed. Please try again later.",
     "请输入要发送给智能助手的内容或选择附件。": "Enter content to send to the assistant or choose an attachment.",
-    "微信 ClawBot 通知未启用或配置尚未保存，请先保存并启用当前渠道": "WeChat ClawBot notification is not enabled or the configuration has not been saved. Please save and enable this channel first",
     "请输入至少一个有效的站点 ID": "Enter at least one valid site ID",
     "所有订阅搜索完成": "All subscription searches are complete",
     "请输入订阅 ID，多个 ID 用空格分隔，或输入 all": "Enter subscription IDs separated by spaces, or enter all",
@@ -341,7 +313,6 @@
     "未登录，请先扫码完成绑定": "Not logged in. Scan the QR code to complete binding first",
     "旧名称或新名称不能为空": "Old name and new name cannot be empty",
     "通知名称未变化，无需迁移登录缓存": "Notification name has not changed. No login cache migration is needed",
-    "未找到可迁移的微信 ClawBot 登录缓存": "No WeChat ClawBot login cache available for migration was found",
     "新名称下已存在登录缓存，跳过迁移": "Login cache already exists under the new name. Migration skipped",
     "[系统]": "[System]",
     "工作流": "Workflow",
@@ -410,10 +381,6 @@
     {
       "source": "获取工具Schema失败: {reason}",
       "target": "Failed to get tool schema: {reason}"
-    },
-    {
-      "source": "测试MCP服务器失败: {reason}",
-      "target": "Failed to test MCP server: {reason}"
     },
     {
       "source": "插件 {plugin} 不存在或未安装",
@@ -496,36 +463,8 @@
       "target": "Telegram {name} is not ready"
     },
     {
-      "source": "飞书 {name} 未就绪",
-      "target": "Feishu {name} is not ready"
-    },
-    {
-      "source": "Discord {name} Bot 未就绪",
-      "target": "Discord {name} Bot is not ready"
-    },
-    {
-      "source": "Slack {name} 未就绪",
-      "target": "Slack {name} is not ready"
-    },
-    {
-      "source": "QQ Bot {name} 未就绪",
-      "target": "QQ Bot {name} is not ready"
-    },
-    {
-      "source": "VoceChat {name} 未就绪",
-      "target": "VoceChat {name} is not ready"
-    },
-    {
       "source": "企业微信 {name} 未就绪",
       "target": "WeCom {name} is not ready"
-    },
-    {
-      "source": "微信 ClawBot {name} 未就绪：{reason}",
-      "target": "WeChat ClawBot {name} is not ready: {reason}"
-    },
-    {
-      "source": "Synology Chat {name} 未就绪",
-      "target": "Synology Chat {name} is not ready"
     },
     {
       "source": "无法连接Bangumi，错误码：{code}",
@@ -892,10 +831,6 @@
       "target": "Organization record does not exist: {ids}"
     },
     {
-      "source": "未找到名为 {name} 的微信 ClawBot 通知配置",
-      "target": "No WeChat ClawBot notification configuration named {name} was found"
-    },
-    {
       "source": "下载字幕文件失败：{reason}",
       "target": "Failed to download subtitle file: {reason}"
     },
@@ -1090,10 +1025,6 @@
     {
       "source": "下载任务添加成功，但获取rTorrent任务信息失败：{reason}",
       "target": "Download task was added, but failed to get rTorrent task information: {reason}"
-    },
-    {
-      "source": "已将微信 ClawBot 登录缓存从 {old_name} 迁移到 {new_name}",
-      "target": "Migrated WeChat ClawBot login cache from {old_name} to {new_name}"
     },
     {
       "source": "数据表 {name} 跳过清理",

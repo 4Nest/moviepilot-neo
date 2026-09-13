@@ -29,7 +29,6 @@ from app.db.systemconfig_oper import SystemConfigOper
 from app.command import CommandChain
 from app.schemas import Notification, NotificationType
 from app.schemas.types import SystemConfigKey
-from app.startup.agent_initializer import init_agent, stop_agent
 
 
 def start_frontend():
@@ -140,7 +139,6 @@ async def stop_modules():
         except Exception as err:
             logger.error(f"关闭{name}失败：{err}")
 
-    await run_step("AI智能体", stop_agent)
     await run_step("模块", lambda: ModuleManager().stop())
     await run_step("事件消费", lambda: EventManager().stop())
     await run_step("虚拟显示", lambda: DisplayHelper().stop())
@@ -177,8 +175,6 @@ def init_modules():
     MoviePilotServerHelper.init_subscribe_report()
     MoviePilotServerHelper.get_user_uuid()
     MoviePilotServerHelper.get_github_user()
-    # 初始化AI智能体
-    init_agent()
     # 启动前端服务
     start_frontend()
     # 检查认证状态

@@ -278,95 +278,10 @@ class NotificationSwitch(BaseModel):
     mtype: Optional[str] = None
     # 微信开关
     wechat: Optional[bool] = False
-    # 飞书开关
-    feishu: Optional[bool] = False
     # TG开关
     telegram: Optional[bool] = False
-    # Slack开关
-    slack: Optional[bool] = False
-    # SynologyChat开关
-    synologychat: Optional[bool] = False
-    # VoceChat开关
-    vocechat: Optional[bool] = False
-    # WebPush开关
-    webpush: Optional[bool] = False
-    # QQ开关
-    qq: Optional[bool] = False
 
 
-class Subscription(BaseModel):
-    """
-    客户端消息订阅
-    """
-
-    endpoint: Optional[str] = None
-    keys: Optional[dict] = Field(default_factory=dict)
-
-
-class SubscriptionMessage(BaseModel):
-    """
-    客户端订阅消息体
-    """
-
-    title: Optional[str] = None
-    body: Optional[str] = None
-    icon: Optional[str] = None
-    url: Optional[str] = None
-    data: Optional[dict] = Field(default_factory=dict)
-
-
-class AgentWebChatRequest(BaseModel):
-    """
-    Web 智能助手对话请求。
-    """
-
-    class AgentWebChatFile(BaseModel):
-        """
-        Web 智能助手输入附件。
-        """
-
-        ref: str = Field(..., min_length=1)
-        name: Optional[str] = Field(None)
-        mime_type: Optional[str] = Field(None)
-        size: Optional[int] = Field(None)
-        local_path: Optional[str] = Field(None)
-        status: Optional[str] = Field(None)
-
-    # 用户本轮输入
-    text: str = Field(default="")
-    # 展示历史中记录的用户可读文本；为空时使用 text
-    display_text: Optional[str] = Field(None)
-    # 前端会话标识，相同标识复用同一段 Agent 记忆
-    session_id: Optional[str] = Field(None)
-    # 图片 URL 或 data URL 列表
-    images: Optional[List[str]] = Field(default_factory=list)
-    # 语音/音频引用列表
-    audio_refs: Optional[List[str]] = Field(default_factory=list)
-    # 文件附件列表
-    files: Optional[List[AgentWebChatFile]] = Field(default_factory=list)
-    # 用户通过按钮选择时的完整选择快照
-    choice_selection: Optional[Dict[str, Any]] = Field(default=None)
-    # WebAgent 按钮回调关联的原消息 ID，用于传统交互原地编辑卡片
-    original_message_id: Optional[Union[str, int]] = Field(default=None)
-    # WebAgent 按钮回调关联的原聊天 ID，用于传统交互原地编辑卡片
-    original_chat_id: Optional[Union[str, int]] = Field(default=None)
-    # 是否在展示历史中记录本轮用户消息
-    echo_user: bool = Field(default=True)
-
-
-class AgentWebChoiceRequest(BaseModel):
-    """
-    Web 智能助手按钮选择请求。
-    """
-
-    # 前端会话标识，用于保持与原对话窗口的关联
-    session_id: Optional[str] = Field(None)
-    # Agent 工具生成的按钮回调数据
-    callback_data: str = Field(..., min_length=1)
-    # WebAgent 原助手消息 ID，用于传统按钮回调原地编辑
-    original_message_id: Optional[Union[str, int]] = Field(default=None)
-    # WebAgent 原聊天 ID，用于传统按钮回调原地编辑
-    original_chat_id: Optional[Union[str, int]] = Field(default=None)
 
 
 class ChannelCapability(Enum):
@@ -463,21 +378,6 @@ class ChannelCapabilityManager:
                 ChannelCapability.LINKS,
             },
             fallback_enabled=True,
-        ),
-        MessageChannel.WebAgent: ChannelCapabilities(
-            channel=MessageChannel.WebAgent,
-            capabilities={
-                ChannelCapability.INLINE_BUTTONS,
-                ChannelCapability.CALLBACK_QUERIES,
-                ChannelCapability.MESSAGE_EDITING,
-                ChannelCapability.MARKDOWN,
-                ChannelCapability.RICH_TEXT,
-                ChannelCapability.IMAGES,
-                ChannelCapability.LINKS,
-                ChannelCapability.AUDIO_OUTPUT,
-                ChannelCapability.FILE_SENDING,
-            },
-            fallback_enabled=False,
         ),
     }
 

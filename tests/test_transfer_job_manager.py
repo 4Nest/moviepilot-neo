@@ -692,11 +692,7 @@ class TransferJobManagerTest(unittest.TestCase):
             return_value=transfer_history_oper,
         ), patch(
             "app.chain.transfer.MediaChain"
-        ) as media_chain_cls, patch(
-            "app.chain.transfer.settings.AI_AGENT_ENABLE", False
-        ), patch(
-            "app.chain.transfer.settings.AI_AGENT_RETRY_TRANSFER", False
-        ):
+        ) as media_chain_cls:
             media_chain_cls.return_value.recognize_by_meta.return_value = None
             state, errmsg = chain._TransferChain__handle_transfer(task)
 

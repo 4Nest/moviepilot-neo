@@ -1,15 +1,12 @@
-import json
 import time
 from typing import Union, Any, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
-from pywebpush import WebPushException, webpush
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import PlainTextResponse
 
 from app import schemas
 from app.chain.message import MessageChain
-from app.core.config import settings, global_vars
 from app.core.security import verify_token, verify_apitoken
 from app.db import get_async_db
 from app.db.models import User
@@ -17,7 +14,6 @@ from app.db.message_oper import MessageOper
 from app.db.systemconfig_oper import SystemConfigOper
 from app.db.user_oper import get_current_active_superuser
 from app.helper.service import ServiceConfigHelper
-from app.helper.webpush import is_webpush_subscription_gone, webpush_options_for_endpoint
 from app.log import logger
 from app.modules.wechat.WXBizMsgCrypt3 import WXBizMsgCrypt
 from app.schemas.types import MessageChannel, SystemConfigKey
@@ -253,11 +249,6 @@ def wechat_verify(
         return str(err)
 
 
-def vocechat_verify() -> Any:
-    """
-    VoceChat验证响应
-    """
-    return {"status": "OK"}
 
 
 @router.get("/", summary="回调请求验证")
@@ -270,57 +261,11 @@ def incoming_verify(
     source: Optional[str] = None,
     _: schemas.TokenPayload = Depends(verify_apitoken),
 ) -> Any:
-    """
-    微信/VoceChat等验证响应
-    """
+    微信验证响应
     logger.info(
         f"收到验证请求: token={token}, echostr={echostr}, "
         f"msg_signature={msg_signature}, timestamp={timestamp}, nonce={nonce}"
     )
     if echostr and msg_signature and timestamp and nonce:
         return wechat_verify(echostr, msg_signature, timestamp, nonce, source)
-    return vocechat_verify()
-
-
-@router.post(
-    "/webpush/subscribe",
-    summary="客户端webpush通知订阅",
-    response_model=schemas.Response,
-)
-async def subscribe(
-    subscription: schemas.Subscription, _: schemas.TokenPayload = Depends(verify_token)
-):
-    """
-    客户端webpush通知订阅
-    """
-    subinfo = subscription.model_dump()
-    global_vars.push_subscription(subinfo)
-    logger.debug(f"通知订阅成功: {subinfo}")
-    return schemas.Response(success=True)
-
-
-@router.post(
-    "/webpush/send", summary="发送webpush通知", response_model=schemas.Response
-)
-def send_notification(
-    payload: schemas.SubscriptionMessage,
-    _: schemas.TokenPayload = Depends(verify_token),
-):
-    """
-    发送webpush通知
-    """
-    for sub in global_vars.get_subscriptions():
-        try:
-            webpush(
-                subscription_info=sub,
-                data=json.dumps(payload.model_dump()),
-                vapid_private_key=settings.VAPID.get("privateKey"),
-                vapid_claims={"sub": settings.VAPID.get("subject")},
-                **webpush_options_for_endpoint(sub.get("endpoint")),
-            )
-        except WebPushException as err:
-            logger.error(f"WebPush发送失败: {str(err)}")
-            if is_webpush_subscription_gone(err) and global_vars.remove_subscription(sub):
-                logger.info(f"已移除失效WebPush订阅: {sub.get('endpoint')}")
-            continue
-    return schemas.Response(success=True)
+    return "OK"

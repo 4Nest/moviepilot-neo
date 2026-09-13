@@ -7,6 +7,7 @@ import regex as re
 
 from app.core.config import settings
 from app.core.meta import MetaAnime, MetaVideo, MetaBase
+from app.core.meta.metaanime import has_versioned_anime_episode
 from app.core.meta.infopath import (
     clear_parsed_title_for_parent_merge,
     should_use_parent_title_for_file_stem,
@@ -406,13 +407,18 @@ def _requires_python_metainfo(
     custom_words: Optional[List[str]] = None,
 ) -> bool:
     """
-    判断标题或临时识别词是否包含当前Rust扩展尚未支持的数据源ID标签。
+    判断标题或临时识别词是否需要使用 Python 解析器。
+
+    Rust 扩展尚未支持扩展数据源 ID，也可能把动漫集数修正版
+    （如 [01v2]、S03E01v2）误判为普通影视。
 
     :param title: 原始标题
     :param custom_words: 临时识别词
-    :return: 是否必须使用Python解析器
+    :return: 是否必须使用 Python 解析器
     """
     candidates = [title or "", *(custom_words or [])]
+    if has_versioned_anime_episode(title):
+        return True
     contains_extended_id = any(
         _EXTENDED_MEDIA_ID_TAG_RE.search(candidate) for candidate in candidates
     )
@@ -484,6 +490,10 @@ def is_anime(name: str) -> bool:
     """
     if not name:
         return False
+    # 集数后的 v2/v3 是动漫发布常见的修正版写法，例如 [01v2]、S03E01v2。
+    # 必须在普通影视 S03 判断之前识别，否则会被错误分流到 MetaVideo。
+    if has_versioned_anime_episode(name):
+        return True
     if _ANIME_BRACKET_RE.search(name):
         return True
     if _ANIME_DASH_EPISODE_RE.search(name):

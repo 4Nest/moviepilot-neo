@@ -59,8 +59,6 @@ def test_meta_cache_expire_does_not_schedule_bulk_cache_clear(monkeypatch):
     monkeypatch.setattr(scheduler_module.settings, "SUBSCRIBE_RSS_INTERVAL", 30)
     monkeypatch.setattr(scheduler_module.settings, "SITEDATA_REFRESH_INTERVAL", 0)
     monkeypatch.setattr(scheduler_module.settings, "MEMORY_GC_INTERVAL", 0)
-    monkeypatch.setattr(scheduler_module.settings, "AI_AGENT_ENABLE", False)
-    monkeypatch.setattr(scheduler_module.settings, "DATA_CLEANUP_ENABLE", False)
     monkeypatch.setattr(scheduler_module.settings, "USAGE_STATISTIC_SHARE", False)
 
     scheduler = object.__new__(Scheduler)

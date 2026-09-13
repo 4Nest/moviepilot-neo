@@ -78,45 +78,6 @@ _LOG_DOWNLOAD_LIMIT = 10
 _LOG_DOWNLOAD_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
-def _validate_llm_server_tool_config(env: dict) -> Optional[str]:
-    """校验强制服务端联网搜索配置，返回用户可读错误信息。"""
-    from app.agent.llm.server_tools import (
-        ServerToolRegistry,
-        ServerToolUnavailableError,
-    )
-
-    mode = ServerToolRegistry.normalize_web_search_mode(
-        env.get(
-            "LLM_WEB_SEARCH_MODE",
-            getattr(settings, "LLM_WEB_SEARCH_MODE", "local"),
-        )
-    )
-    if mode != "builtin":
-        return None
-
-    provider = str(
-        env.get("LLM_PROVIDER", getattr(settings, "LLM_PROVIDER", "")) or ""
-    ).strip()
-    model = str(
-        env.get("LLM_MODEL", getattr(settings, "LLM_MODEL", "")) or ""
-    ).strip()
-    base_url = env.get("LLM_BASE_URL", getattr(settings, "LLM_BASE_URL", None))
-    capability = ServerToolRegistry.get_capability(
-        provider=provider,
-        model=model,
-        base_url=str(base_url or "").strip() or None,
-        tool_id="web_search",
-    )
-    if capability:
-        return None
-
-    return str(
-        ServerToolUnavailableError(
-            provider=provider,
-            model=model,
-            tool_id="web_search",
-        )
-    )
 
 
 def _is_allowed_plugin_market_wiki_url(wiki_url: str) -> bool:
@@ -249,17 +210,6 @@ def _build_nettest_rules() -> list[dict[str, Any]]:
             "allowed_redirect_prefixes": [
                 "https://frodo.douban.com/",
                 "https://www.douban.com/doubanapp/frodo",
-            ],
-        },
-        {
-            "id": "slack_api",
-            "name": "slack.com",
-            "icon": "slack",
-            "url": "https://slack.com",
-            "proxy": False,
-            "allowed_redirect_prefixes": [
-                "https://slack.com/",
-                "https://www.slack.com/",
             ],
         },
         {
@@ -664,20 +614,10 @@ async def get_user_global_setting(_: User = Depends(get_current_active_user_asyn
     # 业务功能相关的配置字段
     info = settings.model_dump(
         include={
-            "AI_AGENT_ENABLE",
-            "AI_AGENT_HIDE_ENTRY",
-            "LLM_SUPPORT_AUDIO_INPUT",
-            "LLM_SUPPORT_AUDIO_OUTPUT",
             "RECOGNIZE_SOURCE",
             "SEARCH_SOURCE",
-            "AI_RECOMMEND_ENABLED",
         }
     )
-    # 智能助手总开关未开启，智能推荐状态强制返回False
-    if not settings.AI_AGENT_ENABLE:
-        info["AI_RECOMMEND_ENABLED"] = False
-        info["LLM_SUPPORT_AUDIO_INPUT"] = False
-        info["LLM_SUPPORT_AUDIO_OUTPUT"] = False
 
     # 追加用户唯一ID和订阅分享管理权限
     share_admin = await MoviePilotServerHelper.async_is_admin_user()
@@ -735,9 +675,6 @@ async def set_env_setting(
     """
     更新系统环境变量（仅管理员）
     """
-    validation_error = _validate_llm_server_tool_config(env)
-    if validation_error:
-        return schemas.Response(success=False, message=validation_error)
 
     result = settings.update_settings(env=env)
     # 统计成功和失败的结果

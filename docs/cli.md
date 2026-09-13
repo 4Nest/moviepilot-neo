@@ -236,12 +236,6 @@ moviepilot setup --config-dir /path/to/moviepilot-config
   默认 `SQLite`
   可切换为 `PostgreSQL`，并填写主机、端口、数据库名、用户名、密码
 - 默认下载目录与媒体库目录
-- AI Agent
-  可按需启用，并配置 `LLM_PROVIDER`、`LLM_MODEL`、`LLM_API_KEY`、`LLM_BASE_URL`
-  与 `LLM_WEB_SEARCH_MODE`。联网搜索支持 MoviePilot 本地搜索、模型服务端搜索、
-  服务端优先自动回退与完全关闭；服务端模式仅在当前模型目录声明支持时生效。
-  当前可识别 OpenAI、Anthropic Claude、Google Gemini、xAI Grok 与 DeepSeek
-  官方端点已公布的服务端联网搜索能力，第三方兼容端点不会被自动误判。
 - 用户站点认证
   可按需选择认证站点，并按站点要求填写用户名、UID、Passkey 等参数
 - 开机自启
@@ -334,23 +328,6 @@ moviepilot update all --skip-resources
 - `update frontend` 会按当前仓库 `version.py` 中的 `FRONTEND_VERSION` 下载并替换前端 release
 - `update all` 会先更新后端，再按更新后代码中的 `FRONTEND_VERSION` 更新前端，默认也会同步资源文件
 - 更新前请先执行 `moviepilot stop`
-
-## Agent 命令
-
-直接给智能体发送一次请求：
-
-```shell
-moviepilot agent 帮我分析最近一次搜索失败的原因
-moviepilot agent --user-id admin 帮我检查当前下载器配置
-moviepilot agent --session cli-debug-1 帮我看看为什么没有自动整理
-moviepilot agent --new-session 帮我总结当前系统配置有什么明显问题
-```
-
-说明：
-
-- `moviepilot agent` 直接在本地环境里发起一次智能体请求
-- 默认每次可自动创建新会话，也可以通过 `--session` 指定会话 ID
-- 使用前需要先正确配置 LLM 相关参数，并打开 `AI_AGENT_ENABLE`
 
 ## 服务管理命令
 
@@ -460,38 +437,6 @@ moviepilot config describe API_TOKEN --show-secrets
 - `config keys` 显示配置项名称、类型和默认值
 - `config describe` 显示单个配置项的类型、默认值和当前值
 
-## Tool 命令
-
-列出所有 MCP 工具：
-
-```shell
-moviepilot tool list
-```
-
-查看单个工具的参数说明：
-
-```shell
-moviepilot tool show query_schedulers
-moviepilot tool show search_torrents
-```
-
-运行工具：
-
-```shell
-moviepilot tool run query_schedulers
-moviepilot tool run search_torrents media_type=movie tmdb_id=12345
-```
-
-说明：
-
-- `tool list` 用于动态发现当前服务可调用的工具
-- `tool show` 会输出参数名、类型和描述
-- `tool run` 参数格式固定为 `key=value`
-- `read_file`、`write_file`、`edit_file` 和 `execute_command`
-  属于内置 Agent 的本地敏感能力，不通过 MCP/`moviepilot tool` 暴露；插件开发时
-  由 Agent 按当前用户权限直接调用这些工具。
-- `read_file` 单次最多返回 50KB 文件内容；超出时会截断并提示 Agent 使用
-  `start_line`、`end_line` 指定更小的行号范围继续读取。
 
 ## Scheduler 命令
 

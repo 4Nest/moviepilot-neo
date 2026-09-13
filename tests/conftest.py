@@ -25,12 +25,6 @@ def _report_session_cleanup_error(session, name: str, err: Exception) -> None:
 
 def pytest_sessionfinish(session, exitstatus):
     """释放测试过程中按需创建的全局后台资源，避免解释器退出时等待非 daemon worker。"""
-    try:
-        from app.agent.tools.base import shutdown_blocking_executors
-
-        shutdown_blocking_executors(cancel_futures=True)
-    except Exception as err:
-        _report_session_cleanup_error(session, "agent blocking executors", err)
 
     try:
         from app.helper.thread import ThreadHelper

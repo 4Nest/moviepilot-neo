@@ -1,13 +1,8 @@
 import asyncio
-import hashlib
-import json
-import random
-import re
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime
-from typing import AsyncIterator, Any, Dict, Tuple
-from typing import List, Optional
+from typing import AsyncIterator, Any, Dict, Tuple, List, Optional
 
 from fastapi.concurrency import run_in_threadpool
 
@@ -36,13 +31,6 @@ class SearchChain(ChainBase):
     __result_temp_file = "__search_result__"
     __subtitle_result_temp_file = "__subtitle_search_result__"
     __search_params_temp_file = "__search_params__"
-    __ai_indices_cache_file = "__ai_recommend_indices__"
-
-    _ai_recommend_running = False
-    _ai_recommend_task: Optional[asyncio.Task] = None
-    _current_recommend_request_hash: Optional[str] = None
-    _ai_recommend_result: Optional[List[int]] = None
-    _ai_recommend_error: Optional[str] = None
 
     @staticmethod
     def _get_search_resource_pages() -> int:
@@ -90,85 +78,6 @@ class SearchChain(ChainBase):
             page_size = 100
         return page_size > 0 and len(page_results or []) >= page_size
 
-    @property
-    def is_ai_recommend_enabled(self) -> bool:
-        """
-        检查AI推荐功能是否已启用。
-        """
-        return settings.AI_AGENT_ENABLE and settings.AI_RECOMMEND_ENABLED
-
-    @staticmethod
-    def _calculate_recommend_request_hash(
-            filtered_indices: Optional[List[int]], search_results_count: int
-    ) -> str:
-        """
-        计算当前推荐请求哈希，用于识别筛选条件是否变化。
-        """
-        request_data = {
-            "filtered_indices": filtered_indices or [],
-            "search_results_count": search_results_count,
-        }
-        return hashlib.md5(
-            json.dumps(request_data, sort_keys=True).encode()
-        ).hexdigest()
-
-    def _build_ai_recommend_status(self) -> Dict[str, Any]:
-        """
-        构建AI推荐状态字典。
-        """
-        state = type(self)
-        if not self.is_ai_recommend_enabled:
-            return {"status": "disabled"}
-
-        if state._ai_recommend_running:
-            return {"status": "running"}
-
-        if state._ai_recommend_result is None:
-            cached_indices = self.load_cache(self.__ai_indices_cache_file)
-            if cached_indices is not None:
-                state._ai_recommend_result = cached_indices
-
-        if state._ai_recommend_result is not None:
-            return {"status": "completed", "results": state._ai_recommend_result}
-
-        if state._ai_recommend_error is not None:
-            return {"status": "error", "error": state._ai_recommend_error}
-
-        return {"status": "idle"}
-
-    def get_current_recommend_status_only(self) -> Dict[str, Any]:
-        """
-        获取当前推荐状态，不校验请求是否变化。
-        """
-        return self._build_ai_recommend_status()
-
-    def get_recommend_status(
-            self, filtered_indices: Optional[List[int]], search_results_count: int
-    ) -> Dict[str, Any]:
-        """
-        获取AI推荐状态，并在筛选条件变化时返回 idle。
-        """
-        state = type(self)
-        request_hash = self._calculate_recommend_request_hash(
-            filtered_indices, search_results_count
-        )
-        if request_hash != state._current_recommend_request_hash:
-            return {"status": "idle"} if self.is_ai_recommend_enabled else {"status": "disabled"}
-        return self._build_ai_recommend_status()
-
-    def cancel_ai_recommend(self):
-        """
-        取消当前AI推荐任务并清空缓存状态。
-        """
-        state = type(self)
-        if state._ai_recommend_task and not state._ai_recommend_task.done():
-            state._ai_recommend_task.cancel()
-        state._ai_recommend_running = False
-        state._ai_recommend_task = None
-        state._current_recommend_request_hash = None
-        state._ai_recommend_result = None
-        state._ai_recommend_error = None
-        self.remove_cache(self.__ai_indices_cache_file)
 
     @staticmethod
     def _build_search_keyword(
@@ -311,205 +220,6 @@ class SearchChain(ChainBase):
             await self.async_load_cache(self.__search_params_temp_file)
         )
 
-    @staticmethod
-    def _normalize_ai_indices(ai_indices: List[Any]) -> List[int]:
-        """
-        过滤模型返回的非法或重复索引，保留原顺序。
-        """
-        normalized = []
-        seen = set()
-        for index in ai_indices:
-            try:
-                value = int(index)
-            except (TypeError, ValueError):
-                continue
-            if value in seen:
-                continue
-            seen.add(value)
-            normalized.append(value)
-        return normalized
-
-    @staticmethod
-    def _extract_recommend_items(
-            filtered_indices: Optional[List[int]], results: List[Any]
-    ) -> tuple[List[str], List[int]]:
-        """
-        构建发送给模型的候选列表和索引映射。
-        """
-        items: List[str] = []
-        valid_indices: List[int] = []
-        max_items = settings.AI_RECOMMEND_MAX_ITEMS or 50
-
-        if filtered_indices:
-            results_to_process = [
-                results[index] for index in filtered_indices if 0 <= index < len(results)
-            ]
-        else:
-            results_to_process = results
-
-        for index, torrent in enumerate(results_to_process):
-            if len(items) >= max_items:
-                break
-            if not torrent.torrent_info:
-                continue
-
-            valid_indices.append(index)
-            item_info = {
-                "index": index,
-                "title": torrent.torrent_info.title or "未知",
-                "size": (
-                    StringUtils.format_size(torrent.torrent_info.size)
-                    if torrent.torrent_info.size
-                    else "0 B"
-                ),
-                "seeders": torrent.torrent_info.seeders or 0,
-            }
-            items.append(json.dumps(item_info, ensure_ascii=False))
-
-        return items, valid_indices
-
-    @staticmethod
-    def _restore_original_indices(
-            ai_indices: List[int],
-            filtered_indices: Optional[List[int]],
-            valid_indices: List[int],
-            results_count: int,
-    ) -> List[int]:
-        """
-        将模型输出的局部索引映射回原始搜索结果索引。
-        """
-        original_indices = []
-        seen = set()
-
-        for index in ai_indices:
-            if not 0 <= index < len(valid_indices):
-                continue
-            original_index = (
-                filtered_indices[valid_indices[index]]
-                if filtered_indices
-                else valid_indices[index]
-            )
-            if not 0 <= original_index < results_count or original_index in seen:
-                continue
-            seen.add(original_index)
-            original_indices.append(original_index)
-
-        return original_indices
-
-    @staticmethod
-    async def _invoke_recommend_llm(search_results_text: str) -> str:
-        """
-        通过统一后台提示词机制执行资源推荐。
-        """
-        from app.agent import ReplyMode, agent_manager
-        from app.agent.prompt import prompt_manager
-
-        prompt = prompt_manager.render_system_task_message(
-            "search_recommend",
-            template_context={"search_results": search_results_text},
-        )
-        full_output = [""]
-
-        def on_output(text: str):
-            full_output[0] = text
-
-        await agent_manager.run_background_prompt(
-            message=prompt,
-            session_prefix="__agent_search_recommend",
-            output_callback=on_output,
-            reply_mode=ReplyMode.CAPTURE_ONLY,
-            allow_message_tools=False,
-        )
-        return full_output[0].strip()
-
-    def start_recommend_task(
-            self,
-            filtered_indices: Optional[List[int]],
-            search_results_count: int,
-            results: List[Any],
-    ) -> None:
-        """
-        启动AI推荐任务。
-        """
-        if not self.is_ai_recommend_enabled:
-            logger.warning("AI推荐功能未启用，跳过任务执行")
-            return
-
-        state = type(self)
-        request_hash = self._calculate_recommend_request_hash(
-            filtered_indices, search_results_count
-        )
-        if request_hash == state._current_recommend_request_hash:
-            return
-
-        self.cancel_ai_recommend()
-        state._current_recommend_request_hash = request_hash
-
-        async def run_recommend():
-            current_task = asyncio.current_task()
-
-            def is_current_request() -> bool:
-                return state._current_recommend_request_hash == request_hash
-
-            try:
-                state._ai_recommend_running = True
-
-                items, valid_indices = self._extract_recommend_items(
-                    filtered_indices=filtered_indices,
-                    results=results,
-                )
-                if not items:
-                    if is_current_request():
-                        state._ai_recommend_error = "没有可用于AI推荐的资源"
-                    return
-
-                user_preference = (
-                        settings.AI_RECOMMEND_USER_PREFERENCE
-                        or "Prefer high-quality resources with more seeders"
-                )
-                search_results_text = (
-                    f"User Preference: {user_preference}\n\n"
-                    f"Candidate Resources:\n{chr(10).join(items)}"
-                )
-                ai_response = await self._invoke_recommend_llm(search_results_text)
-                if not ai_response:
-                    if is_current_request():
-                        state._ai_recommend_error = "AI推荐未返回结果"
-                    return
-
-                json_match = re.search(r"\[.*?]", ai_response, re.DOTALL)
-                if not json_match:
-                    raise ValueError(f"无法从响应中提取JSON数组: {ai_response}")
-
-                ai_indices = json.loads(json_match.group())
-                if not isinstance(ai_indices, list):
-                    raise ValueError(f"AI返回格式错误: {ai_response}")
-
-                original_indices = self._restore_original_indices(
-                    ai_indices=self._normalize_ai_indices(ai_indices),
-                    filtered_indices=filtered_indices,
-                    valid_indices=valid_indices,
-                    results_count=len(results),
-                )
-                if not is_current_request():
-                    logger.info("AI推荐结果已过期，丢弃旧结果")
-                    return
-
-                state._ai_recommend_result = original_indices
-                self.save_cache(original_indices, self.__ai_indices_cache_file)
-                logger.info(f"AI推荐完成: {len(original_indices)}项")
-            except asyncio.CancelledError:
-                logger.info("AI推荐任务被取消")
-            except Exception as err:
-                logger.error(f"AI推荐任务失败: {err}")
-                if is_current_request():
-                    state._ai_recommend_error = str(err)
-            finally:
-                if state._ai_recommend_task == current_task:
-                    state._ai_recommend_running = False
-                    state._ai_recommend_task = None
-
-        state._ai_recommend_task = asyncio.create_task(run_recommend())
 
     def search_by_id(
             self, tmdbid: Optional[int] = None, doubanid: Optional[str] = None,
@@ -534,7 +244,6 @@ class SearchChain(ChainBase):
         :param cache_local: 是否缓存到本地
         """
         if cache_local:
-            self.cancel_ai_recommend()
             self.save_last_search_params(
                 keyword=self._build_search_keyword(
                     source, mediaid, tmdbid, doubanid, bangumiid, anilistid
@@ -575,7 +284,6 @@ class SearchChain(ChainBase):
         :param cache_local: 是否缓存到本地
         """
         if cache_local:
-            self.cancel_ai_recommend()
             self.save_last_search_params(
                 keyword=title,
                 area="title",
@@ -636,7 +344,6 @@ class SearchChain(ChainBase):
         :param cache_local: 是否缓存到本地
         """
         if cache_local:
-            self.cancel_ai_recommend()
             await self.async_save_last_search_params(
                 keyword=title,
                 area="title",
@@ -661,7 +368,6 @@ class SearchChain(ChainBase):
         根据标题渐进式搜索字幕，不识别不过滤，按站点完成顺序返回结果。
         """
         if cache_local:
-            self.cancel_ai_recommend()
             await self.async_save_last_search_params(
                 keyword=title,
                 area="title",
@@ -719,7 +425,6 @@ class SearchChain(ChainBase):
         :param cache_local: 是否缓存到本地
         """
         if cache_local:
-            self.cancel_ai_recommend()
             await self.async_save_last_search_params(
                 keyword=self._build_search_keyword(
                     source, mediaid, tmdbid, doubanid, bangumiid, anilistid
@@ -775,7 +480,6 @@ class SearchChain(ChainBase):
         根据数据源媒体 ID 渐进式精确搜索字幕，先返回站点候选，再返回标题和剧集匹配后的结果。
         """
         if cache_local:
-            self.cancel_ai_recommend()
             await self.async_save_last_search_params(
                 keyword=self._build_search_keyword(
                     source, mediaid, tmdbid, doubanid, bangumiid, anilistid
@@ -850,7 +554,6 @@ class SearchChain(ChainBase):
         :param cache_local: 是否缓存到本地
         """
         if cache_local:
-            self.cancel_ai_recommend()
             await self.async_save_last_search_params(
                 keyword=self._build_search_keyword(
                     source, mediaid, tmdbid, doubanid, bangumiid, anilistid
@@ -894,7 +597,6 @@ class SearchChain(ChainBase):
         :param cache_local: 是否缓存到本地
         """
         if cache_local:
-            self.cancel_ai_recommend()
             await self.async_save_last_search_params(
                 keyword=title,
                 area="title",
@@ -933,7 +635,6 @@ class SearchChain(ChainBase):
         根据标题渐进式搜索资源，不识别媒体信息，按默认搜索过滤规则返回结果
         """
         if cache_local:
-            self.cancel_ai_recommend()
             await self.async_save_last_search_params(
                 keyword=title,
                 area="title",
@@ -1017,7 +718,6 @@ class SearchChain(ChainBase):
         根据数据源媒体 ID 渐进式搜索资源，先返回站点原始候选，再返回过滤匹配后的最终结果
         """
         if cache_local:
-            self.cancel_ai_recommend()
             await self.async_save_last_search_params(
                 keyword=self._build_search_keyword(
                     source, mediaid, tmdbid, doubanid, bangumiid, anilistid

@@ -1,8 +1,8 @@
 from fastapi import APIRouter
 
-from app.api.endpoints import anilist, auth, login, user, webhook, message, agent, site, subscribe, \
+from app.api.endpoints import anilist, auth, login, user, webhook, message, site, subscribe, \
     media, douban, search, plugin, tmdb, history, system, download, dashboard, \
-    transfer, mediaserver, bangumi, storage, discover, recommend, workflow, torrent, mcp, mfa, openai, anthropic, llm
+    transfer, mediaserver, bangumi, storage, discover, recommend, workflow, torrent, mfa
 
 api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
@@ -11,7 +11,6 @@ api_router.include_router(user.router, prefix="/user", tags=["user"])
 api_router.include_router(mfa.router, prefix="/mfa", tags=["mfa"])
 api_router.include_router(site.router, prefix="/site", tags=["site"])
 api_router.include_router(message.router, prefix="/message", tags=["message"])
-api_router.include_router(agent.router, prefix="/message/agent", tags=["agent"])
 api_router.include_router(webhook.router, prefix="/webhook", tags=["webhook"])
 api_router.include_router(subscribe.router, prefix="/subscribe", tags=["subscribe"])
 api_router.include_router(media.router, prefix="/media", tags=["media"])
@@ -20,7 +19,6 @@ api_router.include_router(douban.router, prefix="/douban", tags=["douban"])
 api_router.include_router(tmdb.router, prefix="/tmdb", tags=["tmdb"])
 api_router.include_router(history.router, prefix="/history", tags=["history"])
 api_router.include_router(system.router, prefix="/system", tags=["system"])
-api_router.include_router(llm.router, prefix="/llm", tags=["llm"])
 api_router.include_router(plugin.router, prefix="/plugin", tags=["plugin"])
 api_router.include_router(download.router, prefix="/download", tags=["download"])
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
@@ -33,6 +31,3 @@ api_router.include_router(discover.router, prefix="/discover", tags=["discover"]
 api_router.include_router(recommend.router, prefix="/recommend", tags=["recommend"])
 api_router.include_router(workflow.router, prefix="/workflow", tags=["workflow"])
 api_router.include_router(torrent.router, prefix="/torrent", tags=["torrent"])
-api_router.include_router(mcp.router, prefix="/mcp", tags=["mcp"])
-api_router.include_router(openai.router, prefix="/openai/v1", tags=["openai"])
-api_router.include_router(anthropic.router, prefix="/anthropic/v1", tags=["anthropic"])

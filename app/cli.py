@@ -7,10 +7,10 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, get_args, get_origin
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
+from typing import Any, Dict, Optional
 
 import click
 import psutil
@@ -474,120 +474,6 @@ def _follow_file(path: Path) -> None:
             time.sleep(0.5)
 
 
-def _print_json(value: Any) -> None:
-    click.echo(json.dumps(value, ensure_ascii=False, indent=2))
-
-
-def _parse_tool_result(result: Any) -> Any:
-    if not isinstance(result, str):
-        return result
-    try:
-        return json.loads(result)
-    except json.JSONDecodeError:
-        return result
-
-
-def _tool_request_headers(runtime: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
-    api_token = _runtime_api_token(runtime)
-    if not api_token:
-        raise click.ClickException("本地配置中未找到 API_TOKEN，请先配置后再使用 tool/scheduler 命令")
-    return {"X-API-KEY": api_token}
-
-
-def _call_tool(tool_name: str, arguments: Dict[str, Any], runtime: Optional[Dict[str, Any]] = None) -> Any:
-    response = _http_request(
-        "POST",
-        "/api/v1/mcp/tools/call",
-        json_body={"tool_name": tool_name, "arguments": arguments},
-        headers=_tool_request_headers(runtime),
-        timeout=30.0,
-        runtime=runtime,
-    )
-    payload = response.get("json") or {}
-    if response["status"] not in {200, 201}:
-        message = payload.get("error") or payload.get("detail") or response["text"] or "调用工具失败"
-        raise click.ClickException(message)
-    if not payload.get("success"):
-        raise click.ClickException(payload.get("error") or "调用工具失败")
-    return _parse_tool_result(payload.get("result"))
-
-
-def _load_tool(tool_name: str, runtime: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    response = _http_request(
-        "GET",
-        f"/api/v1/mcp/tools/{tool_name}",
-        headers=_tool_request_headers(runtime),
-        timeout=10.0,
-        runtime=runtime,
-    )
-    if response["status"] == 404:
-        raise click.ClickException(f"工具不存在：{tool_name}")
-    if response["status"] != 200 or not isinstance(response.get("json"), dict):
-        raise click.ClickException(response["text"] or f"获取工具失败（HTTP {response['status']}）")
-    return response["json"]
-
-
-def _load_tools(runtime: Optional[Dict[str, Any]] = None) -> list[Dict[str, Any]]:
-    response = _http_request(
-        "GET",
-        "/api/v1/mcp/tools",
-        headers=_tool_request_headers(runtime),
-        timeout=10.0,
-        runtime=runtime,
-    )
-    if response["status"] != 200 or not isinstance(response.get("json"), list):
-        raise click.ClickException(response["text"] or f"获取工具列表失败（HTTP {response['status']}）")
-    return response["json"]
-
-
-def _normalize_type(schema: Optional[Dict[str, Any]]) -> str:
-    schema = schema or {}
-    if schema.get("type"):
-        return str(schema["type"])
-    for item in schema.get("anyOf", []):
-        if item and item.get("type") and item.get("type") != "null":
-            return str(item["type"])
-    return "string"
-
-
-def _format_tool_detail(tool: Dict[str, Any]) -> None:
-    click.echo(f"Command: {tool.get('name')}")
-    click.echo(f"Description: {tool.get('description') or '(none)'}")
-    click.echo("")
-
-    properties = (tool.get("inputSchema") or {}).get("properties") or {}
-    required = set((tool.get("inputSchema") or {}).get("required") or [])
-    fields = []
-    for name, schema in properties.items():
-        fields.append(
-            (
-                f"{name}*" if name in required else name,
-                _normalize_type(schema),
-                schema.get("description") or "",
-            )
-        )
-
-    if not fields:
-        click.echo("Parameters: (none)")
-    else:
-        name_width = max(len(name) for name, _, _ in fields)
-        type_width = max(len(field_type) for _, field_type, _ in fields)
-        click.echo("Parameters:")
-        for field_name, field_type, field_desc in fields:
-            click.echo(f"  {field_name.ljust(name_width)}  {field_type.ljust(type_width)}  {field_desc}")
-
-
-def _parse_key_value_pairs(items: Iterable[str]) -> Dict[str, str]:
-    payload: Dict[str, str] = {}
-    for item in items:
-        if "=" not in item:
-            raise click.ClickException(f"参数必须是 key=value 形式：{item}")
-        key, value = item.split("=", 1)
-        key = key.strip()
-        if not key:
-            raise click.ClickException(f"参数名不能为空：{item}")
-        payload[key] = value
-    return payload
 
 
 def _ensure_local_api_token() -> bool:
@@ -1104,74 +990,6 @@ def config_describe(key: str, show_secrets: bool) -> None:
     click.echo(f"Current: {_format_value(_mask_value(key, current_value, show_secrets))}")
     click.echo(f"Env File: {settings.CONFIG_PATH / 'app.env'}")
 
-
-@cli.group(context_settings=CONTEXT_SETTINGS)
-def tool() -> None:
-    """通过本地后端服务调用 MoviePilot 工具"""
-
-
-@tool.command("list", context_settings=CONTEXT_SETTINGS)
-def tool_list() -> None:
-    """列出所有可用工具"""
-    tools = _load_tools(runtime=_backend_runtime())
-    for item in sorted(tools, key=lambda entry: entry.get("name", "")):
-        click.echo(item.get("name"))
-
-
-@tool.command("show", context_settings=CONTEXT_SETTINGS)
-@click.argument("tool_name")
-def tool_show(tool_name: str) -> None:
-    """显示工具详情和参数"""
-    tool_info = _load_tool(tool_name, runtime=_backend_runtime())
-    _format_tool_detail(tool_info)
-
-
-@tool.command("run", context_settings={**CONTEXT_SETTINGS, "ignore_unknown_options": True})
-@click.argument("tool_name")
-@click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def tool_run(tool_name: str, args: tuple[str, ...]) -> None:
-    """运行指定工具"""
-    arguments = _parse_key_value_pairs(args)
-    result = _call_tool(tool_name, arguments, runtime=_backend_runtime())
-    if isinstance(result, (dict, list)):
-        _print_json(result)
-    else:
-        click.echo(result)
-
-
-@cli.group(context_settings=CONTEXT_SETTINGS)
-def scheduler() -> None:
-    """查看或执行本地调度任务"""
-
-
-@scheduler.command("list", context_settings=CONTEXT_SETTINGS)
-def scheduler_list() -> None:
-    """列出调度任务"""
-    result = _call_tool(
-        "query_schedulers",
-        {},
-        runtime=_backend_runtime(),
-    )
-    if isinstance(result, list):
-        for item in result:
-            click.echo(f"{item.get('id')}\t{item.get('status')}\t{item.get('next_run')}\t{item.get('name')}")
-        return
-    click.echo(result)
-
-
-@scheduler.command("run", context_settings=CONTEXT_SETTINGS)
-@click.argument("job_id")
-def scheduler_run(job_id: str) -> None:
-    """立即执行某个调度任务"""
-    result = _call_tool(
-        "run_scheduler",
-        {"job_id": job_id},
-        runtime=_backend_runtime(),
-    )
-    if isinstance(result, (dict, list)):
-        _print_json(result)
-    else:
-        click.echo(result)
 
 
 @cli.command(context_settings=CONTEXT_SETTINGS)

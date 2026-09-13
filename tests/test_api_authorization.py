@@ -94,8 +94,6 @@ def test_manage_page_endpoints_accept_manage_permission():
         site_endpoint.update_cookie,
         site_endpoint.refresh_userdata,
         history_endpoint.delete_transfer_history,
-        history_endpoint.ai_redo_transfer_history,
-        history_endpoint.batch_ai_redo_transfer_history,
         transfer_endpoint.match_manual_transfer_target_path,
         transfer_endpoint.manual_transfer,
         transfer_endpoint.recommend_episode_format,
