@@ -55,6 +55,21 @@ class TestMediaRecognizeShare(unittest.TestCase):
         report_mock.assert_called_once_with(meta=meta, mediainfo=mediainfo, keyword_meta=meta)
         query_mock.assert_not_called()
 
+    def test_shared_result_media_type_uses_conversion_helpers(self):
+        """共享识别结果应在 Agent 类型值与系统枚举之间完整转换。"""
+        params = MoviePilotServerHelper.to_recognize_params({
+            "type": "tv",
+            "tmdbid": 200,
+            "season": 1,
+        })
+        meta = self._build_meta("测试剧集", MediaType.TV)
+        mediainfo = MediaInfo(title="测试剧集", year="2024", tmdb_id=200, type=MediaType.TV)
+
+        payload = MoviePilotServerHelper._build_recognize_report_payload(meta=meta, mediainfo=mediainfo)
+
+        self.assertEqual(params["mtype"], MediaType.TV)
+        self.assertEqual(payload["type"], "tv")
+
     def test_query_shared_result_when_local_recognize_failed(self):
         """
         本地识别失败后应回查共享识别结果，并按共享ID再次识别

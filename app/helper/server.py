@@ -13,7 +13,7 @@ from app.db.subscribe_oper import SubscribeOper
 from app.db.systemconfig_oper import SystemConfigOper
 from app.db.workflow_oper import WorkflowOper
 from app.log import logger
-from app.schemas.types import MediaType, SystemConfigKey, media_type_to_agent
+from app.schemas.types import MediaType, SystemConfigKey, media_type_from_agent, media_type_to_agent
 from app.utils.http import AsyncRequestUtils, RequestUtils
 from app.utils.media import resolve_media_identity
 from app.utils.system import SystemUtils
@@ -1415,7 +1415,7 @@ class MoviePilotServerHelper:
             return None
 
         media_type = cls._normalize_media_type(item.get("type"))
-        mtype = MediaType.from_agent(media_type) if media_type else None
+        mtype = media_type_from_agent(media_type)
         tmdbid = item.get("tmdbid")
         doubanid = item.get("doubanid")
         bangumiid = item.get("bangumiid")
@@ -1496,9 +1496,9 @@ class MoviePilotServerHelper:
         if media_type:
             return media_type
         if mediainfo and mediainfo.type in {MediaType.MOVIE, MediaType.TV}:
-            return mediainfo.type.to_agent()
+            return media_type_to_agent(mediainfo.type)
         if meta and meta.type in {MediaType.MOVIE, MediaType.TV}:
-            return meta.type.to_agent()
+            return media_type_to_agent(meta.type)
         if meta and (meta.begin_season is not None or meta.begin_episode is not None):
             return "tv"
         return None

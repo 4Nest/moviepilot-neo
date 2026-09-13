@@ -9,25 +9,35 @@ class MediaType(Enum):
     COLLECTION = '系列'
     UNKNOWN = '未知'
 
-    @staticmethod
-    def from_agent(key: str) -> Optional["MediaType"]:
-        """'movie' -> MediaType.MOVIE, 'tv' -> MediaType.TV, 否则 None"""
-        _map = {"movie": MediaType.MOVIE, "tv": MediaType.TV}
-        return _map.get(key.strip().lower() if key else "")
-
-    def to_agent(self) -> str:
-        """MediaType.MOVIE -> 'movie', MediaType.TV -> 'tv', 其他返回 .value"""
-        return {MediaType.MOVIE: "movie", MediaType.TV: "tv"}.get(self, self.value)
 
 
-def media_type_to_agent(value) -> Optional[str]:
-    """将 MediaType 枚举或中文字符串统一转为 'movie'/'tv'"""
-    if isinstance(value, MediaType):
-        return value.to_agent()
-    if isinstance(value, str):
-        mt = MediaType.from_agent(value)
-        return mt.to_agent() if mt else value
+def media_type_to_agent(media_type: Optional[object]) -> Optional[str]:
+    """将媒体类型统一转换为 Agent 使用的英文值。"""
+    if isinstance(media_type, MediaType):
+        return {
+            MediaType.MOVIE: "movie",
+            MediaType.TV: "tv",
+        }.get(media_type)
+    if isinstance(media_type, str):
+        value = media_type.strip().lower()
+        if value in {"movie", "电影"}:
+            return "movie"
+        if value in {"tv", "电视剧", "show", "series"}:
+            return "tv"
     return None
+
+def media_type_from_agent(media_type: Optional[object]) -> Optional[MediaType]:
+    """将 Agent 使用的英文或中文媒体类型转换为系统枚举。"""
+    if isinstance(media_type, MediaType):
+        return media_type
+    if isinstance(media_type, str):
+        value = media_type.strip().lower()
+        if value in {"movie", "电影"}:
+            return MediaType.MOVIE
+        if value in {"tv", "电视剧", "show", "series"}:
+            return MediaType.TV
+    return None
+
 
 
 # 排序类型枚举
