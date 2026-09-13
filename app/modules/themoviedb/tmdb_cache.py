@@ -8,7 +8,7 @@ from app.core.cache import FileCache, TTLCache
 from app.core.config import settings
 from app.core.meta import MetaBase
 from app.log import logger
-from app.schemas.types import MediaType
+from app.schemas.types import MediaType, media_type_to_agent
 from app.utils.singleton import WeakSingleton
 
 lock = RLock()
@@ -130,7 +130,7 @@ class TmdbCache(metaclass=WeakSingleton):
                     "tmdb_id": value.get("id") or 0,
                     "title": value.get("title") or "",
                     "year": value.get("year") or "",
-                    "media_type": media_type.to_agent() if media_type else "unknown",
+                    "media_type": media_type_to_agent(media_type) or "unknown",
                     "poster_path": value.get("poster_path") or "",
                     "backdrop_path": value.get("backdrop_path") or "",
                 })
