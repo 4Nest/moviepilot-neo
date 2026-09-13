@@ -57,10 +57,10 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile
-          # 前端产物改从个人 Fork Release 下载（Dockerfile 默认官方仓库）
+          # 前端 Release 资产可在同一版本标签下被替换；run_id 保证每次镜像构建重新下载当前 dist.zip。
           build-args: |
             FRONTEND_REPO=4Nest/moviepilot-neo-frontend
-            FRONTEND_DIST_TAG=${{ github.sha }}
+            FRONTEND_DIST_TAG=${{ github.run_id }}-${{ github.run_attempt }}
           platforms: linux/amd64
           push: true
           # GHCR 要求全小写命名空间（4Nest -> 4nest）；固定 latest，不派生版本/edge 标签
