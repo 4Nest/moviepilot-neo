@@ -9,6 +9,15 @@ class MediaType(Enum):
     COLLECTION = '系列'
     UNKNOWN = '未知'
 
+    @staticmethod
+    def from_agent(key: str) -> Optional["MediaType"]:
+        """将 Agent 的媒体类型值转换为系统枚举。"""
+        return media_type_from_agent(key)
+
+    def to_agent(self) -> str:
+        """将系统媒体类型枚举转换为 Agent 使用的英文值。"""
+        return media_type_to_agent(self) or self.value
+
 
 
 def media_type_to_agent(media_type: Optional[object]) -> Optional[str]:
