@@ -1,17 +1,19 @@
 name: Build moviepilot-neo Image
 
 on:
-  # 每次合并/推送到 neo 都构建并覆盖 ghcr.io/4nest/moviepilot-neo:latest
+  # neo 分支构建开发镜像；v* 标签构建正式版本并更新 latest
   push:
     branches:
       - neo
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
 
-# latest 标签会被覆盖，串行构建避免并发推送乱序；不回滚 latest，回滚靠记录的 digest
+# 同一 ref 串行构建，避免并发推送造成标签乱序；正式镜像通过版本标签发布
 concurrency:
   group: ghcr-build-${{ github.ref }}
   cancel-in-progress: false
@@ -52,6 +54,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Extract Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/4nest/moviepilot-neo
+          tags: |
+            type=raw,value=neo,enable=${{ github.ref == 'refs/heads/neo' }}
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
       - name: Build and Push Image
         uses: docker/build-push-action@v7
         with:
@@ -63,8 +75,7 @@ jobs:
             FRONTEND_DIST_TAG=${{ github.run_id }}-${{ github.run_attempt }}
           platforms: linux/amd64
           push: true
-          # GHCR 要求全小写命名空间（4Nest -> 4nest）；固定 latest，不派生版本/edge 标签
-          tags: ghcr.io/4nest/moviepilot-neo:latest
+          tags: ${{ steps.meta.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/4Nest/moviepilot-neo
             org.opencontainers.image.revision=${{ github.sha }}

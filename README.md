@@ -17,17 +17,29 @@
 > [!NOTE]
 > 上游 MoviePilot v2 已停止维护；NEO 是 `4Nest` 基于 v2 的个人定制版本，不代表官方项目。
 
-## 快速开始
-
 ### Docker / Unraid / NAS
 
-当前镜像面向 **x86-64** 主机，仅提供 `linux/amd64` 架构：
+当前镜像面向 **x86-64** 主机，仅提供 `linux/amd64` 架构。
+
+开发测试版（跟随 `neo` 分支更新）：
+
+```bash
+docker pull ghcr.io/4nest/moviepilot-neo:neo
+```
+
+正式稳定版（GitHub Release 版本标签）：
 
 ```bash
 docker pull ghcr.io/4nest/moviepilot-neo:latest
 ```
 
-在 Unraid 或 NAS 的容器管理界面中创建容器：
+也可以固定到不可变版本：
+
+```bash
+docker pull ghcr.io/4nest/moviepilot-neo:v1.0.0
+```
+
+在 Unraid 或 NAS 的容器管理界面中创建容器时，正式环境建议使用 `:latest` 或具体版本标签，测试新提交时使用 `:neo`：
 
 | 配置 | 值 |
 | --- | --- |
@@ -51,26 +63,26 @@ git clone --branch neo https://github.com/4Nest/moviepilot-neo.git
 cd moviepilot-neo
 python3 -m venv venv
 source venv/bin/activate
-python -m pip install -r requirements.txt
-./scripts/start-local.sh
-```
-
-开发、测试或静态检查依赖：
-
-```bash
-python -m pip install -r requirements-dev.in
-```
-
-完整开发环境、配置目录和资源准备见 [开发环境设置](docs/development-setup.md)。
-
 ## 更新与回滚
 
-`latest` 是滚动标签。更新前先记录当前镜像 digest：
+`latest` 仅在推送 `v*` 版本标签时更新，代表最近一次正式稳定版；`neo` 跟随开发分支更新，仅用于测试。
+
+正式版更新：
 
 ```bash
-docker image inspect \
-  --format='{{index .RepoDigests 0}}' \
-  ghcr.io/4nest/moviepilot-neo:latest
+docker pull ghcr.io/4nest/moviepilot-neo:latest
+```
+
+需要固定版本时使用具体版本标签：
+
+```bash
+docker pull ghcr.io/4nest/moviepilot-neo:v1.0.0
+```
+
+回滚时使用此前记录的不可变 digest，而不是重新拉取 `latest`：
+
+```text
+ghcr.io/4nest/moviepilot-neo@sha256:<digest>
 ```
 
 更新：
