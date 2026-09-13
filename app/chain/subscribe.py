@@ -1011,8 +1011,13 @@ class SubscribeChain(ChainBase):
         # 添加订阅
         kwargs.update(self.__get_default_kwargs(mediainfo.type, **kwargs))
 
-        # 操作数据库
-        sid, err_msg = SubscribeOper().add(mediainfo=mediainfo, season=season, username=username, **kwargs)
+        # 使用订阅记录最终落库的海报，确保通知与订阅卡片使用同一张图片。
+        subscribeoper = SubscribeOper()
+        sid, err_msg = subscribeoper.add(mediainfo=mediainfo, season=season, username=username, **kwargs)
+        subscribe_poster = mediainfo.get_poster_image()
+        if sid:
+            subscribe = subscribeoper.get(sid)
+            subscribe_poster = (subscribe.poster if subscribe else None) or subscribe_poster
         if not sid:
             logger.error(f'{mediainfo.title_year} {err_msg}')
             if not exist_ok and message:
@@ -1023,7 +1028,7 @@ class SubscribeChain(ChainBase):
                                                        title=f"{mediainfo.title_year} {metainfo.season} "
                                                              f"添加订阅失败！",
                                                        text=f"{err_msg}",
-                                                       image=mediainfo.get_message_image(),
+                                                       image=subscribe_poster,
                                                        userid=userid))
             return None, err_msg
         elif message:
@@ -1038,7 +1043,7 @@ class SubscribeChain(ChainBase):
                     source=source,
                     mtype=NotificationType.Subscribe,
                     ctype=ContentType.SubscribeAdded,
-                    image=mediainfo.get_message_image(),
+                    image=subscribe_poster,
                     link=link,
                     userid=userid,
                     username=username
@@ -1213,12 +1218,14 @@ class SubscribeChain(ChainBase):
             media=mediainfo, source=media_source, media_id=media_id
         )
         kwargs.update({"media_source": media_source, "media_id": media_id})
-
-        # 列新默认参数
+        # 添加订阅，并使用最终落库记录中的海报。
         kwargs.update(self.__get_default_kwargs(mediainfo.type, **kwargs))
-
-        # 操作数据库
-        sid, err_msg = await SubscribeOper().async_add(mediainfo=mediainfo, season=season, username=username, **kwargs)
+        subscribeoper = SubscribeOper()
+        sid, err_msg = await subscribeoper.async_add(mediainfo=mediainfo, season=season, username=username, **kwargs)
+        subscribe_poster = mediainfo.get_poster_image()
+        if sid:
+            subscribe = await subscribeoper.async_get(sid)
+            subscribe_poster = (subscribe.poster if subscribe else None) or subscribe_poster
         if not sid:
             logger.error(f'{mediainfo.title_year} {err_msg}')
             if not exist_ok and message:
@@ -1229,7 +1236,7 @@ class SubscribeChain(ChainBase):
                                                                    title=f"{mediainfo.title_year} {metainfo.season} "
                                                                          f"添加订阅失败！",
                                                                    text=f"{err_msg}",
-                                                                   image=mediainfo.get_message_image(),
+                                                                   image=subscribe_poster,
                                                                    userid=userid))
             return None, err_msg
         elif message:
@@ -1244,7 +1251,7 @@ class SubscribeChain(ChainBase):
                     source=source,
                     mtype=NotificationType.Subscribe,
                     ctype=ContentType.SubscribeAdded,
-                    image=mediainfo.get_message_image(),
+                    image=subscribe_poster,
                     link=link,
                     userid=userid,
                     username=username

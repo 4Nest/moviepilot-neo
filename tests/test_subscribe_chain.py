@@ -3310,6 +3310,9 @@ class SubscribeProgressConsolidationTest(TestCase):
                 added.append(kwargs)
                 return 41, None
 
+            def get(self, _sid):
+                return None
+
         with patch.object(module, "SubscribeOper", return_value=_SubscribeOper()), patch.object(
             module,
             "eventmanager",
@@ -3330,6 +3333,44 @@ class SubscribeProgressConsolidationTest(TestCase):
         self.assertEqual(captured[0][1].current_total_episode, 10)
         self.assertEqual(added[-1]["total_episode"], 10)
         self.assertEqual(added[-1]["lack_episode"], 10)
+
+    def test_add_notification_uses_poster_image(self):
+        """新增订阅通知必须使用竖版海报，而不是横版背景图。"""
+        module, SubscribeChain = _load_subscribe_chain_class()
+        mediainfo = self._mediainfo(total_episode=0)
+        mediainfo.type = MediaType.MOVIE
+        chain = SubscribeChain()
+        chain.recognize_media = lambda **_kwargs: mediainfo
+        chain.obtain_images = lambda **_kwargs: None
+        notifications = []
+
+        class _SubscribeOper:
+            def add(self, **_kwargs):
+                return 41, None
+
+            def get(self, _sid):
+                return SimpleNamespace(poster="https://image.tmdb.org/t/p/w500/skH9B7ZK3kE56wQVUOUOM26OPUY.jpg")
+
+        eventmanager, _ = self._event_manager()
+        chain.post_message = lambda notification, **_kwargs: notifications.append(notification)
+
+        with patch.object(module, "SubscribeOper", return_value=_SubscribeOper()), patch.object(
+            module,
+            "eventmanager",
+            eventmanager,
+        ):
+            sid, err_msg = chain.add(
+                title="海报通知电影",
+                year="2026",
+                mtype=MediaType.MOVIE,
+                tmdbid=31041,
+                message=True,
+            )
+
+        self.assertEqual((sid, err_msg), (41, None))
+        self.assertEqual(len(notifications), 1)
+        self.assertEqual(notifications[0].image, "https://image.tmdb.org/t/p/w500/skH9B7ZK3kE56wQVUOUOM26OPUY.jpg")
+
 
     def test_completed_episode_uses_schema_function_directly_for_best_version(self):
         module, SubscribeChain = _load_subscribe_chain_class()
