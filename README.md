@@ -5,7 +5,7 @@
 <h1 align="center">MoviePilot NEO</h1>
 
 <p align="center">
-  基于 MoviePilot v2 的个人定制分支，专注更清晰的媒体管理体验。
+  面向 NAS 的精简 MoviePilot 使用体验。
 </p>
 
 <p align="center">
@@ -14,8 +14,8 @@
   <img src="https://img.shields.io/badge/image-linux%2Famd64-2496ED.svg" alt="linux/amd64" />
 </p>
 
-> [!IMPORTANT]
-> MoviePilot NEO 是 `4Nest` 维护的个人公开 Fork，不是 MoviePilot 官方版本。项目基于上游 `v2` 分支，开发主线为 `neo`。
+> [!NOTE]
+> 上游 MoviePilot v2 已停止维护；NEO 是 `4Nest` 基于 v2 的个人定制版本，不代表官方项目。
 
 ## 快速开始
 
@@ -38,15 +38,9 @@ docker pull ghcr.io/4nest/moviepilot-neo:latest
 
 将 `/config` 映射到宿主机可读写目录。媒体目录和下载目录按自己的 NAS 路径配置；不要把数据留在容器可写层中。
 
-## NEO 定制方向
+## 项目定位
 
-| 方向 | 内容 |
-| --- | --- |
-| 品牌与界面 | NEO 霓虹 Logo、登录页、关于页及更聚焦的页面结构 |
-| 识别与订阅 | 识别结果信息层级、订阅管理和批量操作体验整理 |
-| 工程与运行 | 后端与前端独立维护，`neo` 分支自动构建 GHCR 镜像 |
-
-NEO 是个人定制体验，不承诺与上游的功能范围、界面或发布节奏完全一致。通用功能请参考 [MoviePilot 官方文档](https://movie-pilot.org)。
+NEO 只做一件事：在保留 MoviePilot 核心能力的基础上，提供更精简、更聚焦的日常使用体验。
 
 ## 从源码运行
 
