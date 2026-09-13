@@ -1,13 +1,19 @@
 name: Build moviepilot-neo Image
 
 on:
-  # neo 分支构建开发镜像；v* 标签构建正式版本并更新 latest
+  # neo 分支构建开发镜像；v* 标签构建正式版本；手动运行可选择发布 latest
   push:
     branches:
       - neo
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      publish_latest:
+        description: '将本次构建同时发布为 latest（仅稳定代码使用）'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -60,9 +66,9 @@ jobs:
         with:
           images: ghcr.io/4nest/moviepilot-neo
           tags: |
-            type=raw,value=neo,enable=${{ github.ref == 'refs/heads/neo' }}
+            type=raw,value=neo,enable=${{ github.ref == 'refs/heads/neo' && inputs.publish_latest != true }}
             type=ref,event=tag
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || inputs.publish_latest == true }}
 
       - name: Build and Push Image
         uses: docker/build-push-action@v7
