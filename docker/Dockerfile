@@ -103,7 +103,7 @@ ARG FRONTEND_DIST_ASSET=dist.zip
 ARG FRONTEND_DIST_TAG=unknown
 RUN echo "frontend dist tag: ${FRONTEND_DIST_TAG}" \
     && FRONTEND_VERSION=$(sed -n "s/^FRONTEND_VERSION\s*=\s*'\([^']*\)'/\1/p" /app/version.py) \
-    && curl -fsSL "https://github.com/${FRONTEND_REPO}/releases/download/${FRONTEND_VERSION}/${FRONTEND_DIST_ASSET}" -o /tmp/frontend-dist.zip \
+    && curl -fsSL --retry 12 --retry-delay 10 --retry-all-errors "https://github.com/${FRONTEND_REPO}/releases/download/${FRONTEND_VERSION}/${FRONTEND_DIST_ASSET}" -o /tmp/frontend-dist.zip \
     && busybox unzip -d / /tmp/frontend-dist.zip \
     && rm -f /tmp/frontend-dist.zip \
     && mv /dist /public \

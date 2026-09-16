@@ -63,7 +63,7 @@ jobs:
           frontend_asset="dist-${frontend_sha}.zip"
           frontend_asset_url="https://github.com/${FRONTEND_REPO}/releases/download/${frontend_version}/${frontend_asset}"
           for attempt in $(seq 1 60); do
-            if curl -fsSI "$frontend_asset_url" >/dev/null; then
+            if curl -fsSIL "$frontend_asset_url" >/dev/null; then
               echo "sha=$frontend_sha" >> "$GITHUB_OUTPUT"
               echo "asset=$frontend_asset" >> "$GITHUB_OUTPUT"
               exit 0
