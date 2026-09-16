@@ -19,6 +19,9 @@ permissions:
   contents: read
   packages: write
 
+env:
+  FRONTEND_REPO: 4Nest/moviepilot-neo-frontend
+
 # 同一 ref 串行构建，避免并发推送造成标签乱序；正式镜像通过版本标签发布
 concurrency:
   group: ghcr-build-${{ github.ref }}
@@ -49,6 +52,27 @@ jobs:
             --wiki-file .build/moviepilot-wiki/plugin.md \
             --config-file app/core/config.py
 
+
+      - name: Resolve immutable frontend asset
+        id: frontend
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          frontend_version=$(sed -n "s/^FRONTEND_VERSION\s*=\s*'\([^']*\)'/\1/p" version.py)
+          frontend_sha=$(gh api "repos/${FRONTEND_REPO}/commits/neo" --jq '.sha')
+          frontend_asset="dist-${frontend_sha}.zip"
+          frontend_asset_url="https://github.com/${FRONTEND_REPO}/releases/download/${frontend_version}/${frontend_asset}"
+          for attempt in $(seq 1 60); do
+            if curl -fsSI "$frontend_asset_url" >/dev/null; then
+              echo "sha=$frontend_sha" >> "$GITHUB_OUTPUT"
+              echo "asset=$frontend_asset" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Waiting for frontend asset ${frontend_asset} (${attempt}/60)"
+            sleep 10
+          done
+          echo "Frontend asset was not published: ${frontend_asset_url}" >&2
+          exit 1
       # Unraid 主机为 x86，仅构建 linux/amd64，runner 原生架构无需 QEMU
       - name: Set Up Buildx
         uses: docker/setup-buildx-action@v3
@@ -75,10 +99,11 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile
-          # 前端 Release 资产可在同一版本标签下被替换；run_id 保证每次镜像构建重新下载当前 dist.zip。
+          # 每个镜像绑定一个精确前端 commit 的不可变 Release 资产。
           build-args: |
-            FRONTEND_REPO=4Nest/moviepilot-neo-frontend
-            FRONTEND_DIST_TAG=${{ github.run_id }}-${{ github.run_attempt }}
+            FRONTEND_REPO=${{ env.FRONTEND_REPO }}
+            FRONTEND_DIST_ASSET=${{ steps.frontend.outputs.asset }}
+            FRONTEND_DIST_TAG=${{ steps.frontend.outputs.sha }}
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

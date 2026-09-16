@@ -97,13 +97,15 @@ FROM prepare_package AS prepare_code
 WORKDIR /app
 
 COPY . .
-# 前端 dist.zip 默认来自 NEO 前端仓库；官方构建可通过 build-arg 覆盖
+# 前端构建使用 commit SHA 命名的不可变 Release 资产，防止同版本 dist.zip 重建竞态。
 ARG FRONTEND_REPO=4Nest/moviepilot-neo-frontend
-# 前端 dist.zip 在同一 URL 下会重建，嵌入构建标识防止该层缓存命中旧产物
+ARG FRONTEND_DIST_ASSET=dist.zip
 ARG FRONTEND_DIST_TAG=unknown
 RUN echo "frontend dist tag: ${FRONTEND_DIST_TAG}" \
     && FRONTEND_VERSION=$(sed -n "s/^FRONTEND_VERSION\s*=\s*'\([^']*\)'/\1/p" /app/version.py) \
-    && curl -sL "https://github.com/${FRONTEND_REPO}/releases/download/${FRONTEND_VERSION}/dist.zip" | busybox unzip -d / - \
+    && curl -fsSL "https://github.com/${FRONTEND_REPO}/releases/download/${FRONTEND_VERSION}/${FRONTEND_DIST_ASSET}" -o /tmp/frontend-dist.zip \
+    && busybox unzip -d / /tmp/frontend-dist.zip \
+    && rm -f /tmp/frontend-dist.zip \
     && mv /dist /public \
     && curl -sL "https://github.com/jxxghp/MoviePilot-Plugins/archive/refs/heads/main.zip" | busybox unzip -d /tmp - \
     && mv -f /tmp/MoviePilot-Plugins-main/plugins.v2/* /app/app/plugins/ \
