@@ -574,6 +574,24 @@ def test_rust_year_like_episode_falls_back_to_python():
     assert meta.begin_episode == 2
     assert meta.year == "2026"
 
+
+
+def test_title_number_range_not_misread_as_episode_range():
+    """片名自带的数字区间(如 17-26)不得被识别为集数范围。"""
+    meta = MetaInfo(
+        "Fujimoto Tatsuki 17-26 S01 Complete 2025 1080p WebRip x265 10bit DDP5.1 2Audios-SweetSub&LoliHouse"
+    )
+
+    assert meta.type == MediaType.TV
+    assert meta.begin_season == 1
+    assert meta.begin_episode is None
+    assert meta.year == "2025"
+    assert "17" in meta.en_name and "26" in meta.en_name
+    assert meta.resource_type == "WebRip"
+    assert meta.video_encode == "x265 10bit"
+    assert meta.resource_team == "SweetSub@LoliHouse"
+
+
 def test_streaming_platform_word_kept_in_movie_title():
     """测试正式片名中的流媒体平台词不会被预置清理规则移除。"""
     with patch("app.core.metainfo.rust_accel.parse_metainfo", return_value=None):

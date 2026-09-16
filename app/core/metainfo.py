@@ -402,6 +402,9 @@ def _meta_from_rust(parsed: dict) -> Optional[MetaBase]:
     }
     for key, value in fields.items():
         setattr(meta, key, value)
+    # 统一资源类型写法,Rust 大写形式与 Python/动漫回退保持一致
+    if meta.resource_type and meta.resource_type.upper() == "WEBRIP":
+        meta.resource_type = "WebRip"
     if parsed.get("kind") == "anime":
         if not meta.resource_type:
             meta.resource_type = extract_anime_resource_type(meta.org_string or meta.title)
