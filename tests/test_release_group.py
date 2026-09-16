@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from tests.cases.groups import release_group_cases
 from app.core.meta.releasegroup import ReleaseGroupsMatcher
+from app.helper.words import WordsHelper
 
 
 class MetaInfoTest(TestCase):
@@ -20,8 +21,8 @@ class MetaInfoTest(TestCase):
         matcher = ReleaseGroupsMatcher()
 
         with patch.object(
-            matcher.systemconfig,
-            "get",
+            WordsHelper,
+            "get_merged_words",
             return_value=["VCB-Studio|hyakuhuyu|DMG|GM-Team"],
         ):
             release_group = matcher.match(

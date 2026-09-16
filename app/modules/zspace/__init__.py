@@ -2,12 +2,10 @@ from typing import Any, Generator, List, Optional, Tuple, Union
 
 from app import schemas
 from app.core.context import MediaInfo
-from app.core.event import eventmanager
 from app.log import logger
 from app.modules import _MediaServerBase, _ModuleBase
 from app.modules.zspace.zspace import ZSpace
-from app.schemas import AuthCredentials, AuthInterceptCredentials
-from app.schemas.types import ChainEventType, MediaServerType, MediaType, ModuleType
+from app.schemas.types import MediaServerType, MediaType, ModuleType
 
 
 class ZSpaceModule(_ModuleBase, _MediaServerBase[ZSpace]):
@@ -71,38 +69,6 @@ class ZSpaceModule(_ModuleBase, _MediaServerBase[ZSpace]):
             if server.is_inactive():
                 logger.info(f"极影视服务器 {name} 连接断开，尝试重连 ...")
                 server.reconnect()
-
-    def user_authenticate(self, credentials: AuthCredentials, service_name: Optional[str] = None) \
-            -> Optional[AuthCredentials]:
-        """
-        使用极影视用户辅助完成用户认证
-        :param credentials: 认证数据
-        :param service_name: 指定要认证的媒体服务器名称，若为 None 则认证所有服务
-        :return: 认证数据
-        """
-        if not credentials or credentials.grant_type != "password":
-            return None
-        if service_name:
-            servers = [(service_name, server)] if (server := self.get_instance(service_name)) else []
-        else:
-            servers = self.get_instances().items()
-        for name, server in servers:
-            intercept_event = eventmanager.send_event(
-                etype=ChainEventType.AuthIntercept,
-                data=AuthInterceptCredentials(username=credentials.username, channel=self.get_name(),
-                                              service=name, status="triggered")
-            )
-            if intercept_event and intercept_event.event_data:
-                intercept_data: AuthInterceptCredentials = intercept_event.event_data
-                if intercept_data.cancel:
-                    continue
-            token = server.authenticate(credentials.username, credentials.password)
-            if token:
-                credentials.channel = self.get_name()
-                credentials.service = name
-                credentials.token = token
-                return credentials
-        return None
 
     def webhook_parser(self, body: Any, form: Any, args: Any) -> Optional[schemas.WebhookEventInfo]:
         """

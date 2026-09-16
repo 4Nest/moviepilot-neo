@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app import schemas
 from app.chain import ChainBase
 from app.chain.mediaserver import MediaServerChain
+from app.chain.words import WordsSyncChain
 from app.chain.recommend import RecommendChain
 from app.chain.site import SiteChain
 from app.chain.subscribe import SubscribeChain
@@ -451,6 +452,11 @@ class Scheduler(ConfigReloadMixin, metaclass=SingletonClass):
                     "func": self.clear_cache,
                     "running": False,
                 },
+                "words_sync": {
+                    "name": "词表远程同步",
+                    "func": WordsSyncChain().auto_sync,
+                    "running": False,
+                },
                 "data_cleanup": {
                     "name": "数据表清理",
                     "func": SchedulerChain().cleanup,
@@ -566,6 +572,16 @@ class Scheduler(ConfigReloadMixin, metaclass=SingletonClass):
                 name="订阅元数据更新",
                 hours=6,
                 kwargs={"job_id": "subscribe_tmdb"},
+            )
+
+            # 远程词表同步(每6小时检查一次,到期才真正拉取)
+            self._scheduler.add_job(
+                self.start,
+                "interval",
+                id="words_sync",
+                name="词表远程同步",
+                hours=6,
+                kwargs={"job_id": "words_sync"},
             )
 
             # 订阅状态每隔24小时搜索一次

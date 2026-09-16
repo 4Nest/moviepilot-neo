@@ -7,6 +7,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.api.endpoints import mfa as mfa_endpoint
+from app.core.config import settings
 from app.helper.passkey import PasskeyChallengeStore
 
 
@@ -96,7 +97,7 @@ def test_authentication_transaction_rejects_other_user_credential():
         transaction_token=token,
     )
     passkey = SimpleNamespace(user_id=2)
-    user = SimpleNamespace(id=2, is_active=True)
+    user = SimpleNamespace(id=2, name="user", is_active=True)
 
     with patch.object(
         mfa_endpoint,
@@ -138,11 +139,10 @@ def test_authentication_finish_token_cannot_be_replayed():
     passkey = SimpleNamespace(user_id=1)
     user = SimpleNamespace(
         id=1,
-        name="user",
+        name=settings.SUPERUSER,
         is_active=True,
-        is_superuser=False,
+        is_superuser=True,
         avatar="",
-        permissions={},
     )
 
     with patch.object(

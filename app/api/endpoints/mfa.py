@@ -17,7 +17,7 @@ from app.db import get_async_db
 from app.db.models.passkey import PassKey
 from app.db.models.user import User
 from app.db.systemconfig_oper import SystemConfigOper
-from app.db.user_oper import get_current_active_user, get_current_active_user_async
+from app.db.user_oper import get_current_admin, get_current_admin_async
 from app.helper.passkey import (
     PassKeyHelper,
     PassKeyRegistrationOriginMismatchError,
@@ -140,7 +140,7 @@ async def mfa_status(username: str, db: AsyncSession = Depends(get_async_db)) ->
     "/otp/generate", summary="生成 OTP 验证 URI", response_model=schemas.Response
 )
 def otp_generate(
-    current_user: Annotated[User, Depends(get_current_active_user)],
+    current_user: Annotated[User, Depends(get_current_admin)],
 ) -> Any:
     """生成 OTP 密钥及对应的 URI"""
     secret, uri = OtpUtils.generate_secret_key(current_user.name)
@@ -151,7 +151,7 @@ def otp_generate(
 async def otp_verify(
     data: OtpVerifyRequest,
     db: AsyncSession = Depends(get_async_db),
-    current_user: User = Depends(get_current_active_user_async),
+    current_user: User = Depends(get_current_admin_async),
 ) -> Any:
     """验证用户输入的 OTP 码，验证通过后正式开启 OTP 验证"""
     if not OtpUtils.is_legal(data.uri, data.otpPassword):
@@ -168,7 +168,7 @@ async def otp_verify(
 async def otp_disable(
     data: OtpDisableRequest,
     db: AsyncSession = Depends(get_async_db),
-    current_user: User = Depends(get_current_active_user_async),
+    current_user: User = Depends(get_current_admin_async),
 ) -> Any:
     """关闭当前用户的 OTP 验证功能"""
     # 验证密码
@@ -214,7 +214,7 @@ class PassKeyAuthenticationFinish(schemas.BaseModel):
     response_model=schemas.Response,
 )
 def passkey_register_start(
-    current_user: Annotated[User, Depends(get_current_active_user)],
+    current_user: Annotated[User, Depends(get_current_admin)],
 ) -> Any:
     """开始注册 PassKey - 生成注册选项"""
     try:
@@ -255,7 +255,7 @@ def passkey_register_start(
 )
 def passkey_register_finish(
     passkey_req: PassKeyRegistrationFinish,
-    current_user: Annotated[User, Depends(get_current_active_user)],
+    current_user: Annotated[User, Depends(get_current_admin)],
 ) -> Any:
     """完成注册 PassKey - 验证并保存凭证"""
     try:
@@ -389,7 +389,7 @@ def passkey_authenticate_finish(
         # 查找PassKey并获取用户
         passkey = PassKey.get_by_credential_id(db=None, credential_id=credential_id)
         user = User.get_by_id(db=None, user_id=passkey.user_id) if passkey else None
-        if not passkey or not user or not user.is_active:
+        if not passkey or not user or not user.is_active or user.name != settings.SUPERUSER:
             raise HTTPException(status_code=401, detail="认证失败")
         if challenge_state.user_id is not None and challenge_state.user_id != user.id:
             raise HTTPException(status_code=401, detail="认证失败")
@@ -435,12 +435,10 @@ def passkey_authenticate_finish(
         return schemas.Token(
             access_token=access_token,
             token_type="bearer",
-            super_user=user.is_superuser,
             user_id=user.id,
             user_name=user.name,
             avatar=user.avatar,
             level=level,
-            permissions=user.permissions or {},
             wizard=show_wizard,
         )
     except HTTPException:
@@ -456,7 +454,7 @@ def passkey_authenticate_finish(
     response_model=schemas.Response,
 )
 def passkey_list(
-    current_user: Annotated[User, Depends(get_current_active_user)],
+    current_user: Annotated[User, Depends(get_current_admin)],
 ) -> Any:
     """获取当前用户的所有 PassKey"""
     try:
@@ -489,7 +487,7 @@ def passkey_list(
 @router.post("/passkey/delete", summary="删除 PassKey", response_model=schemas.Response)
 async def passkey_delete(
     data: PassKeyDeleteRequest,
-    current_user: User = Depends(get_current_active_user_async),
+    current_user: User = Depends(get_current_admin_async),
 ) -> Any:
     """删除指定的 PassKey"""
     try:

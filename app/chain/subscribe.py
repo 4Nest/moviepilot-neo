@@ -108,6 +108,9 @@ def _subscribe_media_keys(subscribe: Subscribe) -> List[Union[str, int]]:
     candidates = [
         build_media_key(media_source, media_id),
         subscribe.mediaid,
+        # media_id 原值兜底:存量数据可能保存了带前缀形态(如 "tmdb:94664"),
+        # 而缺失结果字典正是以该前缀形态为键。
+        subscribe.media_id if isinstance(subscribe.media_id, str) and ":" in subscribe.media_id else None,
         subscribe.tmdbid,
         subscribe.doubanid,
         subscribe.bangumiid,
@@ -115,6 +118,82 @@ def _subscribe_media_keys(subscribe: Subscribe) -> List[Union[str, int]]:
     ]
     return [candidate for candidate in candidates if candidate not in (None, "")]
 
+
+def expand_subscribe_version_rules(subscribe: Subscribe) -> List[dict]:
+    """展开启用版本；空规则旧订阅返回空以保留 legacy 单订阅分支。"""
+    rules = subscribe.version_rules or []
+    return [rule for rule in rules if isinstance(rule, dict) and rule.get("enabled", True)]
+
+
+def merge_subscribe_version_settings(subscribe: Subscribe, rule: dict) -> dict:
+    """用版本完整快照构造运行参数，不回退到其它版本。"""
+    settings = rule.get("settings") if isinstance(rule, dict) else None
+    if not isinstance(settings, dict):
+        return {}
+    return dict(settings)
+
+
+def match_version_rule(context: Context, rule: dict) -> bool:
+    """匹配版本制作组；缺失制作组证据时不满足显式约束。"""
+    release_group = rule.get("release_group") if isinstance(rule, dict) else None
+    if not release_group:
+        return True
+    resource_team = getattr(getattr(context, "meta_info", None), "resource_team", None)
+    if not resource_team:
+        resource_team = getattr(getattr(context, "torrent_info", None), "resource_team", None)
+    try:
+        return bool(resource_team and re.search(release_group, str(resource_team)))
+    except re.error:
+        logger.warning("跳过非法版本制作组正则: %s", release_group)
+        return False
+
+
+def build_subscribe_version_view(subscribe: Subscribe, rule: dict) -> Subscribe:
+    """构造版本独立运行视图，设置和进度都不回退到兄弟版本。"""
+    view = copy.copy(subscribe)
+    for key, value in merge_subscribe_version_settings(subscribe, rule).items():
+        # keyword 属于媒体搜索身份而非版本过滤策略,版本编辑器也无此入口;
+        # 快照中的空值必须继承订阅级关键词,否则订阅级 keyword 永远无法生效
+        if key == "keyword" and not value:
+            continue
+        # total_episode 是运行事实(系统按 TMDB 计算),快照默认 0 表示未设置;
+        # 用 0 覆盖父订阅真实总集数会把缺失数虚增(total 0->N 的增量全算进 lack)
+        if key == "total_episode" and not value:
+            continue
+        if hasattr(view, key):
+            setattr(view, key, copy.deepcopy(value))
+    progress = (subscribe.version_progress or {}).get(str(rule.get("id")), {})
+    if isinstance(progress, dict):
+        for key in ("state", "last_update", "lack_episode", "note", "current_priority", "episode_priority"):
+            if key in progress:
+                setattr(view, key, copy.deepcopy(progress[key]))
+    view._version_parent = subscribe
+    view._version_rule = rule
+    view._version_rule_id = str(rule.get("id"))
+    return view
+
+
+def expand_subscribe_runtime_views(subscribes: List[Subscribe]) -> List[Subscribe]:
+    """把结构化订阅展开为共享媒体身份、隔离设置和进度的运行工作项。"""
+    views: List[Subscribe] = []
+    for subscribe in subscribes:
+        rules = expand_subscribe_version_rules(subscribe)
+        views.extend(build_subscribe_version_view(subscribe, rule) for rule in rules)
+        if not subscribe.version_rules:
+            views.append(subscribe)
+    return views
+
+def build_subscribe_version_progress(subscribe: Subscribe, completed: Optional[bool] = None) -> dict:
+    """从版本运行视图提取只属于该版本的事实快照。"""
+    return {
+        "state": subscribe.state,
+        "last_update": subscribe.last_update,
+        "lack_episode": subscribe.lack_episode,
+        "note": copy.deepcopy(subscribe.note),
+        "current_priority": subscribe.current_priority,
+        "episode_priority": copy.deepcopy(subscribe.episode_priority or {}),
+        "completed": SubscribeChain.is_subscribe_complete(subscribe) if completed is None else completed,
+    }
 
 class SubscribeChain(ChainBase):
     """
@@ -282,6 +361,24 @@ class SubscribeChain(ChainBase):
         """
         if subscribe.type != MediaType.TV.value:
             return 0
+
+        if getattr(subscribe, "_version_rule_id", None) and not subscribe.best_version:
+            # 版本视图的缺失数以本版本下载事实(note)为准:无本轮下载时保持真实缺口,
+            # 不能按空缺失落成 0,否则失败/空轮次会把版本误判为完成并触发父订阅归档。
+            version_total = subscribe.total_episode or 0
+            version_start = subscribe.start_episode or 1
+            if not version_total or version_total < version_start:
+                return 0
+            version_target = set(range(version_start, version_total + 1))
+            version_downloaded = set()
+            for episode in subscribe.note or []:
+                try:
+                    episode_number = int(episode)
+                except (TypeError, ValueError):
+                    continue
+                if episode_number in version_target:
+                    version_downloaded.add(episode_number)
+            return len(version_target - version_downloaded)
 
         if not subscribe.best_version:
             no_exists = no_exists or {}
@@ -487,10 +584,19 @@ class SubscribeChain(ChainBase):
 
     @classmethod
     def is_best_version_complete(cls, subscribe: Subscribe) -> bool:
-        """
-        对外暴露洗版完成判断。
-        """
+        """对外暴露洗版完成判断。"""
         return cls.__is_best_version_complete(subscribe)
+
+    @classmethod
+    def is_subscribe_complete(cls, subscribe: Subscribe) -> bool:
+        """返回普通订阅或洗版订阅的当前完成事实。"""
+        if subscribe.best_version:
+            return cls.__is_best_version_complete(subscribe)
+        if subscribe.type == MediaType.MOVIE.value:
+            return bool(subscribe.note)
+        if subscribe.type == MediaType.TV.value:
+            return (subscribe.lack_episode or 0) == 0
+        return False
 
     @classmethod
     def __is_best_version_complete_with_priority(
@@ -731,6 +837,8 @@ class SubscribeChain(ChainBase):
             save_path: Optional[str] = None,
             downloader: Optional[str] = None,
             source: Optional[str] = None,
+            version_rule_id: Optional[str] = None,
+            version_settings: Optional[dict] = None,
     ) -> Tuple[List[Context], Dict[Union[int, str], Dict[int, schemas.NotExistMediaInfo]]]:
         """
         TV 分集洗版先尝试覆盖目标范围的全集资源，失败后回退到按集下载。
@@ -768,10 +876,13 @@ class SubscribeChain(ChainBase):
                 contexts=full_pack_contexts,
                 no_exists=full_pack_no_exists,
                 username=username,
+                version_rule_id=version_rule_id,
+                version_settings=version_settings or subscribe.to_dict(),
                 save_path=save_path,
                 downloader=downloader,
                 source=source,
                 custom_words=subscribe.custom_words,
+                subscribe_id=subscribe.id,
             )
             if downloads:
                 return downloads, lefts
@@ -785,6 +896,9 @@ class SubscribeChain(ChainBase):
             downloader=downloader,
             source=source,
             custom_words=subscribe.custom_words,
+            subscribe_id=subscribe.id,
+            version_rule_id=version_rule_id,
+            version_settings=version_settings or subscribe.to_dict(),
         )
 
     @staticmethod
@@ -859,6 +973,8 @@ class SubscribeChain(ChainBase):
             if kwargs.get("best_version_full") is None else kwargs.get("best_version_full"),
             'search_imdbid': self.__get_default_subscribe_config(mtype, "search_imdbid") if not kwargs.get(
                 "search_imdbid") else kwargs.get("search_imdbid"),
+            'skip_library_check': self.__get_default_subscribe_config(mtype, "skip_library_check")
+            if kwargs.get("skip_library_check") is None else kwargs.get("skip_library_check"),
             'sites': self.__get_default_subscribe_config(mtype, "sites") or None if not kwargs.get(
                 "sites") else kwargs.get("sites"),
             'downloader': self.__get_default_subscribe_config(mtype, "downloader") if not kwargs.get(
@@ -1337,6 +1453,7 @@ class SubscribeChain(ChainBase):
                 subscribes = [subscribe] if subscribe else []
             else:
                 subscribes = subscribeoper.list(self.get_states_for_search(state))
+            subscribes = expand_subscribe_runtime_views(subscribes)
             total_num = len(subscribes)
             if progress_callback:
                 progress_callback(
@@ -1406,6 +1523,10 @@ class SubscribeChain(ChainBase):
                                                                                      mediainfo=mediainfo,
                                                                                      mediakey=mediakey)
                         if exist_flag:
+                            version_rule_id = getattr(subscribe, "_version_rule_id", None)
+                            if version_rule_id:
+                                parent_subscribe = getattr(subscribe, "_version_parent")
+                                self.__persist_version_progress(parent_subscribe, version_rule_id, subscribe, completed=True)
                             continue
 
                         # 站点范围
@@ -1430,8 +1551,13 @@ class SubscribeChain(ChainBase):
                                                          filter_params=self.get_params(subscribe))
                         if not contexts:
                             logger.warn(f'订阅 {subscribe.keyword or subscribe.name} 未搜索到资源')
-                            self.finish_subscribe_or_not(subscribe=subscribe, meta=meta,
-                                                         mediainfo=mediainfo, lefts=no_exists)
+                            version_rule_id = getattr(subscribe, "_version_rule_id", None)
+                            if version_rule_id:
+                                parent_subscribe = getattr(subscribe, "_version_parent")
+                                self.__persist_version_progress(parent_subscribe, version_rule_id, subscribe)
+                            else:
+                                self.finish_subscribe_or_not(subscribe=subscribe, meta=meta,
+                                                             mediainfo=mediainfo, lefts=no_exists)
                             continue
 
                         # 过滤搜索结果
@@ -1498,10 +1624,23 @@ class SubscribeChain(ChainBase):
 
                         if not matched_contexts:
                             logger.warn(f'订阅 {subscribe.name} 没有符合过滤条件的资源')
-                            self.finish_subscribe_or_not(subscribe=subscribe, meta=meta,
-                                                         mediainfo=mediainfo, lefts=no_exists)
+                            version_rule_id = getattr(subscribe, "_version_rule_id", None)
+                            if version_rule_id:
+                                parent_subscribe = getattr(subscribe, "_version_parent")
+                                self.__persist_version_progress(parent_subscribe, version_rule_id, subscribe)
+                            else:
+                                self.finish_subscribe_or_not(subscribe=subscribe, meta=meta,
+                                                             mediainfo=mediainfo, lefts=no_exists)
                             continue
 
+                        version_rule_id = getattr(subscribe, "_version_rule_id", None)
+                        if version_rule_id:
+                            matched_contexts = [
+                                context for context in matched_contexts
+                                if match_version_rule(context, getattr(subscribe, "_version_rule", {}))
+                            ]
+                            for context in matched_contexts:
+                                context.version_rule_id = version_rule_id
                         # 自动下载
                         downloads, lefts = self.__download_best_version_with_full_pack_first(
                             contexts=matched_contexts,
@@ -1511,20 +1650,30 @@ class SubscribeChain(ChainBase):
                             username=subscribe.username,
                             save_path=subscribe.save_path,
                             downloader=subscribe.downloader,
-                            source=self.get_subscribe_source_keyword(subscribe)
+                            source=self.get_subscribe_source_keyword(subscribe),
+                            version_rule_id=version_rule_id,
+                            version_settings=merge_subscribe_version_settings(
+                                subscribe, getattr(subscribe, "_version_rule", {})
+                            ) if version_rule_id else None,
                         )
 
-                        # 同步外部修改，更新订阅信息
-                        subscribe = subscribeoper.get(subscribe.id)
+                        # 版本视图必须保留父订阅引用；legacy 分支再从数据库同步。
+                        if not version_rule_id:
+                            subscribe = subscribeoper.get(subscribe.id)
 
-                        # 判断是否应完成订阅
-                        if subscribe:
+                        # 版本视图把事实汇总到父订阅；legacy 分支沿用原完成处理。
+                        if version_rule_id:
+                            parent_subscribe = getattr(subscribe, "_version_parent")
+                            self.__record_version_download_facts(parent_subscribe, mediainfo, downloads)
+                            self.__finish_subscribe(parent_subscribe, mediainfo, meta)
+                        elif subscribe:
                             self.finish_subscribe_or_not(subscribe=subscribe, meta=meta, mediainfo=mediainfo,
                                                          downloads=downloads, lefts=lefts)
                     finally:
-                        # 如果状态为N则更新为R
-                        if search_attempted and subscribe and subscribe.state == 'N':
-                            subscribeoper.update(subscribe.id, {'state': 'R'})
+                        parent = getattr(subscribe, "_version_parent", subscribe)
+                        if search_attempted and parent and parent.state == 'N':
+                            subscribeoper.update(parent.id, {'state': 'R'})
+                            parent.state = 'R'
                         if progress_callback:
                             progress_callback(
                                 value=index / total_num * 100 if total_num else 100,
@@ -1589,6 +1738,14 @@ class SubscribeChain(ChainBase):
         media_keys = _subscribe_media_keys(subscribe)
         # 是否有剩余集
         no_lefts = not lefts or not any(lefts.get(media_key) for media_key in media_keys)
+        if subscribe.version_rules:
+            self.__record_version_download_facts(subscribe, mediainfo, downloads)
+            if force or all(
+                bool((subscribe.version_progress or {}).get(str(rule.get("id")), {}).get("completed"))
+                for rule in expand_subscribe_version_rules(subscribe)
+            ):
+                self.__finish_subscribe(subscribe=subscribe, meta=meta, mediainfo=mediainfo)
+            return
         if downloads and meta.type == MediaType.TV:
             self.__record_subscribe_download_facts(subscribe=subscribe, mediainfo=mediainfo, downloads=downloads)
         elif downloads:
@@ -1796,6 +1953,7 @@ class SubscribeChain(ChainBase):
 
             # 所有订阅
             subscribes = SubscribeOper().list(self.get_states_for_search('R'))
+            subscribes = expand_subscribe_runtime_views(subscribes)
             total_num = len(subscribes)
             if progress_callback:
                 progress_callback(
@@ -2072,11 +2230,23 @@ class SubscribeChain(ChainBase):
                                 torrent_mediainfo.episode_group = subscribe.episode_group
                             _match_context.append(_context)
 
+                    version_rule_id = getattr(subscribe, "_version_rule_id", None)
+                    if version_rule_id:
+                        _match_context = [
+                            context for context in _match_context
+                            if match_version_rule(context, getattr(subscribe, "_version_rule", {}))
+                        ]
+                        for context in _match_context:
+                            context.version_rule_id = version_rule_id
+
                     if not _match_context:
-                        # 未匹配到资源
-                        logger.info(f'{mediainfo.title_year} 未匹配到符合条件的资源')
-                        self.finish_subscribe_or_not(subscribe=subscribe, meta=meta,
-                                                     mediainfo=mediainfo, lefts=no_exists)
+                        logger.info(f'{mediainfo.title_year} 未匹配到符合过滤条件的资源')
+                        if version_rule_id:
+                            parent_subscribe = getattr(subscribe, "_version_parent")
+                            self.__persist_version_progress(parent_subscribe, version_rule_id, subscribe)
+                        else:
+                            self.finish_subscribe_or_not(subscribe=subscribe, meta=meta,
+                                                         mediainfo=mediainfo, lefts=no_exists)
                         continue
 
                     # 开始批量择优下载
@@ -2089,16 +2259,23 @@ class SubscribeChain(ChainBase):
                         username=subscribe.username,
                         save_path=subscribe.save_path,
                         downloader=subscribe.downloader,
-                        source=self.get_subscribe_source_keyword(subscribe)
+                        source=self.get_subscribe_source_keyword(subscribe),
+                        version_rule_id=version_rule_id,
+                        version_settings=merge_subscribe_version_settings(
+                            subscribe, getattr(subscribe, "_version_rule", {})
+                        ) if version_rule_id else None,
                     )
 
-                    # 同步外部修改，更新订阅信息
-                    subscribe = SubscribeOper().get(subscribe.id)
-
-                    # 判断是否要完成订阅
-                    if subscribe:
-                        self.finish_subscribe_or_not(subscribe=subscribe, meta=meta, mediainfo=mediainfo,
-                                                     downloads=downloads, lefts=lefts)
+                    # 版本视图把事实汇总到父订阅；legacy 分支再从数据库同步。
+                    if version_rule_id:
+                        parent_subscribe = getattr(subscribe, "_version_parent")
+                        self.__record_version_download_facts(parent_subscribe, mediainfo, downloads)
+                        self.__finish_subscribe(parent_subscribe, mediainfo, meta)
+                    else:
+                        subscribe = SubscribeOper().get(subscribe.id)
+                        if subscribe:
+                            self.finish_subscribe_or_not(subscribe=subscribe, meta=meta, mediainfo=mediainfo,
+                                                         downloads=downloads, lefts=lefts)
             finally:
                 processed_torrents.clear()
                 del processed_torrents
@@ -2517,6 +2694,49 @@ class SubscribeChain(ChainBase):
             return note
         return []
 
+    @staticmethod
+    def __get_downloaded_by_season(subscribe: Subscribe) -> Dict[int, set]:
+        """
+        按季还原本订阅已下载集,{季号: {集号}}。
+
+        平铺 note 无季维度,无法区分跨季同集号(整剧订阅 S1E03 与 S2E03);
+        多季场景以下载历史(subscribe_id 关联, seasons/episodes 字段)为准。
+        """
+        result: Dict[int, set] = {}
+        if subscribe.type != MediaType.TV.value or not subscribe.id:
+            return result
+        try:
+            histories = DownloadHistoryOper().list_by_subscribe(subscribe.id)
+        except Exception as err:
+            logger.warning(f'查询订阅 {subscribe.name} 下载历史失败: {err}')
+            return result
+        for history in histories or []:
+            season_str = (history.seasons or "").strip().upper()
+            if not season_str.startswith("S"):
+                continue
+            try:
+                season_num = int(season_str[1:])
+            except ValueError:
+                continue
+            episodes = result.setdefault(season_num, set())
+            for part in (history.episodes or "").upper().split(","):
+                part = part.strip().lstrip("E")
+                if not part:
+                    continue
+                if "-" in part:
+                    # E01-E02 范围格式(两段都可能带 E 前缀)
+                    try:
+                        start_s, end_s = part.split("-", 1)
+                        episodes.update(range(int(start_s.lstrip("E")), int(end_s.lstrip("E")) + 1))
+                    except ValueError:
+                        continue
+                else:
+                    try:
+                        episodes.add(int(part))
+                    except ValueError:
+                        continue
+        return result
+
     @classmethod
     def __prepare_subscribe_progress_fields(
             cls,
@@ -2542,15 +2762,30 @@ class SubscribeChain(ChainBase):
         return update_data
 
     @staticmethod
-    def __apply_subscribe_update(subscribe: Subscribe, update_data: Dict[str, Any]) -> None:
-        """
-        写入订阅字段并同步当前内存对象，保证后续事件和判断读取最终快照。
-        """
+    def __apply_subscribe_update(
+            subscribe: Subscribe, update_data: Dict[str, Any], persist: bool = True,
+    ) -> None:
+        """写入订阅字段并同步内存对象；版本运行视图可关闭父行字段写入。"""
         if not update_data:
             return
-        SubscribeOper().update(subscribe.id, update_data)
+        if persist:
+            SubscribeOper().update(subscribe.id, update_data)
         for key, value in update_data.items():
             setattr(subscribe, key, value)
+
+    @staticmethod
+    def __persist_version_progress(
+            parent: Subscribe, rule_id: str, view: Subscribe, completed: Optional[bool] = None,
+    ) -> None:
+        """替换父订阅中的单版本进度并持久化 JSON 快照。"""
+        # 版本视图 lack 以 note 事实重算后再落库;视图构建时继承的父订阅旧值
+        # 或历史错误值(如 total_episode 被 0 覆盖导致的虚增)不能原样回写,
+        # 否则该值会被一轮轮持久化永不自愈。
+        view.lack_episode = SubscribeChain.compute_lack_episode(view)
+        progress = copy.deepcopy(parent.version_progress or {})
+        progress[str(rule_id)] = build_subscribe_version_progress(view, completed=completed)
+        SubscribeOper().update(parent.id, {"version_progress": progress})
+        parent.version_progress = progress
 
     def __refresh_subscribe_progress_with_no_exists(
             self,
@@ -2558,6 +2793,7 @@ class SubscribeChain(ChainBase):
             no_exists: Optional[Dict[Union[int, str], Dict[int, schemas.NotExistMediaInfo]]] = None,
             touch_last_update: Optional[bool] = False,
             scene: str = "download",
+            persist: bool = True,
     ) -> Dict[str, Any]:
         """
         使用已解析的缺失信息刷新订阅进度，避免下载链路重复查询媒体库。
@@ -2572,7 +2808,7 @@ class SubscribeChain(ChainBase):
         if not update_data:
             return {"scene": scene, "updated": False, "fields": [], "reason": "unsupported_subscribe_type"}
 
-        self.__apply_subscribe_update(subscribe, update_data)
+        self.__apply_subscribe_update(subscribe, update_data, persist=persist)
         logger.info(
             f"订阅 {subscribe.id} 进度刷新：scene={scene}，fields={list(update_data)}，"
             f"lack_episode {old_lack_episode}->{subscribe.lack_episode}，"
@@ -2720,6 +2956,7 @@ class SubscribeChain(ChainBase):
             *,
             mediainfo: MediaInfo,
             downloads: Optional[List[Context]],
+            persist: bool = True,
     ) -> Dict[str, Any]:
         """
         记录主程序本轮下载产生的订阅事实，并返回本轮覆盖摘要。
@@ -2803,7 +3040,7 @@ class SubscribeChain(ChainBase):
             update_data["last_update"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         if update_data:
-            self.__apply_subscribe_update(subscribe, update_data)
+            self.__apply_subscribe_update(subscribe, update_data, persist=persist)
             logger.info(
                 f"{mediainfo.title_year} 订阅 {subscribe.id} 第 {subscribe.season} 季记录下载事实："
                 f"mode=best_version:{subscribe.best_version},full:{subscribe.best_version_full}，"
@@ -2816,10 +3053,41 @@ class SubscribeChain(ChainBase):
             "updated": bool(update_data),
         }
 
+    def __record_version_download_facts(
+            self, subscribe: Subscribe, mediainfo: MediaInfo, downloads: Optional[List[Context]],
+    ) -> None:
+        """把本轮下载事实写入各自版本视图，避免污染父订阅 legacy 进度字段。"""
+        downloads_by_rule: Dict[str, List[Context]] = {}
+        for context in downloads or []:
+            rule_id = getattr(context, "version_rule_id", None)
+            if rule_id:
+                downloads_by_rule.setdefault(str(rule_id), []).append(context)
+        for rule in expand_subscribe_version_rules(subscribe):
+            rule_id = str(rule.get("id"))
+            view = build_subscribe_version_view(subscribe, rule)
+            version_downloads = downloads_by_rule.get(rule_id, [])
+            if version_downloads:
+                self.__record_subscribe_download_facts(
+                    subscribe=view, mediainfo=mediainfo, downloads=version_downloads, persist=False,
+                )
+            self.__refresh_subscribe_progress_with_no_exists(
+                subscribe=view, no_exists=None, touch_last_update=bool(version_downloads),
+                scene="version_download", persist=False,
+            )
+            completed = self.is_subscribe_complete(view)
+            self.__persist_version_progress(subscribe, rule_id, view, completed=completed)
+
     def __finish_subscribe(self, subscribe: Subscribe, mediainfo: MediaInfo, meta: MetaBase):
-        """
-        完成订阅
-        """
+        """完成订阅；多版本仅在所有启用版本完成时归档。"""
+        rules = expand_subscribe_version_rules(subscribe)
+        if subscribe.version_rules:
+            progress = subscribe.version_progress or {}
+            if not rules:
+                logger.info("订阅 %s 没有启用版本，不自动归档", subscribe.id)
+                return
+            if not all(bool(progress.get(rule.get("id"), {}).get("completed")) for rule in rules):
+                logger.info("订阅 %s 仍有启用版本未完成，不归档", subscribe.id)
+                return
         # 如果订阅状态为待定（P），说明订阅信息尚未完全更新，无法完成订阅
         if subscribe.state == "P":
             return
@@ -4017,10 +4285,11 @@ class SubscribeChain(ChainBase):
             mediakey=mediakey,
         )
 
-        # 如果已下载完毕，执行订阅完成操作
+        # 版本视图只返回完成事实，由父订阅汇总所有启用版本后统一归档。
         if exist_flag:
             logger.info(f'{mediainfo.title_year} 已全部下载')
-            self.finish_subscribe_or_not(subscribe=subscribe, meta=meta, mediainfo=mediainfo, force=True)
+            if not getattr(subscribe, "_version_rule_id", None):
+                self.finish_subscribe_or_not(subscribe=subscribe, meta=meta, mediainfo=mediainfo, force=True)
             return True, no_exists
 
         # 返回结果，表示媒体未完全下载或存在
@@ -4044,17 +4313,90 @@ class SubscribeChain(ChainBase):
         mediakey = mediakey or _subscribe_media_key(subscribe)
         effective_total_episode = self.__resolve_effective_total_episode(subscribe, mediainfo)
 
-        if not subscribe.best_version:
-            totals = {}
-            if subscribe.season is not None and effective_total_episode:
-                totals = {
-                    subscribe.season: effective_total_episode
+        # 单规则订阅等价于普通订阅:未开"不检测媒体库存在集"时回退到媒体库缺失检测;
+        # 多版本视图、或单规则且已开开关时保持版本视图(只认自身下载事实,不查媒体库)
+        _version_rules = subscribe.version_rules or []
+        _keep_version_view = len(_version_rules) > 1 or getattr(subscribe, "skip_library_check", 0)
+        if getattr(subscribe, "_version_rule_id", None) and not subscribe.best_version and _keep_version_view:
+            # 版本视图的"已存在"只认该版本自己的下载事实(note),不看媒体库中其它组的
+            # 同名文件;否则补全特定制作组的版本永远搜不到库里已有集数对应的资源。
+            if meta.type == MediaType.TV:
+                start_episode = subscribe.start_episode or 1
+                downloaded_episodes = set(self.__get_downloaded(subscribe) or [])
+                pending_episodes = [
+                    episode for episode in range(start_episode, effective_total_episode + 1)
+                    if episode not in downloaded_episodes
+                ]
+                if not pending_episodes:
+                    return True, {}
+                return False, {
+                    mediakey: {
+                        subscribe.season: schemas.NotExistMediaInfo(
+                            season=subscribe.season,
+                            episodes=pending_episodes,
+                            total_episode=effective_total_episode,
+                            start_episode=start_episode,
+                        )
+                    }
                 }
-            exist_flag, no_exists = DownloadChain().get_no_exists_info(
-                meta=meta,
-                mediainfo=mediainfo,
-                totals=totals
-            )
+            return bool(self.__get_downloaded(subscribe)), {}
+
+        if not subscribe.best_version:
+            if getattr(subscribe, "skip_library_check", 0):
+                # 开启"不检测媒体库已存在集":不查询媒体库,按订阅范围与自身下载事实(note)计算缺失;
+                # 与版本视图分支同构,自包含返回——下游单季 helper 无法处理整剧多季映射,
+                # 且其空 range 路径会把 total_episode=0 的整剧订阅误判完成
+                downloaded_episodes = set(self.__get_downloaded(subscribe) or [])
+                # 整剧(多季)订阅:平铺 note 无季维度无法区分跨季同集号,
+                # 改按下载历史逐季精确剔除;单季订阅仍用平铺 note(季内集号无歧义)
+                downloaded_by_season: Dict[int, set] = {}
+                if subscribe.season is None:
+                    downloaded_by_season = self.__get_downloaded_by_season(subscribe)
+                if meta.type != MediaType.TV:
+                    return bool(downloaded_episodes), {}
+                start_episode = subscribe.start_episode or 1
+                seasons = getattr(mediainfo, "seasons", None) or {}
+                if subscribe.season is not None:
+                    target_seasons = [subscribe.season]
+                else:
+                    # 整剧订阅:按识别到的真实季展开,避免以 None 为季键导致下游搜索全部过滤
+                    target_seasons = sorted(s for s in seasons if isinstance(s, int)) or [None]
+                season_map = {}
+                for _season in target_seasons:
+                    _episodes = seasons.get(_season) if _season is not None else None
+                    if _episodes:
+                        total = len(_episodes)
+                        candidates = sorted(e for e in _episodes if e >= start_episode)
+                    else:
+                        total = effective_total_episode
+                        candidates = list(range(start_episode, effective_total_episode + 1)) if effective_total_episode else []
+                    # 多季用下载历史的季级集号;单季用平铺 note
+                    _downloaded = downloaded_by_season.get(_season, set()) if subscribe.season is None else downloaded_episodes
+                    pending = [e for e in candidates if e not in _downloaded]
+                    if pending:
+                        season_map[_season] = schemas.NotExistMediaInfo(
+                            season=_season,
+                            episodes=pending,
+                            total_episode=total,
+                            start_episode=start_episode,
+                        )
+                if season_map:
+                    return False, {mediakey: season_map}
+                # 有实际候选目标(真实季集列表或有效总集数)且全部下载完 -> 完成;
+                # 指定季无季信息且未设总集数 -> 无目标,不得判完成
+                had_targets = any(seasons.get(s) for s in target_seasons if s is not None) or bool(effective_total_episode)
+                return (True, {}) if had_targets else (False, {})
+            else:
+                totals = {}
+                if subscribe.season is not None and effective_total_episode:
+                    totals = {
+                        subscribe.season: effective_total_episode
+                    }
+                exist_flag, no_exists = DownloadChain().get_no_exists_info(
+                    meta=meta,
+                    mediainfo=mediainfo,
+                    totals=totals
+                )
         elif meta.type != MediaType.TV and self.__is_best_version_complete(subscribe):
             return True, {}
         else:
@@ -4410,3 +4752,11 @@ class SubscribeChain(ChainBase):
         except (IndexError, json.JSONDecodeError, TypeError) as e:
             logger.error(f"解析订阅来源关键字失败: {e}")
             return None
+    @staticmethod
+    def expand_version_rules(subscribe: Subscribe) -> List[dict]:
+        """返回启用版本；空规则旧订阅返回空以保留原链路。"""
+        return expand_subscribe_version_rules(subscribe)
+
+    @staticmethod
+    def match_version_rule(context: Context, rule: dict) -> bool:
+        return match_version_rule(context, rule)

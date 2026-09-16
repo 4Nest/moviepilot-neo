@@ -2,12 +2,10 @@ from typing import Any, Generator, List, Optional, Tuple, Union
 
 from app import schemas
 from app.core.context import MediaInfo
-from app.core.event import eventmanager
 from app.log import logger
 from app.modules import _MediaServerBase, _ModuleBase
 from app.modules.ugreen.ugreen import Ugreen
-from app.schemas import AuthCredentials, AuthInterceptCredentials
-from app.schemas.types import ChainEventType, MediaServerType, MediaType, ModuleType
+from app.schemas.types import MediaServerType, MediaType, ModuleType
 
 
 class UgreenModule(_ModuleBase, _MediaServerBase[Ugreen]):
@@ -82,45 +80,7 @@ class UgreenModule(_ModuleBase, _MediaServerBase[Ugreen]):
                 return False, f"无法连接绿联影视：{name}"
         return True, ""
 
-    def user_authenticate(
-        self, credentials: AuthCredentials, service_name: Optional[str] = None
-    ) -> Optional[AuthCredentials]:
-        """
-        使用绿联影视用户辅助完成用户认证
-        """
-        if not credentials or credentials.grant_type != "password":
-            return None
 
-        if service_name:
-            servers = (
-                [(service_name, server)]
-                if (server := self.get_instance(service_name))
-                else []
-            )
-        else:
-            servers = self.get_instances().items()
-
-        for name, server in servers:
-            intercept_event = eventmanager.send_event(
-                etype=ChainEventType.AuthIntercept,
-                data=AuthInterceptCredentials(
-                    username=credentials.username,
-                    channel=self.get_name(),
-                    service=name,
-                    status="triggered",
-                ),
-            )
-            if intercept_event and intercept_event.event_data:
-                intercept_data: AuthInterceptCredentials = intercept_event.event_data
-                if intercept_data.cancel:
-                    continue
-            token = server.authenticate(credentials.username, credentials.password)
-            if token:
-                credentials.channel = self.get_name()
-                credentials.service = name
-                credentials.token = token
-                return credentials
-        return None
 
     def webhook_parser(
         self, body: Any, form: Any, args: Any

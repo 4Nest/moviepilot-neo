@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.security import verify_apitoken
 from app.db import get_db
 from app.db.models.transferhistory import TransferHistory
-from app.db.user_oper import get_current_active_superuser
+from app.db.user_oper import get_current_admin
 from app.helper.directory import DirectoryHelper
 from app.scheduler import Scheduler
 from app.utils.system import SystemUtils
@@ -94,7 +94,7 @@ def _build_downloader(name: Optional[str] = None) -> schemas.DownloaderInfo:
 def statistic(
     name: Optional[str] = None,
     db: Session = Depends(get_db),
-    _: Any = Depends(get_current_active_superuser),
+    _: Any = Depends(get_current_admin),
 ) -> Any:
     """
     查询媒体数量统计信息
@@ -116,7 +116,7 @@ def statistic2(
 
 
 @router.get("/storage", summary="本地存储空间", response_model=schemas.Storage)
-def storage(_: Any = Depends(get_current_active_superuser)) -> Any:
+def storage(_: Any = Depends(get_current_admin)) -> Any:
     """
     查询本地存储空间信息
     """
@@ -134,7 +134,7 @@ def storage2(_: Annotated[str, Depends(verify_apitoken)]) -> Any:
 
 
 @router.get("/processes", summary="进程信息", response_model=List[schemas.ProcessInfo])
-def processes(_: Any = Depends(get_current_active_superuser)) -> Any:
+def processes(_: Any = Depends(get_current_admin)) -> Any:
     """
     查询进程信息
     """
@@ -142,7 +142,7 @@ def processes(_: Any = Depends(get_current_active_superuser)) -> Any:
 
 
 @router.get("/system", summary="系统摘要信息", response_model=schemas.DashboardSystemInfo)
-def system_info(_: Any = Depends(get_current_active_superuser)) -> Any:
+def system_info(_: Any = Depends(get_current_admin)) -> Any:
     """
     查询仪表板系统摘要信息
     """
@@ -151,7 +151,7 @@ def system_info(_: Any = Depends(get_current_active_superuser)) -> Any:
 
 @router.get("/downloader", summary="下载器信息", response_model=schemas.DownloaderInfo)
 def downloader(
-    name: Optional[str] = None, _: Any = Depends(get_current_active_superuser)
+    name: Optional[str] = None, _: Any = Depends(get_current_admin)
 ) -> Any:
     """
     查询下载器信息
@@ -172,7 +172,7 @@ def downloader2(_: Annotated[str, Depends(verify_apitoken)]) -> Any:
 
 
 @router.get("/schedule", summary="后台服务", response_model=List[schemas.ScheduleInfo])
-async def schedule(_: Any = Depends(get_current_active_superuser)) -> Any:
+async def schedule(_: Any = Depends(get_current_admin)) -> Any:
     """
     查询后台服务信息
     """
@@ -185,7 +185,7 @@ async def schedule(_: Any = Depends(get_current_active_superuser)) -> Any:
     response_model=schemas.Response,
 )
 async def schedule_progress(
-    job_id: str, _: Any = Depends(get_current_active_superuser)
+    job_id: str, _: Any = Depends(get_current_admin)
 ) -> Any:
     """
     查询指定后台服务的执行进度。
@@ -229,7 +229,7 @@ async def schedule_progress2(
 async def transfer(
     days: Optional[int] = 7,
     db: Session = Depends(get_db),
-    _: Any = Depends(get_current_active_superuser),
+    _: Any = Depends(get_current_admin),
 ) -> Any:
     """
     查询文件整理统计信息
@@ -239,7 +239,7 @@ async def transfer(
 
 
 @router.get("/cpu", summary="获取当前CPU使用率", response_model=float)
-def cpu(_: Any = Depends(get_current_active_superuser)) -> Any:
+def cpu(_: Any = Depends(get_current_admin)) -> Any:
     """
     获取当前CPU使用率
     """
@@ -259,7 +259,7 @@ def cpu2(_: Annotated[str, Depends(verify_apitoken)]) -> Any:
     summary="获取当前应用与系统内存信息",
     response_model=schemas.DashboardMemoryInfo,
 )
-def memory(_: Any = Depends(get_current_active_superuser)) -> Any:
+def memory(_: Any = Depends(get_current_admin)) -> Any:
     """
     获取当前应用与系统内存信息
     """
@@ -279,7 +279,7 @@ def memory2(_: Annotated[str, Depends(verify_apitoken)]) -> Any:
 
 
 @router.get("/network", summary="获取当前网络流量", response_model=List[int])
-def network(_: Any = Depends(get_current_active_superuser)) -> Any:
+def network(_: Any = Depends(get_current_admin)) -> Any:
     """
     获取当前网络流量（上行和下行流量，单位：bytes/s）
     """

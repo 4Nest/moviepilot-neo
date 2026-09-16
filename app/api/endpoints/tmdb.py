@@ -8,7 +8,7 @@ from app.core.config import settings
 from app.core.security import verify_token
 from app.db.models.user import User
 from app.db.systemconfig_oper import SystemConfigOper
-from app.db.user_oper import get_current_active_superuser_async
+from app.db.user_oper import get_current_admin_async
 from app.modules.themoviedb.tmdb_cache import TmdbCache
 from app.schemas.types import MediaType, SystemConfigKey
 
@@ -19,7 +19,7 @@ router = APIRouter()
     "/cache", summary="查询 TheMovieDb 识别缓存", response_model=schemas.Response
 )
 async def tmdb_recognition_cache(
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
 ) -> schemas.Response:
     """查询可管理的 TheMovieDb 识别缓存。"""
     cache_items = TmdbCache().list_items()
@@ -46,7 +46,7 @@ async def tmdb_recognition_cache(
 )
 async def delete_tmdb_recognition_cache(
     cache_key: str,
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
 ) -> schemas.Response:
     """按缓存键删除单条 TheMovieDb 识别缓存。"""
     deleted_item = TmdbCache().delete(cache_key)
@@ -59,7 +59,7 @@ async def delete_tmdb_recognition_cache(
     "/cache", summary="清空 TheMovieDb 识别缓存", response_model=schemas.Response
 )
 async def clear_tmdb_recognition_cache(
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
 ) -> schemas.Response:
     """清空全部 TheMovieDb 识别缓存。"""
     TmdbCache().clear()

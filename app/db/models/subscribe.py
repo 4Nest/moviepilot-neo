@@ -80,10 +80,16 @@ class Subscribe(Base):
     current_priority = Column(Integer)
     # 洗版时已下载剧集的优先级状态，格式：{"1": 90, "2": 100}
     episode_priority = Column(JSON)
+    # 多版本订阅完整规则快照及独立运行事实
+    version_rules = Column(JSON, nullable=True, default=list)
+    version_progress = Column(JSON, nullable=True, default=dict)
+    version_mode = Column(String, nullable=True, default='any')
     # 保存路径
     save_path = Column(String)
     # 是否使用 imdbid 搜索
     search_imdbid = Column(Integer, default=0)
+    # 是否跳过媒体库存在检测 0否 1是(开启后媒体库已有集也视为缺失,重新搜索下载)
+    skip_library_check = Column(Integer, default=0)
     # 是否手动修改过总集数 0否 1是
     manual_total_episode = Column(Integer, default=0)
     # 自定义识别词
@@ -160,57 +166,6 @@ class Subscribe(Base):
         if condition is None:
             return None
         query = select(cls).filter(condition)
-        if season is not None:
-            query = query.filter(cls.season == season)
-        query = query.filter(cls.episode_group == episode_group)
-        result = await db.execute(query)
-        return result.scalars().first()
-
-    @classmethod
-    @db_query
-    def exists_by_username(
-            cls, db: Session, username: str, tmdbid: Optional[int] = None,
-            doubanid: Optional[str] = None, bangumiid: Optional[int] = None,
-            anilistid: Optional[int] = None, media_source: Optional[str] = None,
-            media_id: Optional[str] = None, season: Optional[int] = None,
-            episode_group: Optional[str] = None,
-    ):
-        """
-        按订阅 owner、媒体身份、季号与剧集组查询订阅行。
-        """
-        if not username:
-            return None
-        condition = cls._identity_condition(
-            media_source, media_id, tmdbid, doubanid, bangumiid, anilistid
-        )
-        if condition is None:
-            return None
-        query = db.query(cls).filter(cls.username == username, condition)
-        if season is not None:
-            query = query.filter(cls.season == season)
-        query = query.filter(cls.episode_group == episode_group)
-        return query.first()
-
-    @classmethod
-    @async_db_query
-    async def async_exists_by_username(
-            cls, db: AsyncSession, username: str, tmdbid: Optional[int] = None,
-            doubanid: Optional[str] = None, bangumiid: Optional[int] = None,
-            anilistid: Optional[int] = None, media_source: Optional[str] = None,
-            media_id: Optional[str] = None, season: Optional[int] = None,
-            episode_group: Optional[str] = None,
-    ):
-        """
-        异步按订阅 owner、媒体身份、季号与剧集组查询订阅行。
-        """
-        if not username:
-            return None
-        condition = cls._identity_condition(
-            media_source, media_id, tmdbid, doubanid, bangumiid, anilistid
-        )
-        if condition is None:
-            return None
-        query = select(cls).filter(cls.username == username, condition)
         if season is not None:
             query = query.filter(cls.season == season)
         query = query.filter(cls.episode_group == episode_group)
@@ -478,48 +433,6 @@ class Subscribe(Base):
         if subscribe:
             await subscribe.async_delete(db, subscribe.id)
         return True
-
-    @classmethod
-    @db_query
-    def list_by_username(cls, db: Session, username: str, state: Optional[str] = None, mtype: Optional[str] = None):
-        if mtype:
-            if state:
-                return db.query(cls).filter(cls.state == state,
-                                            cls.username == username,
-                                            cls.type == mtype).all()
-            else:
-                return db.query(cls).filter(cls.username == username,
-                                            cls.type == mtype).all()
-        else:
-            if state:
-                return db.query(cls).filter(cls.state == state,
-                                            cls.username == username).all()
-            else:
-                return db.query(cls).filter(cls.username == username).all()
-
-    @classmethod
-    @async_db_query
-    async def async_list_by_username(cls, db: AsyncSession, username: str, state: Optional[str] = None,
-                                     mtype: Optional[str] = None):
-        if mtype:
-            if state:
-                result = await db.execute(
-                    select(cls).filter(cls.state == state, cls.username == username, cls.type == mtype)
-                )
-            else:
-                result = await db.execute(
-                    select(cls).filter(cls.username == username, cls.type == mtype)
-                )
-        else:
-            if state:
-                result = await db.execute(
-                    select(cls).filter(cls.state == state, cls.username == username)
-                )
-            else:
-                result = await db.execute(
-                    select(cls).filter(cls.username == username)
-                )
-        return result.scalars().all()
 
     @classmethod
     @db_query

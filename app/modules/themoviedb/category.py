@@ -1,4 +1,7 @@
+import os
 import shutil
+import threading
+from io import StringIO
 from pathlib import Path
 from typing import Union
 
@@ -24,14 +27,18 @@ HEADER_COMMENTS = """####### 配置说明 #######
 
 """
 
+DEFAULT_CATEGORY_TEMPLATE_PATH = Path(__file__).with_name("category_default.yaml")
+
 
 class CategoryHelper(metaclass=WeakSingleton):
     """
     二级分类
     """
 
+    DEFAULT_TEMPLATE_PATH = DEFAULT_CATEGORY_TEMPLATE_PATH
     def __init__(self):
         self._category_path: Path = settings.CONFIG_PATH / "category.yaml"
+        self._lock = threading.RLock()
         self._categorys = {}
         self._movie_categorys = {}
         self._tv_categorys = {}
@@ -41,23 +48,27 @@ class CategoryHelper(metaclass=WeakSingleton):
         """
         初始化
         """
-        try:
-            if not self._category_path.exists():
-                shutil.copy(settings.INNER_CONFIG_PATH / "category.yaml", self._category_path)
-            with open(self._category_path, mode='r', encoding='utf-8', errors='replace') as f:
-                try:
-                    yaml_loader = ruamel.yaml.YAML()
-                    self._categorys = yaml_loader.load(f)
-                except Exception as e:
-                    logger.warn(f"二级分类策略配置文件格式出现严重错误！请检查：{str(e)}")
-                    self._categorys = {}
-        except Exception as err:
-            logger.warn(f"二级分类策略配置文件加载出错：{str(err)}")
+        with self._lock:
+            categorys = {}
+            try:
+                if not self._category_path.exists():
+                    shutil.copy(self.DEFAULT_TEMPLATE_PATH, self._category_path)
+                with open(self._category_path, mode='r', encoding='utf-8', errors='replace') as f:
+                    try:
+                        yaml_loader = ruamel.yaml.YAML()
+                        categorys = yaml_loader.load(f)
+                    except Exception as e:
+                        logger.warn(f"二级分类策略配置文件格式出现严重错误！请检查：{str(e)}")
+            except Exception as err:
+                logger.warn(f"二级分类策略配置文件加载出错：{str(err)}")
 
-        if self._categorys:
-            self._movie_categorys = self._categorys.get('movie')
-            self._tv_categorys = self._categorys.get('tv')
-        logger.info(f"已加载二级分类策略 category.yaml")
+            # 解析失败或顶层非映射时显式重置，避免残留上一次的旧配置
+            if not isinstance(categorys, dict):
+                categorys = {}
+            self._categorys = categorys
+            self._movie_categorys = categorys.get('movie') or {}
+            self._tv_categorys = categorys.get('tv') or {}
+            logger.info(f"已加载二级分类策略 category.yaml")
 
     def load(self) -> CategoryConfig:
         """
@@ -80,18 +91,57 @@ class CategoryHelper(metaclass=WeakSingleton):
         """
         保存配置
         """
-        data = config.model_dump(exclude_none=True)
         try:
-            with open(self._category_path, 'w', encoding='utf-8') as f:
-                f.write(HEADER_COMMENTS)
-                yaml_dumper = ruamel.yaml.YAML()
-                yaml_dumper.dump(data, f)
-            # 保存后重新加载配置
-            self.init()
+            content = StringIO()
+            content.write(HEADER_COMMENTS)
+            yaml_dumper = ruamel.yaml.YAML()
+            yaml_dumper.dump(config.model_dump(exclude_none=True), content)
+            self.save_raw(content.getvalue())
             return True
         except Exception as e:
             logger.error(f"Save category config failed: {e}")
             return False
+
+    def load_default_raw(self) -> str:
+        """读取不可变的内置分类策略模板。"""
+        with open(self.DEFAULT_TEMPLATE_PATH, mode='r', encoding='utf-8', errors='replace') as f:
+            return f.read()
+
+    def load_raw(self) -> str:
+        """
+        读取配置文件原文（保留注释），文件不存在时先按初始化逻辑拷贝模板
+        """
+        with self._lock:
+            if not self._category_path.exists():
+                self.init()
+            with open(self._category_path, mode='r', encoding='utf-8', errors='replace') as f:
+                return f.read()
+
+    def save_raw(self, content: str) -> bool:
+        """
+        保存配置文件原文（保留注释），写入前将现有文件滚动备份为 category.yaml.bak；
+        采用临时文件 + 原子替换避免写盘中途失败损坏原文件，失败时抛出异常原因
+        """
+        with self._lock:
+            tmp_path = self._category_path.parent / f"{self._category_path.name}.tmp"
+            try:
+                if self._category_path.exists():
+                    shutil.copy(self._category_path,
+                                self._category_path.parent / f"{self._category_path.name}.bak")
+                with open(tmp_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                os.replace(tmp_path, self._category_path)
+            except Exception as e:
+                logger.error(f"Save raw category config failed: {e}")
+                try:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                except OSError:
+                    pass
+                raise
+            # 保存后重新加载配置
+            self.init()
+            return True
 
     @property
     def is_movie_category(self) -> bool:

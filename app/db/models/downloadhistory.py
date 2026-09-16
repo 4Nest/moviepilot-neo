@@ -63,6 +63,10 @@ class DownloadHistory(Base):
     date = Column(String)
     # 附加信息
     note = Column(JSON)
+    # 多版本订阅关联及下载时完整设置快照
+    subscribe_id = Column(Integer, nullable=True, index=True)
+    version_rule_id = Column(String, nullable=True, index=True)
+    version_settings = Column(JSON, nullable=True)
     # 自定义媒体类别
     media_category = Column(String)
     # 剧集组
@@ -86,6 +90,16 @@ class DownloadHistory(Base):
             .first()
         )
 
+
+    @classmethod
+    @db_query
+    def list_by_subscribe(cls, db: Session, subscribe_id: int):
+        """按订阅 ID 查询其全部下载历史(用于按季精确还原已下载集)。"""
+        return (
+            db.query(DownloadHistory)
+            .filter(DownloadHistory.subscribe_id == subscribe_id)
+            .all()
+        )
     @classmethod
     @db_query
     def get_by_hashes(cls, db: Session, download_hashes: List[str]):

@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Any, List, Optional, Union
 
+import ruamel.yaml
 from fastapi import APIRouter, Depends
 
 from app import schemas
@@ -13,9 +14,10 @@ from app.core.meta import MetaBase
 from app.core.metainfo import MetaInfo, MetaInfoPath
 from app.core.security import verify_token, verify_apitoken
 from app.db.models import User
-from app.db.user_oper import get_current_active_user, get_current_active_superuser
+from app.db.user_oper import get_current_admin
+from app.modules.themoviedb.category import CategoryHelper
 from app.schemas import MediaType, MediaRecognizeConvertEventData
-from app.schemas.category import CategoryConfig
+from app.schemas.category import CategoryConfig, CategoryRawConfig
 from app.schemas.types import ChainEventType
 from app.utils.media import MEDIA_SOURCE_ID_FIELDS, parse_media_key
 
@@ -300,7 +302,7 @@ def scrape(
 @router.get(
     "/category/config", summary="获取分类策略配置", response_model=schemas.Response
 )
-def get_category_config(_: User = Depends(get_current_active_user)):
+def get_category_config(_: User = Depends(get_current_admin)):
     """
     获取分类策略配置
     """
@@ -312,15 +314,72 @@ def get_category_config(_: User = Depends(get_current_active_user)):
     "/category/config", summary="保存分类策略配置", response_model=schemas.Response
 )
 def save_category_config(
-    config: CategoryConfig, _: User = Depends(get_current_active_superuser)
+    config: CategoryConfig, _: User = Depends(get_current_admin)
 ):
     """
     保存分类策略配置
     """
     if MediaChain().save_category_config(config):
         return schemas.Response(success=True, message="保存成功")
-    else:
-        return schemas.Response(success=False, message="保存失败")
+
+
+@router.get(
+    "/category/config/raw", summary="获取分类策略配置原文", response_model=schemas.Response
+)
+def get_category_config_raw(_: User = Depends(get_current_admin)):
+    """
+    获取分类策略配置 category.yaml 原文（含注释）
+    """
+    try:
+        content = CategoryHelper().load_raw()
+    except Exception as e:
+        return schemas.Response(success=False, message=f"读取分类配置原文失败：{str(e)}")
+    return schemas.Response(success=True, data={"content": content})
+
+
+@router.put(
+    "/category/config/raw", summary="保存分类策略配置原文", response_model=schemas.Response
+)
+def save_category_config_raw(
+    config: CategoryRawConfig, _: User = Depends(get_current_admin)
+):
+    """
+    保存分类策略配置 category.yaml 原文（保留注释），保存前滚动备份并即时生效
+    """
+    # 拒绝空内容，避免清空 category.yaml
+    if not config.content.strip():
+        return schemas.Response(success=False, message="内容不能为空")
+    # 校验 YAML 语法
+    try:
+        yaml_loader = ruamel.yaml.YAML()
+        data = yaml_loader.load(config.content)
+    except Exception as e:
+        return schemas.Response(success=False, message=f"YAML 语法错误：{str(e)}")
+    # 校验配置结构
+    try:
+        CategoryConfig(**(data or {}))
+    except Exception as e:
+        return schemas.Response(success=False, message=f"配置结构错误：{str(e)}")
+    # 备份并原子写入原文，重新加载即时生效
+    try:
+        CategoryHelper().save_raw(config.content)
+    except Exception as e:
+        return schemas.Response(success=False, message=f"保存分类配置原文失败：{str(e)}")
+    return schemas.Response(success=True, message="保存成功")
+
+
+@router.get(
+    "/category/config/raw/template", summary="获取分类策略默认模板", response_model=schemas.Response
+)
+def get_category_config_raw_template(_: User = Depends(get_current_admin)):
+    """
+    获取内置分类策略模板 category.yaml 原文（只读）
+    """
+    try:
+        content = CategoryHelper().load_default_raw()
+    except Exception as e:
+        return schemas.Response(success=False, message=f"读取分类策略模板失败：{str(e)}")
+    return schemas.Response(success=True, data={"content": content})
 
 
 @router.get("/category", summary="查询自动分类配置", response_model=dict)

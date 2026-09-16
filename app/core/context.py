@@ -1160,6 +1160,8 @@ class Context:
     allowed_episodes: Optional[Set[int]] = None
     # 下载层确认候选资源覆盖完整目标范围，供订阅事实写入判断整包资源。
     confirmed_full_coverage: bool = False
+    # 多版本订阅归属，仅在订阅链运行期和下载完成事实回写时使用。
+    version_rule_id: Optional[str] = None
 
     def to_dict(self):
         """
@@ -1177,4 +1179,5 @@ class Context:
             # 保留 None / 空集 / 非空集 三态语义，避免下游误把"显式拒绝"当成"不限制"。
             "allowed_episodes": sorted(self.allowed_episodes) if self.allowed_episodes is not None else None,
             "confirmed_full_coverage": self.confirmed_full_coverage,
+            "version_rule_id": self.version_rule_id,
         }

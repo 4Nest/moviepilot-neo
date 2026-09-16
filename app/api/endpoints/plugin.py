@@ -26,8 +26,8 @@ from app.core.security import (
 from app.db.models import User
 from app.db.systemconfig_oper import SystemConfigOper
 from app.db.user_oper import (
-    get_current_active_superuser,
-    get_current_active_superuser_async,
+    get_current_admin,
+    get_current_admin_async,
 )
 from app.factory import app
 from app.helper.server import MoviePilotServerHelper
@@ -250,32 +250,6 @@ def _merge_plugin_market_metadata(
     return plugin
 
 
-def _is_plugin_auth_remote_file(plugin_id: str, filepath: str) -> bool:
-    """
-    判断静态文件是否属于插件声明的匿名登录认证远程组件。
-
-    登录页加载插件认证组件时尚未产生登录态和资源 Cookie，因此仅对插件主动
-    声明的认证 remote 保留匿名读取能力，其余插件静态资源仍需资源令牌。
-    """
-    path = filepath.lstrip("/")
-    normalized_plugin_id = plugin_id.lower()
-    plugin_manager = PluginManager()
-    for provider in plugin_manager.get_plugin_auth_providers():
-        remote = provider.get("remote") or {}
-        if str(remote.get("id") or "").lower() != normalized_plugin_id:
-            continue
-        remote_path = str(remote.get("url") or "").lstrip("/")
-        remote_path_lower = remote_path.lower()
-        expected_prefix = f"plugin/file/{normalized_plugin_id}/"
-        if not remote_path_lower.startswith(expected_prefix):
-            continue
-        remote_file = remote_path[len(expected_prefix):]
-        remote_dir = remote_file.rsplit("/", 1)[0] if "/" in remote_file else ""
-        if path == remote_file or (remote_dir and path.startswith(f"{remote_dir}/")):
-            return True
-    return False
-
-
 def _verify_plugin_static_file_access(
     plugin_id: str,
     filepath: str,
@@ -284,11 +258,8 @@ def _verify_plugin_static_file_access(
     """
     校验插件静态文件访问权限。
 
-    普通插件资源依赖登录后写入的资源 Cookie；登录认证插件的远程组件需要在
-    登录前加载，因此仅对插件声明的认证 remote 放行匿名读取。
+    插件资源依赖登录后写入的资源 Cookie，统一要求资源令牌。
     """
-    if _is_plugin_auth_remote_file(plugin_id, filepath):
-        return
     verify_resource_token(resource_token)
 
 
@@ -342,7 +313,7 @@ async def _get_plugin_history_detail(
 
 @router.get("/", summary="所有插件", response_model=List[schemas.Plugin])
 async def all_plugins(
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
     state: Optional[str] = "all",
     force: bool = False,
 ) -> List[schemas.Plugin]:
@@ -400,7 +371,7 @@ async def all_plugins(
 
 
 @router.get("/installed", summary="已安装插件", response_model=List[str])
-async def installed(_: User = Depends(get_current_active_superuser_async)) -> Any:
+async def installed(_: User = Depends(get_current_admin_async)) -> Any:
     """
     查询用户已安装插件清单
     """
@@ -410,7 +381,7 @@ async def installed(_: User = Depends(get_current_active_superuser_async)) -> An
 @router.get("/history/{plugin_id}", summary="获取插件更新说明", response_model=schemas.Plugin)
 async def plugin_history(
     plugin_id: str,
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
     force: bool = True,
 ) -> schemas.Plugin:
     """
@@ -428,7 +399,7 @@ async def plugin_history(
 @router.get("/releases/{plugin_id}", summary="获取插件Release版本", response_model=dict)
 async def plugin_releases(
     plugin_id: str,
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
     repo_url: Optional[str] = "",
     force: bool = False,
 ) -> dict:
@@ -499,7 +470,7 @@ async def statistic(_: schemas.TokenPayload = Depends(verify_token)) -> Any:
 )
 async def plugin_ratings(
     plugin_ids: Optional[str] = None,
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
 ) -> Dict[str, schemas.PluginRating]:
     """
     批量查询插件平均分、评分人数和当前安装实例评分。
@@ -519,7 +490,7 @@ async def plugin_ratings(
 )
 async def plugin_rating(
     plugin_id: str,
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
 ) -> schemas.PluginRating:
     """
     查询单个插件平均分、评分人数和当前安装实例评分。
@@ -536,7 +507,7 @@ async def plugin_rating(
 async def rate_plugin(
     plugin_id: str,
     payload: schemas.PluginRatingRequest,
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
 ) -> schemas.Response:
     """
     为已安装插件新增或更新当前安装实例评分。
@@ -561,7 +532,7 @@ async def rate_plugin(
     "/reload/{plugin_id}", summary="重新加载插件", response_model=schemas.Response
 )
 def reload_plugin(
-    plugin_id: str, _: User = Depends(get_current_active_superuser)
+    plugin_id: str, _: User = Depends(get_current_admin)
 ) -> Any:
     """
     重新加载插件
@@ -579,7 +550,7 @@ async def install(
     repo_url: Optional[str] = "",
     release_version: Optional[str] = None,
     force: Optional[bool] = False,
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
 ) -> Any:
     """
     安装插件
@@ -647,7 +618,7 @@ def plugin_sidebar_nav(_: schemas.TokenPayload = Depends(verify_token)) -> Any:
 
 @router.get("/form/{plugin_id}", summary="获取插件表单页面")
 def plugin_form(
-    plugin_id: str, _: User = Depends(get_current_active_superuser)
+    plugin_id: str, _: User = Depends(get_current_admin)
 ) -> dict:
     """
     根据插件ID获取插件配置表单或Vue组件URL
@@ -679,7 +650,7 @@ def plugin_form(
 
 @router.get("/page/{plugin_id}", summary="获取插件数据页面")
 def plugin_page(
-    plugin_id: str, _: User = Depends(get_current_active_superuser)
+    plugin_id: str, _: User = Depends(get_current_admin)
 ) -> dict:
     """
     根据插件ID获取插件数据页面
@@ -703,7 +674,7 @@ def plugin_page(
 
 @router.get("/dashboard/meta", summary="获取所有插件仪表板元信息")
 def plugin_dashboard_meta(
-    _: User = Depends(get_current_active_superuser),
+    _: User = Depends(get_current_admin),
 ) -> List[dict]:
     """
     获取所有插件仪表板元信息
@@ -716,7 +687,7 @@ def plugin_dashboard_by_key(
     plugin_id: str,
     key: str,
     user_agent: Annotated[str | None, Header()] = None,
-    _: User = Depends(get_current_active_superuser),
+    _: User = Depends(get_current_admin),
 ) -> Optional[schemas.PluginDashboard]:
     """
     根据插件ID获取插件仪表板
@@ -728,7 +699,7 @@ def plugin_dashboard_by_key(
 def plugin_dashboard(
     plugin_id: str,
     user_agent: Annotated[str | None, Header()] = None,
-    _: User = Depends(get_current_active_superuser),
+    _: User = Depends(get_current_admin),
 ) -> Optional[schemas.PluginDashboard]:
     """
     根据插件ID获取插件仪表板
@@ -740,7 +711,7 @@ def plugin_dashboard(
     "/reset/{plugin_id}", summary="重置插件配置及数据", response_model=schemas.Response
 )
 def reset_plugin(
-    plugin_id: str, _: User = Depends(get_current_active_superuser)
+    plugin_id: str, _: User = Depends(get_current_admin)
 ) -> Any:
     """
     根据插件ID重置插件配置及数据
@@ -841,7 +812,7 @@ async def plugin_static_file(
 
 @router.get("/folders", summary="获取插件文件夹配置", response_model=dict)
 async def get_plugin_folders(
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
 ) -> dict:
     """
     获取插件文件夹分组配置
@@ -856,7 +827,7 @@ async def get_plugin_folders(
 
 @router.post("/folders", summary="保存插件文件夹配置", response_model=schemas.Response)
 async def save_plugin_folders(
-    folders: dict, _: User = Depends(get_current_active_superuser_async)
+    folders: dict, _: User = Depends(get_current_admin_async)
 ) -> Any:
     """
     保存插件文件夹分组配置
@@ -873,7 +844,7 @@ async def save_plugin_folders(
     "/folders/{folder_name}", summary="创建插件文件夹", response_model=schemas.Response
 )
 async def create_plugin_folder(
-    folder_name: str, _: User = Depends(get_current_active_superuser_async)
+    folder_name: str, _: User = Depends(get_current_admin_async)
 ) -> Any:
     """
     创建新的插件文件夹
@@ -893,7 +864,7 @@ async def create_plugin_folder(
     "/folders/{folder_name}", summary="删除插件文件夹", response_model=schemas.Response
 )
 async def delete_plugin_folder(
-    folder_name: str, _: User = Depends(get_current_active_superuser_async)
+    folder_name: str, _: User = Depends(get_current_admin_async)
 ) -> Any:
     """
     删除插件文件夹
@@ -917,7 +888,7 @@ async def delete_plugin_folder(
 async def update_folder_plugins(
     folder_name: str,
     plugin_ids: List[str],
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
 ) -> Any:
     """
     更新指定文件夹中的插件列表
@@ -934,7 +905,7 @@ async def update_folder_plugins(
     "/clone/{plugin_id}", summary="创建插件分身", response_model=schemas.Response
 )
 def clone_plugin(
-    plugin_id: str, clone_data: dict, _: User = Depends(get_current_active_superuser)
+    plugin_id: str, clone_data: dict, _: User = Depends(get_current_admin)
 ) -> Any:
     """
     创建插件分身
@@ -964,7 +935,7 @@ def clone_plugin(
 
 @router.get("/{plugin_id}", summary="获取插件配置")
 async def plugin_config(
-    plugin_id: str, _: User = Depends(get_current_active_superuser_async)
+    plugin_id: str, _: User = Depends(get_current_admin_async)
 ) -> dict:
     """
     根据插件ID获取插件配置信息
@@ -974,7 +945,7 @@ async def plugin_config(
 
 @router.put("/{plugin_id}", summary="更新插件配置", response_model=schemas.Response)
 def set_plugin_config(
-    plugin_id: str, conf: dict, _: User = Depends(get_current_active_superuser)
+    plugin_id: str, conf: dict, _: User = Depends(get_current_admin)
 ) -> Any:
     """
     更新插件配置
@@ -991,7 +962,7 @@ def set_plugin_config(
 
 @router.delete("/{plugin_id}", summary="卸载插件", response_model=schemas.Response)
 def uninstall_plugin(
-    plugin_id: str, _: User = Depends(get_current_active_superuser)
+    plugin_id: str, _: User = Depends(get_current_admin)
 ) -> Any:
     """
     卸载插件

@@ -2,6 +2,7 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from app.core.meta.customization import CustomizationMatcher
+from app.helper.words import WordsHelper
 
 
 class CustomizationMatcherTest(TestCase):
@@ -11,8 +12,8 @@ class CustomizationMatcherTest(TestCase):
         values = [["GROUP"], ["TEAM"]]
 
         with patch.object(
-            matcher.systemconfig,
-            "get",
+            WordsHelper,
+            "get_merged_words",
             side_effect=lambda _: values[0],
         ):
             self.assertEqual(matcher.match("[GROUP][TEAM] Movie"), "GROUP")

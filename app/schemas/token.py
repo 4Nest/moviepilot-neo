@@ -1,6 +1,6 @@
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class Token(BaseModel):
@@ -8,8 +8,6 @@ class Token(BaseModel):
     access_token: str
     # 令牌类型
     token_type: str
-    # 超级用户
-    super_user: bool
     # 用户ID
     user_id: int
     # 用户名
@@ -18,8 +16,6 @@ class Token(BaseModel):
     avatar: Optional[str] = None
     # 权限级别
     level: int = 1
-    # 详细权限
-    permissions: Optional[dict] = Field(default_factory=dict)
     # 是否显示配置向导
     wizard: Optional[bool] = None
 

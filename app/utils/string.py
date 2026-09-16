@@ -3,6 +3,7 @@ import datetime
 import hashlib
 import random
 import re
+import unicodedata
 from typing import Union, Tuple, Optional, Any, List, Generator
 from urllib import parse
 
@@ -203,11 +204,19 @@ class StringUtils:
         忽略特殊字符
         """
         # 需要忽略的特殊字符
-        CONVERT_EMPTY_CHARS = r"[、.。,，·:：;；!！?？'’\"“”()（）\[\]【】「」\-—―\+\|\\_/&#～~]"
+        CONVERT_EMPTY_CHARS = (
+            # 常见标点与括号(半角/全角)
+            r"[、.。,，·:：;；!！?？'’＇\"“”＂()（）\[\]【】「」〈〉《》«»\-—―\+\|\\_／/&#＆@＠~～〜"
+            # 装饰符号与日漫标题常见记号
+            r"☆★♪♫♥♡◎●○◆◇■□▲△▼▽※→←↑↓↔…‥°™®©±×÷＊％＃＄￥＝＜＞＾｀｛｝＿｜]"
+        )
         if not text:
             return text
         if not isinstance(text, list):
-            text = re.sub(r"[\u200B-\u200D\uFEFF]",
+            # NFKC 规范化:全角字母数字转半角(Ｔ→T、２→2),兼容罗马数字转 ASCII(Ⅲ→III),
+            # 全角波浪号等兼容字符归一后再走符号清洗,避免同一语义字符以多种形态漏网
+            text = unicodedata.normalize("NFKC", text)
+            text = re.sub(r"[​-‌﻿]",
                           "",
                           re.sub(r"%s" % CONVERT_EMPTY_CHARS, replace_word, text),
                           flags=re.IGNORECASE)

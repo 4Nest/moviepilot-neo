@@ -160,7 +160,14 @@ class AniBTSpider:
 
     @staticmethod
     def _build_params(keyword: Optional[str]) -> dict:
-        return {"q": keyword} if keyword else {}
+        if not keyword:
+            return {}
+        # 波浪号(全角 U+FF5E / 半角 ~)会触发站点把查询词 308 重定向到 %7E 编码形式,
+        # 而标准 HTTP 客户端按 RFC 3986 把 %7E 规范化回字面 ~,互踢形成重定向死循环,
+        # 搜索直接失败。替换为空格规避;站点按分词匹配,不影响命中。
+        cleaned = keyword.replace("～", " ").replace("~", " ").strip()
+        cleaned = " ".join(cleaned.split())
+        return {"q": cleaned} if cleaned else {}
 
     def search(
         self,

@@ -104,9 +104,19 @@ def resolve_media_identity(
 
 
 def build_media_key(source: Optional[str], media_id: Optional[Any]) -> str:
-    """构造 API 使用的带来源前缀媒体键。"""
+    """构造 API 使用的带来源前缀媒体键。
+
+    幂等:media_id 已带 ``source:id`` 前缀时先拆分,避免拼出 ``tmdb:tmdb:123``
+    这类双重前缀键导致缺失结果查不中、订阅被误判完成。
+    """
     normalized_source = normalize_media_source(source)
     if not normalized_source or media_id is None or not str(media_id).strip():
         return ""
+    raw_id = str(media_id).strip()
+    if ":" in raw_id:
+        legacy_source, legacy_id = parse_media_key(raw_id)
+        if legacy_source and legacy_id:
+            normalized_source = normalize_media_source(legacy_source) or normalized_source
+            raw_id = legacy_id
     prefix = MEDIA_SOURCE_PREFIXES.get(normalized_source, normalized_source)
-    return f"{prefix}:{str(media_id).strip()}"
+    return f"{prefix}:{raw_id}"

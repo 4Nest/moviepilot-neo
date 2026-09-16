@@ -120,50 +120,6 @@ def test_async_add_scopes_duplicate_lookup_by_episode_group(episode_group):
     created.async_create.assert_awaited_once()
 
 
-def test_owner_scoped_add_forwards_episode_group_sync_and_async():
-    """按 owner 去重的同步与异步新增也必须使用同一剧集组身份。"""
-    media = _media("eg-owner")
-    sync_persisted = SimpleNamespace(id=90)
-    sync_created = SimpleNamespace(create=MagicMock())
-    with patch("app.db.subscribe_oper.Subscribe") as subscribe_model:
-        subscribe_model.exists_by_username.side_effect = [None, sync_persisted]
-        subscribe_model.return_value = sync_created
-
-        sid, _ = SubscribeOper(db=object()).add(
-            mediainfo=media,
-            season=1,
-            username="alice",
-            owner_scope=True,
-        )
-
-    assert sid == 90
-    assert all(
-        call.kwargs["episode_group"] == "eg-owner"
-        for call in subscribe_model.exists_by_username.call_args_list
-    )
-
-    async_persisted = SimpleNamespace(id=91)
-    async_created = SimpleNamespace(async_create=AsyncMock())
-    with patch("app.db.subscribe_oper.Subscribe") as subscribe_model:
-        subscribe_model.async_exists_by_username = AsyncMock(
-            side_effect=[None, async_persisted]
-        )
-        subscribe_model.return_value = async_created
-
-        sid, _ = asyncio.run(SubscribeOper(db=object()).async_add(
-            mediainfo=media,
-            season=1,
-            username="alice",
-            owner_scope=True,
-        ))
-
-    assert sid == 91
-    assert all(
-        call.kwargs["episode_group"] == "eg-owner"
-        for call in subscribe_model.async_exists_by_username.await_args_list
-    )
-
-
 def test_exists_defaults_to_main_season_episode_group():
     """省略剧集组时按主季查询，显式剧集组按对应范围查询。"""
     oper = SubscribeOper(db=object())

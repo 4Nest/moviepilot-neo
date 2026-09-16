@@ -164,6 +164,8 @@
     "未识别到新名称": "Unable to recognize new name",
     "缺少参数": "Missing parameters",
     "用户已存在": "User already exists",
+    "仅 canonical admin 可拥有管理员身份": "Only the canonical admin can have administrator privileges",
+    "不能删除 canonical admin": "The canonical admin cannot be deleted",
     "密码需要同时包含字母、数字、特殊字符中的至少两项，且长度大于6位": "Password must contain at least two of letters, numbers, and special characters, and be longer than 6 characters",
     "用户名不能为空": "Username cannot be empty",
     "用户名已被使用": "Username is already in use",
@@ -366,9 +368,18 @@
     "订阅资源匹配完成": "Subscription resource matching completed",
     "订阅元数据更新完成": "Subscription metadata update completed",
     "未配置 Follow 订阅用户，跳过刷新": "No Follow subscription users configured, skipping refresh",
-    "订阅日历预缓存完成": "Subscription calendar precache completed"
+    "订阅日历预缓存完成": "Subscription calendar precache completed",
+    "内容不能为空": "Content cannot be empty"
   },
   "message_patterns": [
+    {
+      "source": "YAML 语法错误：{reason}",
+      "target": "YAML syntax error: {reason}"
+    },
+    {
+      "source": "配置结构错误：{reason}",
+      "target": "Configuration structure error: {reason}"
+    },
     {
       "source": "工具 '{tool}' 未找到",
       "target": "Tool '{tool}' was not found"

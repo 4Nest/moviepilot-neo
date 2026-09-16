@@ -17,8 +17,8 @@ class CategoryRule(BaseModel):
     production_countries: Optional[str] = None
     # 发行年份
     release_year: Optional[str] = None
-    # 允许接收其他动态字段
-    model_config = ConfigDict(extra='allow')
+    # 拒绝未知字段，避免笔误静默覆写整个配置
+    model_config = ConfigDict(extra='forbid')
 
 
 class CategoryConfig(BaseModel):
@@ -29,3 +29,13 @@ class CategoryConfig(BaseModel):
     movie: Optional[Dict[str, Optional[CategoryRule]]] = {}
     # 电视剧分类策略
     tv: Optional[Dict[str, Optional[CategoryRule]]] = {}
+    # 拒绝未知顶层键（如 moive 笔误），避免静默丢弃全部配置
+    model_config = ConfigDict(extra='forbid')
+
+
+class CategoryRawConfig(BaseModel):
+    """
+    分类策略配置原文
+    """
+    # category.yaml 原文内容
+    content: str

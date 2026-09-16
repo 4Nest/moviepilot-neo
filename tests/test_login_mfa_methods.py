@@ -97,6 +97,33 @@ def test_login_invalid_password_does_not_expose_mfa_methods(monkeypatch):
     assert "X-MFA-Required" not in (exc_info.value.headers or {})
 
 
+def test_password_authenticate_verifies_real_hash(monkeypatch):
+    """密码认证必须真实走哈希校验，而不是只在 mock 层成立。"""
+    from app.core.security import get_password_hash
+    from app.schemas import AuthCredentials
+
+    user = SimpleNamespace(
+        id=1,
+        name="admin",
+        is_active=True,
+        is_otp=False,
+        hashed_password=get_password_hash("secret"),
+    )
+    monkeypatch.setattr(UserChain, "__init__", lambda self: None)
+    monkeypatch.setattr(
+        "app.chain.user.UserOper",
+        lambda: SimpleNamespace(get_by_name=lambda name: user if name == "admin" else None),
+    )
+
+    credentials = AuthCredentials(username="admin", password="secret", grant_type="password")
+    success, result = UserChain.password_authenticate(credentials)
+    assert success is True
+    assert result is user
+
+    bad = AuthCredentials(username="admin", password="wrong", grant_type="password")
+    success, _ = UserChain.password_authenticate(bad)
+    assert success is False
+
 def test_wallpaper_returns_url_in_data(monkeypatch):
     """登录壁纸地址应放入 data，message 只保留消息文本。"""
 

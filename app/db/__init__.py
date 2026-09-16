@@ -533,8 +533,9 @@ class Base:
 
     @classmethod
     @async_db_update
-    async def async_truncate(cls, db: AsyncSession):
-        await db.execute(delete(cls))
+    async def async_truncate(cls, db: AsyncSession) -> int:
+        result = await db.execute(delete(cls))
+        return max(result.rowcount or 0, 0)
 
     @classmethod
     @db_query

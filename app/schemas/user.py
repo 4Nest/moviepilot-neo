@@ -9,39 +9,31 @@ class UserBase(BaseModel):
     name: str
     # 邮箱，未启用
     email: Optional[str] = None
-    # 状态
-    is_active: Optional[bool] = True
-    # 超级管理员
-    is_superuser: bool = False
     # 头像
     avatar: Optional[str] = None
     # 是否开启二次验证
     is_otp: Optional[bool] = False
-    # 权限
-    permissions: Optional[dict] = Field(default_factory=dict)
     # 个性化设置
     settings: Optional[dict] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)
 
 
-# Properties to receive via API on creation
-class UserCreate(UserBase):
-    name: str
+# Properties to receive via API on profile update（仅允许自助修改的字段）
+class UserProfileUpdate(BaseModel):
+    # 邮箱
     email: Optional[str] = None
+    # 新密码
     password: Optional[str] = None
-    settings: Optional[dict] = Field(default_factory=dict)
-    permissions: Optional[dict] = Field(default_factory=dict)
+    # 头像
+    avatar: Optional[str] = None
+    # 昵称（写入 settings.nickname）
+    nickname: Optional[str] = None
+    # 个性化设置
+    settings: Optional[dict] = None
 
-
-# Properties to receive via API on update
-class UserUpdate(UserBase):
-    id: int
-    name: str
-    email: Optional[str] = None
-    password: Optional[str] = None
-    settings: Optional[dict] = Field(default_factory=dict)
-    permissions: Optional[dict] = Field(default_factory=dict)
+    # name/is_active/is_superuser/permissions/id 等字段一律拒绝
+    model_config = ConfigDict(extra="forbid")
 
 
 class UserInDBBase(UserBase):

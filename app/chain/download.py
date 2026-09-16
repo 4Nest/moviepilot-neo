@@ -794,7 +794,10 @@ class DownloadChain(ChainBase):
                         username: Optional[str] = None,
                         label: Optional[str] = None,
                         return_detail: bool = False,
-                        custom_words: Optional[str] = None) -> Union[Optional[str], Tuple[Optional[str], Optional[str]]]:
+                        custom_words: Optional[str] = None,
+                        subscribe_id: Optional[int] = None,
+                        version_rule_id: Optional[str] = None,
+                        version_settings: Optional[dict] = None) -> Union[Optional[str], Tuple[Optional[str], Optional[str]]]:
         """
         下载及发送通知
         :param context: 资源上下文
@@ -964,7 +967,10 @@ class DownloadChain(ChainBase):
                 media_category=_media.category,
                 episode_group=_media.episode_group,
                 note={"source": source},
-                custom_words=custom_words
+                custom_words=custom_words,
+                subscribe_id=subscribe_id,
+                version_rule_id=version_rule_id,
+                version_settings=version_settings,
             )
 
             # 登记下载文件
@@ -1051,17 +1057,19 @@ class DownloadChain(ChainBase):
         if return_detail:
             return _hash, error_msg
         return _hash
-
     def batch_download(self,
                        contexts: List[Context],
                        no_exists: Dict[Union[int, str], Dict[int, NotExistMediaInfo]] = None,
                        save_path: Optional[str] = None,
-                       channel: MessageChannel = None,
-                       source: Optional[str] = None,
-                       userid: Optional[str] = None,
-                       username: Optional[str] = None,
                        downloader: Optional[str] = None,
-                       custom_words: Optional[str] = None
+                       source: Optional[str] = None,
+                       userid: Union[str, int] = None,
+                       username: Optional[str] = None,
+                       channel: MessageChannel = None,
+                       custom_words: Optional[str] = None,
+                       subscribe_id: Optional[int] = None,
+                       version_rule_id: Optional[str] = None,
+                       version_settings: Optional[dict] = None
                        ) -> Tuple[List[Context], Dict[Union[int, str], Dict[int, NotExistMediaInfo]]]:
         """
         根据缺失数据，自动种子列表中组合择优下载
@@ -1238,7 +1246,9 @@ class DownloadChain(ChainBase):
                 logger.info(f"开始下载电影 {context.torrent_info.title} ...")
                 if self.download_single(context, save_path=save_path, channel=channel,
                                         source=source, userid=userid, username=username,
-                                        downloader=downloader, custom_words=custom_words):
+                                        downloader=downloader, custom_words=custom_words,
+                                        subscribe_id=subscribe_id, version_rule_id=version_rule_id,
+                                        version_settings=version_settings):
                     # 下载成功
                     logger.info(f"{context.torrent_info.title} 添加下载成功")
                     downloaded_list.append(context)
@@ -1353,7 +1363,10 @@ class DownloadChain(ChainBase):
                                         userid=userid,
                                         username=username,
                                         downloader=downloader,
-                                        custom_words=custom_words
+                                        custom_words=custom_words,
+                                        subscribe_id=subscribe_id,
+                                        version_rule_id=version_rule_id,
+                                        version_settings=version_settings
                                     )
                             else:
                                 # 下载
@@ -1362,7 +1375,10 @@ class DownloadChain(ChainBase):
                                                                    channel=channel, source=source,
                                                                    userid=userid, username=username,
                                                                    downloader=downloader,
-                                                                   custom_words=custom_words)
+                                                                   custom_words=custom_words,
+                                                                   subscribe_id=subscribe_id,
+                                                                   version_rule_id=version_rule_id,
+                                                                   version_settings=version_settings)
 
                             if download_id:
                                 # 下载成功
@@ -1451,7 +1467,10 @@ class DownloadChain(ChainBase):
                                                                    channel=channel, source=source,
                                                                    userid=userid, username=username,
                                                                    downloader=downloader,
-                                                                   custom_words=custom_words)
+                                                                   custom_words=custom_words,
+                                                                   subscribe_id=subscribe_id,
+                                                                   version_rule_id=version_rule_id,
+                                                                   version_settings=version_settings)
                                 if download_id:
                                     # 下载成功
                                     if __requires_complete_coverage(tv):
@@ -1560,7 +1579,10 @@ class DownloadChain(ChainBase):
                                 userid=userid,
                                 username=username,
                                 downloader=downloader,
-                                custom_words=custom_words
+                                custom_words=custom_words,
+                                subscribe_id=subscribe_id,
+                                version_rule_id=version_rule_id,
+                                version_settings=version_settings
                             )
                             if not download_id:
                                 __remember_context_failure(context)

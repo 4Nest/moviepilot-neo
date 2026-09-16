@@ -13,122 +13,67 @@ class SubscribeEndpointTest(TestCase):
     订阅接口回归测试。
     """
 
-    def test_read_subscribes_scopes_regular_user_and_keeps_superuser_global(self):
+    def test_read_subscribes_returns_global_list_for_admin(self):
         """
-        普通用户只能看到自己创建的订阅，超级用户保留全局视图。
+        唯一账号体系下订阅列表直接返回全量数据。
         """
         from app.api.endpoints.subscribe import list_subscribes, read_subscribes
 
-        own = _EndpointSubscribe(id=1, username="alice", name="自己的订阅")
-        other = _EndpointSubscribe(id=2, username="bob", name="他人的订阅")
-        legacy = _EndpointSubscribe(id=3, username=None, name="旧订阅")
-        all_subscribes = [own, other, legacy]
+        all_subscribes = [
+            _EndpointSubscribe(id=1, username="admin", name="订阅一"),
+            _EndpointSubscribe(id=2, username="admin", name="订阅二"),
+        ]
 
         with patch(
             "app.api.endpoints.subscribe.Subscribe.async_list",
             new=AsyncMock(return_value=all_subscribes),
-        ), patch(
-            "app.api.endpoints.subscribe.Subscribe.async_list_by_username",
-            new=AsyncMock(return_value=[own]),
         ):
             api_token_result = asyncio.run(list_subscribes(_="api-token"))
-            self.assertEqual([sub.id for sub in api_token_result], [1, 2, 3])
+            self.assertEqual([sub.id for sub in api_token_result], [1, 2])
 
-            regular_result = asyncio.run(
-                read_subscribes(
-                    db=object(),
-                    current_user=_EndpointUser(name="alice", is_superuser=False),
-                )
-            )
-            self.assertEqual([sub.id for sub in regular_result], [1])
-
-            superuser_result = asyncio.run(
+            admin_result = asyncio.run(
                 read_subscribes(
                     db=object(),
                     current_user=_EndpointUser(name="admin", is_superuser=True),
                 )
             )
-            self.assertEqual([sub.id for sub in superuser_result], [1, 2, 3])
+            self.assertEqual([sub.id for sub in admin_result], [1, 2])
 
-    def test_read_subscribe_hides_other_and_legacy_from_regular_user(self):
+    def test_read_subscribe_returns_row_by_id(self):
         """
-        订阅详情按 owner 隐藏他人和 legacy 订阅，避免泄露订阅行存在性。
+        订阅详情按 ID 直接返回订阅行，归属校验由 admin 依赖统一完成。
         """
         from app.api.endpoints.subscribe import read_subscribe
 
-        current_user = _EndpointUser(name="alice", is_superuser=False)
-        cases = [
-            (_EndpointSubscribe(id=1, username="alice", name="自己的订阅"), 1),
-            (_EndpointSubscribe(id=2, username="bob", name="他人的订阅"), None),
-            (_EndpointSubscribe(id=3, username=None, name="旧订阅"), None),
-        ]
+        subscribe = _EndpointSubscribe(id=1, username="admin", name="测试订阅")
 
-        for subscribe, expected_id in cases:
-            with self.subTest(subscribe_id=subscribe.id), patch(
-                "app.api.endpoints.subscribe.Subscribe.async_get",
-                new=AsyncMock(return_value=subscribe),
-            ):
-                result = asyncio.run(
-                    read_subscribe(
-                        subscribe_id=subscribe.id,
-                        db=object(),
-                        current_user=current_user,
-                    )
+        with patch(
+            "app.api.endpoints.subscribe.Subscribe.async_get",
+            new=AsyncMock(return_value=subscribe),
+        ):
+            result = asyncio.run(
+                read_subscribe(
+                    subscribe_id=1,
+                    db=object(),
+                    current_user=_EndpointUser(name="admin", is_superuser=True),
                 )
+            )
 
-            self.assertEqual(getattr(result, "id", None), expected_id)
+        self.assertEqual(result.id, 1)
 
-    def test_manage_permission_does_not_allow_cross_user_update(self):
-        """
-        manage 权限不等于跨用户订阅管理权限，普通用户不能修改他人或 legacy 订阅。
-        """
-        from app.api.endpoints.subscribe import update_subscribe
-
-        manage_user = _EndpointUser(
-            name="alice",
-            is_superuser=False,
-            permissions={"manage": True},
-        )
-
-        for subscribe in [
-            _EndpointSubscribe(
-                id=2,
-                username="bob",
-                name="他人的订阅",
-                total_episode=8,
-                lack_episode=2,
-            ),
-            _EndpointSubscribe(
-                id=3,
-                username=None,
-                name="旧订阅",
-                total_episode=8,
-                lack_episode=2,
-            ),
-        ]:
-            with self.subTest(subscribe_id=subscribe.id), patch(
-                "app.api.endpoints.subscribe.Subscribe.async_get",
-                new=AsyncMock(return_value=subscribe),
-            ), patch(
-                "app.api.endpoints.subscribe.eventmanager.async_send_event",
-                new=AsyncMock(),
-            ) as send_event:
-                response = asyncio.run(
-                    update_subscribe(
-                        subscribe_in=Subscribe(
-                            id=subscribe.id,
-                            name="改名",
-                            total_episode=8,
-                            lack_episode=2,
-                        ),
-                        db=object(),
-                        current_user=manage_user,
-                    )
+        with patch(
+            "app.api.endpoints.subscribe.Subscribe.async_get",
+            new=AsyncMock(return_value=None),
+        ):
+            result = asyncio.run(
+                read_subscribe(
+                    subscribe_id=99,
+                    db=object(),
+                    current_user=_EndpointUser(name="admin", is_superuser=True),
                 )
+            )
 
-            self.assertFalse(response.success)
-            self.assertEqual(response.message, "订阅不存在")
-            send_event.assert_not_awaited()
+        self.assertIsNone(getattr(result, "id", None))
 
     def test_owner_can_update_own_subscribe(self):
         """
@@ -251,18 +196,16 @@ class SubscribeEndpointTest(TestCase):
             send_event.assert_awaited_once()
             self.assertEqual(subscribe.state, "S")
 
-    def test_share_subscribe_requires_local_owner(self):
+    def test_share_subscribe_requires_existing_subscribe(self):
         """
-        分享本地订阅前必须确认当前用户有权读取该订阅行。
+        分享订阅前必须确认订阅行存在。
         """
         from app.api.endpoints.subscribe import subscribe_share
         from app.schemas.subscribe import SubscribeShare
 
-        other = _EndpointSubscribe(id=7, username="bob", name="他人的订阅")
-
         with patch(
             "app.api.endpoints.subscribe.Subscribe.async_get",
-            new=AsyncMock(return_value=other),
+            new=AsyncMock(return_value=None),
         ), patch(
             "app.api.endpoints.subscribe.MoviePilotServerHelper.async_sub_share",
             new=AsyncMock(return_value=(True, "")),
@@ -273,10 +216,10 @@ class SubscribeEndpointTest(TestCase):
                         subscribe_id=7,
                         share_title="分享",
                         share_comment="",
-                        share_user="alice",
+                        share_user="admin",
                     ),
                     db=object(),
-                    current_user=_EndpointUser(name="alice", is_superuser=False),
+                    current_user=_EndpointUser(name="admin", is_superuser=True),
                 )
             )
 
@@ -284,53 +227,53 @@ class SubscribeEndpointTest(TestCase):
         self.assertEqual(response.message, "订阅不存在")
         sub_share.assert_not_awaited()
 
-    def test_subscribe_mediaid_returns_owner_when_other_candidate_matches_first(self):
+    def test_subscribe_mediaid_returns_first_matching_candidate(self):
         """
-        按媒体查询订阅时，他人订阅不能挡住当前用户自己的订阅。
+        按媒体查询订阅时返回候选集合中的第一条记录。
         """
         from app.api.endpoints.subscribe import subscribe_mediaid
 
-        other = _EndpointSubscribe(id=13, username="bob", tmdbid=123, season=1)
-        own = _EndpointSubscribe(id=14, username="alice", tmdbid=123, season=1)
+        first = _EndpointSubscribe(id=13, username="admin", tmdbid=123, season=1)
+        second = _EndpointSubscribe(id=14, username="admin", tmdbid=123, season=1)
 
         with patch(
             "app.api.endpoints.subscribe.Subscribe.async_exists",
-            new=AsyncMock(return_value=other),
+            new=AsyncMock(return_value=first),
         ), patch(
             "app.api.endpoints.subscribe.Subscribe.async_get_by_tmdbid",
-            new=AsyncMock(return_value=[other, own]),
+            new=AsyncMock(return_value=[first, second]),
         ):
             result = asyncio.run(
                 subscribe_mediaid(
                     mediaid="tmdb:123",
                     season=1,
                     db=object(),
-                    current_user=_EndpointUser(name="alice", is_superuser=False),
+                    current_user=_EndpointUser(name="admin", is_superuser=True),
                 )
             )
 
-        self.assertEqual(result.id, 14)
+        self.assertEqual(result.id, 13)
 
-    def test_delete_subscribe_by_mediaid_deletes_owner_when_other_douban_match_first(self):
+    def test_delete_subscribe_by_mediaid_deletes_all_candidates(self):
         """
-        按媒体删除订阅时，应在候选集合中删除当前用户自己的订阅。
+        按媒体删除订阅时，删除候选集合中的全部订阅。
         """
         from app.api.endpoints.subscribe import delete_subscribe_by_mediaid
 
-        other = _EndpointSubscribe(id=15, username="bob", doubanid="douban-1")
-        own = _EndpointSubscribe(id=16, username="alice", doubanid="douban-1")
+        first = _EndpointSubscribe(id=15, username="admin", doubanid="douban-1")
+        second = _EndpointSubscribe(id=16, username="admin", doubanid="douban-1")
         db = _EndpointAsyncDb()
 
         with patch(
             "app.api.endpoints.subscribe.Subscribe.async_get_by_doubanid",
-            new=AsyncMock(return_value=other),
+            new=AsyncMock(return_value=first),
         ), patch(
             "app.api.endpoints.subscribe.Subscribe.async_list_by_doubanid",
-            new=AsyncMock(return_value=[other, own]),
+            new=AsyncMock(return_value=[first, second]),
             create=True,
         ), patch(
             "app.api.endpoints.subscribe.build_subscribe_event_payload",
-            return_value={"id": 16, "doubanid": "douban-1"},
+            side_effect=lambda sub: {"id": sub.id, "doubanid": "douban-1"},
         ), patch(
             "app.api.endpoints.subscribe.eventmanager.async_send_event",
             new=AsyncMock(),
@@ -339,214 +282,157 @@ class SubscribeEndpointTest(TestCase):
                 delete_subscribe_by_mediaid(
                     mediaid="douban:douban-1",
                     db=db,
-                    current_user=_EndpointUser(name="alice", is_superuser=False),
+                    current_user=_EndpointUser(name="admin", is_superuser=True),
                 )
             )
 
         self.assertTrue(response.success)
-        self.assertEqual(db.deleted, [own])
-        send_event.assert_awaited_once()
+        self.assertEqual(db.deleted, [first, second])
+        self.assertEqual(send_event.await_count, 2)
 
-    def test_search_subscribes_regular_user_schedules_only_owned_rows(self):
+    def test_search_subscribes_schedules_single_global_job(self):
         """
-        普通用户批量搜索只按自己的订阅 ID 入队。
+        批量搜索入队一个全局订阅搜索任务，归属校验由 admin 依赖统一完成。
         """
         from app.api.endpoints.subscribe import search_subscribes
 
         background_tasks = _EndpointBackgroundTasks()
-        owned = [
-            _EndpointSubscribe(id=17, username="alice", state="R"),
-            _EndpointSubscribe(id=18, username="alice", state="R"),
-        ]
 
-        with patch(
-            "app.api.endpoints.subscribe.Subscribe.async_list_by_username",
-            new=AsyncMock(return_value=owned),
-        ), patch("app.api.endpoints.subscribe.Scheduler") as scheduler_cls:
+        with patch("app.api.endpoints.subscribe.Scheduler") as scheduler_cls:
             response = asyncio.run(
                 search_subscribes(
                     background_tasks=background_tasks,
                     db=object(),
-                    current_user=_EndpointUser(name="alice", is_superuser=False),
+                    current_user=_EndpointUser(name="admin", is_superuser=True),
                 )
             )
 
         self.assertTrue(response.success)
+        self.assertEqual(len(background_tasks.tasks), 1)
+        task = background_tasks.tasks[0]
+        self.assertEqual(task["kwargs"]["job_id"], "subscribe_search")
         self.assertEqual(
-            [task["kwargs"]["sid"] for task in background_tasks.tasks],
-            [17, 18],
+            {key: task["kwargs"][key] for key in ("sid", "state", "manual")},
+            {"sid": None, "state": "R", "manual": True},
         )
         self.assertEqual(scheduler_cls.return_value.start.call_count, 0)
 
-    def test_subscribe_files_hides_other_user_row(self):
+    def test_subscribe_files_returns_info_for_existing_row(self):
         """
-        订阅文件接口不能向普通用户暴露他人的订阅文件信息。
+        订阅文件接口返回已存在订阅的文件信息。
         """
         from app.api.endpoints.subscribe import subscribe_files
 
-        other = _EndpointSubscribe(id=19, username="bob", name="他人的订阅")
+        subscribe = _EndpointSubscribe(id=19, username="admin", name="测试订阅")
 
         with patch(
             "app.api.endpoints.subscribe.Subscribe.get",
-            return_value=other,
+            return_value=subscribe,
         ), patch(
             "app.api.endpoints.subscribe.SubscribeChain"
         ) as subscribe_chain:
+            subscribe_chain.return_value.subscribe_files_info.return_value = "files-info"
             result = subscribe_files(
                 subscribe_id=19,
                 db=object(),
-                current_user=_EndpointUser(name="alice", is_superuser=False),
+                current_user=_EndpointUser(name="admin", is_superuser=True),
             )
 
-        self.assertEqual(result.episodes, {})
-        subscribe_chain.return_value.subscribe_files_info.assert_not_called()
+        self.assertEqual(result, "files-info")
+        subscribe_chain.return_value.subscribe_files_info.assert_called_once_with(subscribe)
 
-    def test_user_subscribes_hides_other_user_list(self):
+    def test_user_subscribes_route_removed(self):
         """
-        普通用户不能通过 username 参数读取其他用户订阅列表。
+        按用户名查询订阅的路由已随多用户体系删除。
         """
-        from app.api.endpoints.subscribe import user_subscribes
+        from fastapi.routing import APIRoute
 
-        with patch(
-            "app.api.endpoints.subscribe.Subscribe.async_list_by_username",
-            new=AsyncMock(return_value=[_EndpointSubscribe(id=20, username="bob")]),
-        ) as list_by_username:
-            result = asyncio.run(
-                user_subscribes(
-                    username="bob",
-                    db=object(),
-                    current_user=_EndpointUser(name="alice", is_superuser=False),
-                )
-            )
+        from app.api.endpoints import subscribe as subscribe_endpoint
 
-        self.assertEqual(result, [])
-        list_by_username.assert_not_awaited()
+        paths = {
+            route.path
+            for route in subscribe_endpoint.router.routes
+            if isinstance(route, APIRoute)
+        }
+        self.assertNotIn("/user/{username}", paths)
 
-    def test_subscribe_oper_async_add_scopes_duplicate_lookup_by_owner(self):
+    def test_subscribe_oper_async_add_uses_global_duplicate_lookup(self):
         """
-        owner-aware 创建不应把他人已有订阅当作当前用户订阅。
+        唯一账号体系下新增订阅使用全局去重，不再按 owner 区分。
         """
         from app.db.subscribe_oper import SubscribeOper
 
-        other = _EndpointSubscribe(id=21, username="bob")
-        own = _EndpointSubscribe(id=22, username="alice")
+        persisted = _EndpointSubscribe(id=21, username="admin")
         created = SimpleNamespace(async_create=AsyncMock())
 
         with patch("app.db.subscribe_oper.Subscribe") as subscribe_model:
-            subscribe_model.async_exists = AsyncMock(return_value=other)
-            subscribe_model.async_exists_by_username = AsyncMock(
-                side_effect=[None, own]
-            )
+            subscribe_model.async_exists = AsyncMock(side_effect=[None, persisted])
             subscribe_model.return_value = created
 
             sid, message = asyncio.run(
                 SubscribeOper(db=object()).async_add(
                     mediainfo=_EndpointMediaInfo(),
-                    username="alice",
-                    owner_scope=True,
+                    username="admin",
                     season=1,
                 )
             )
 
-        self.assertEqual(sid, 22)
+        self.assertEqual(sid, 21)
         self.assertEqual(message, "新增订阅成功")
-        subscribe_model.async_exists.assert_not_awaited()
-        self.assertEqual(subscribe_model.async_exists_by_username.await_count, 2)
+        self.assertEqual(subscribe_model.async_exists.await_count, 2)
         created.async_create.assert_awaited_once()
 
-    def test_subscribe_history_scopes_regular_user_and_keeps_superuser_global(self):
+    def test_subscribe_history_uses_global_pagination(self):
         """
-        订阅历史分页必须在 DB 层按 owner 收窄，避免全局页过滤后误判没有更多数据。
+        唯一账号体系下订阅历史直接按类型全局分页。
         """
         from app.api.endpoints.subscribe import subscribe_history
 
-        own = _EndpointSubscribe(
-            id=8,
-            username="alice",
-            name="自己的历史",
-            type=MediaType.MOVIE.value,
-        )
-        other = _EndpointSubscribe(
-            id=9,
-            username="bob",
-            name="他人的历史",
-            type=MediaType.MOVIE.value,
-        )
-        legacy = _EndpointSubscribe(
-            id=10,
-            username="",
-            name="旧历史",
-            type=MediaType.MOVIE.value,
-        )
+        histories = [
+            _EndpointSubscribe(id=8, username="admin", name="历史一", type=MediaType.MOVIE.value),
+            _EndpointSubscribe(id=9, username="admin", name="历史二", type=MediaType.MOVIE.value),
+        ]
         db = object()
-        owner_query = AsyncMock(return_value=[own])
-        global_query = AsyncMock(return_value=[other, legacy])
+        global_query = AsyncMock(return_value=histories)
 
         with patch(
             "app.api.endpoints.subscribe.SubscribeHistory.async_list_by_type",
             new=global_query,
-        ), patch(
-            "app.api.endpoints.subscribe.SubscribeHistory.async_list_by_type_and_username",
-            new=owner_query,
-            create=True,
         ):
-            regular_result = asyncio.run(
+            result = asyncio.run(
                 subscribe_history(
                     mtype=MediaType.MOVIE.value,
                     page=1,
                     count=2,
                     db=db,
-                    current_user=_EndpointUser(name="alice", is_superuser=False),
-                )
-            )
-            self.assertEqual([history.id for history in regular_result], [8])
-            owner_query.assert_awaited_once_with(
-                db,
-                mtype=MediaType.MOVIE.value,
-                username="alice",
-                page=1,
-                count=2,
-            )
-            global_query.assert_not_awaited()
-
-            owner_query.reset_mock()
-            global_query.reset_mock(return_value=True)
-            global_query.return_value = [own, other, legacy]
-
-            superuser_result = asyncio.run(
-                subscribe_history(
-                    mtype=MediaType.MOVIE.value,
-                    page=1,
-                    count=3,
-                    db=db,
                     current_user=_EndpointUser(name="admin", is_superuser=True),
                 )
             )
-            self.assertEqual([history.id for history in superuser_result], [8, 9, 10])
-            global_query.assert_awaited_once_with(
-                db,
-                mtype=MediaType.MOVIE.value,
-                page=1,
-                count=3,
-            )
-            owner_query.assert_not_awaited()
 
-    def test_delete_subscribe_history_hides_other_from_regular_user(self):
+        self.assertEqual([history.id for history in result], [8, 9])
+        global_query.assert_awaited_once_with(
+            db,
+            mtype=MediaType.MOVIE.value,
+            page=1,
+            count=2,
+        )
+
+    def test_delete_subscribe_history_deletes_existing_row(self):
         """
-        普通用户删除他人订阅历史时按不存在处理。
+        删除订阅历史按 ID 直接删除存在的记录。
         """
         from app.api.endpoints.subscribe import delete_subscribe_history
 
-        other = _EndpointSubscribe(
+        history = _EndpointSubscribe(
             id=11,
-            username="bob",
-            name="他人的历史",
+            username="admin",
+            name="测试历史",
             type=MediaType.MOVIE.value,
         )
 
         with patch(
             "app.api.endpoints.subscribe.SubscribeHistory.async_get",
-            new=AsyncMock(return_value=other),
+            new=AsyncMock(return_value=history),
         ), patch(
             "app.api.endpoints.subscribe.SubscribeHistory.async_delete",
             new=AsyncMock(),
@@ -555,31 +441,26 @@ class SubscribeEndpointTest(TestCase):
                 delete_subscribe_history(
                     history_id=11,
                     db=object(),
-                    current_user=_EndpointUser(name="alice", is_superuser=False),
+                    current_user=_EndpointUser(name="admin", is_superuser=True),
                 )
             )
 
         self.assertTrue(response.success)
-        async_delete.assert_not_awaited()
+        async_delete.assert_awaited_once()
 
-    def test_global_refresh_and_check_require_superuser(self):
+    def test_global_refresh_and_check_require_admin_dependency(self):
         """
-        没有 owner 参数的全局订阅任务只允许超级用户触发。
+        全局订阅任务由 get_current_admin 依赖统一鉴权，端点只负责调度。
         """
+        import inspect
+
         from app.api.endpoints.subscribe import check_subscribes, refresh_subscribes
-
-        regular_user = _EndpointUser(name="alice", is_superuser=False)
-        superuser = _EndpointUser(name="admin", is_superuser=True)
+        from app.db.user_oper import get_current_admin
 
         for endpoint in [refresh_subscribes, check_subscribes]:
-            with self.subTest(endpoint=endpoint.__name__), patch(
-                "app.api.endpoints.subscribe.Scheduler"
-            ) as scheduler:
-                response = endpoint(current_user=regular_user)
-
-            self.assertFalse(response.success)
-            self.assertEqual(response.message, "订阅不存在")
-            scheduler.return_value.start.assert_not_called()
+            with self.subTest(endpoint=endpoint.__name__):
+                dependency = inspect.signature(endpoint).parameters["current_user"].default
+                self.assertIs(dependency.dependency, get_current_admin)
 
         for endpoint, job_id in [
             (refresh_subscribes, "subscribe_refresh"),
@@ -588,7 +469,7 @@ class SubscribeEndpointTest(TestCase):
             with self.subTest(endpoint=endpoint.__name__), patch(
                 "app.api.endpoints.subscribe.Scheduler"
             ) as scheduler:
-                response = endpoint(current_user=superuser)
+                response = endpoint(current_user=_EndpointUser(name="admin", is_superuser=True))
 
             self.assertTrue(response.success)
             scheduler.return_value.start.assert_called_once_with(job_id)
@@ -628,8 +509,8 @@ class SubscribeEndpointTest(TestCase):
         payload = async_add.await_args.kwargs
         for field in ("id", "poster", "backdrop", "vote", "description", "completed_episode"):
             self.assertNotIn(field, payload)
-        self.assertEqual(payload["username"], "moviepilot-user")
-        self.assertTrue(payload["owner_scope"])
+        self.assertEqual(payload["username"], "admin")
+        self.assertNotIn("owner_scope", payload)
 
     def test_create_subscribe_ignores_runtime_fact_fields(self):
         """
@@ -664,7 +545,7 @@ class SubscribeEndpointTest(TestCase):
 
         self.assertTrue(response.success)
         payload = async_add.await_args.kwargs
-        self.assertEqual(payload["username"], "moviepilot-user")
+        self.assertEqual(payload["username"], "admin")
         for field in (
             "lack_episode",
             "note",
@@ -707,11 +588,11 @@ class SubscribeEndpointTest(TestCase):
 
         self.assertTrue(response.success)
         self.assertEqual(async_add.await_args.kwargs["season"], 0)
-        self.assertTrue(async_add.await_args.kwargs["owner_scope"])
+        self.assertNotIn("owner_scope", async_add.await_args.kwargs)
 
-    def test_create_subscribe_keeps_superuser_global_deduplication(self):
+    def test_create_subscribe_uses_global_deduplication(self):
         """
-        超级用户新增订阅保持全局去重语义。
+        新增订阅保持全局去重语义，不再携带 owner_scope。
         """
         subscribe_in = Subscribe(
             name="测试电影",
@@ -731,7 +612,7 @@ class SubscribeEndpointTest(TestCase):
             )
 
         self.assertTrue(response.success)
-        self.assertFalse(async_add.await_args.kwargs["owner_scope"])
+        self.assertNotIn("owner_scope", async_add.await_args.kwargs)
 
     def test_update_status_sends_modified_event_payload_with_scene_and_fields(self):
         """
@@ -1055,6 +936,8 @@ class _EndpointSubscribe:
         self.current_priority = kwargs.pop("current_priority", None)
         self.episode_priority = kwargs.pop("episode_priority", None)
         self.manual_total_episode = kwargs.pop("manual_total_episode", None)
+        # 迁移后该列必有默认值 0,补进替身以保持 old/new 快照键集合与真实 ORM 一致
+        self.skip_library_check = kwargs.pop("skip_library_check", 0)
         self.__dict__.update(kwargs)
 
     def to_dict(self):

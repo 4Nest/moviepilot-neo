@@ -23,6 +23,12 @@ class DownloadHistoryOper(DbOper):
         """
         return DownloadHistory.get_by_hash(self._db, download_hash)
 
+    def list_by_subscribe(self, subscribe_id: int) -> List[DownloadHistory]:
+        """
+        按订阅 ID 查询其全部下载历史
+        """
+        return DownloadHistory.list_by_subscribe(self._db, subscribe_id)
+
     def get_by_hashes(self, download_hashes: List[str]) -> Dict[str, DownloadHistory]:
         """
         批量按 Hash 查询下载记录，并返回以 Hash 为键的映射。

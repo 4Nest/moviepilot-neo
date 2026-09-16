@@ -302,17 +302,16 @@ def _rust_default_parse_options() -> dict:
     from app.core.meta.customization import CustomizationMatcher
     from app.core.meta.releasegroup import ReleaseGroupsMatcher
     from app.core.meta.streamingplatform import StreamingPlatforms
-    from app.db.systemconfig_oper import SystemConfigOper
+    from app.helper.words import WordsHelper
     from app.schemas.types import SystemConfigKey
 
-    systemconfig = SystemConfigOper()
     release_groups = ReleaseGroupsMatcher().get_release_groups()
 
     customization = CustomizationMatcher.normalize_customization(
-        systemconfig.get(SystemConfigKey.Customization)
+        WordsHelper.get_merged_words(SystemConfigKey.Customization)
     )
     options = {
-        "custom_words": systemconfig.get(SystemConfigKey.CustomIdentifiers) or [],
+        "custom_words": WordsHelper.get_merged_words(SystemConfigKey.CustomIdentifiers),
         "media_exts": settings.RMT_MEDIAEXT + settings.RMT_SUBEXT + settings.RMT_AUDIOEXT,
         "release_groups": release_groups,
         "customization": customization,

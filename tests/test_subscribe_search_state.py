@@ -53,6 +53,7 @@ def _new_subscribe(created_at: datetime) -> SimpleNamespace:
         custom_words=None,
         date=created_at.strftime("%Y-%m-%d %H:%M:%S"),
         state="N",
+        version_rules=None,
         episode_group=None,
     )
 

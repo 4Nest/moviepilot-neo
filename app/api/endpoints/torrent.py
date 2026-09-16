@@ -10,8 +10,8 @@ from app.core.context import MediaInfo
 from app.core.metainfo import MetaInfo
 from app.db.models import User
 from app.db.user_oper import (
-    get_current_active_superuser,
-    get_current_active_superuser_async,
+    get_current_admin,
+    get_current_admin_async,
 )
 from app.utils.crypto import HashUtils
 
@@ -19,7 +19,7 @@ router = APIRouter()
 
 
 @router.get("/cache", summary="获取种子缓存", response_model=schemas.Response)
-async def torrents_cache(_: User = Depends(get_current_active_superuser_async)):
+async def torrents_cache(_: User = Depends(get_current_admin_async)):
     """
     获取当前种子缓存数据
     """
@@ -86,7 +86,7 @@ async def torrents_cache(_: User = Depends(get_current_active_superuser_async)):
 async def delete_cache(
     domain: str,
     torrent_hash: str,
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
 ):
     """
     删除指定的种子缓存
@@ -127,7 +127,7 @@ async def delete_cache(
 
 
 @router.delete("/cache", summary="清理种子缓存", response_model=schemas.Response)
-async def clear_cache(_: User = Depends(get_current_active_superuser_async)):
+async def clear_cache(_: User = Depends(get_current_admin_async)):
     """
     清理所有种子缓存
     """
@@ -141,7 +141,7 @@ async def clear_cache(_: User = Depends(get_current_active_superuser_async)):
 
 
 @router.post("/cache/refresh", summary="刷新种子缓存", response_model=schemas.Response)
-def refresh_cache(_: User = Depends(get_current_active_superuser)):
+def refresh_cache(_: User = Depends(get_current_admin)):
     """
     刷新种子缓存
     """
@@ -178,7 +178,7 @@ async def reidentify_cache(
     anilistid: Optional[int] = None,
     media_source: Optional[str] = None,
     media_id: Optional[str] = None,
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
 ):
     """
     重新识别指定的种子

@@ -28,6 +28,7 @@ from app.db.transferhistory_oper import TransferHistoryOper
 from app.helper.directory import DirectoryHelper
 from app.helper.format import EpisodeFormatRuleHelper, FormatParser
 from app.helper.progress import ProgressHelper
+from app.helper.words import WordsHelper
 from app.log import logger
 from app.schemas import StorageOperSelectionEventData
 from app.schemas import (
@@ -1219,8 +1220,8 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                     task.mediainfo, task.meta.begin_season
                 )
                 system_config_oper = SystemConfigOper()
-                # 获取整理屏蔽词
-                transfer_exclude_words = system_config_oper.get(
+                # 获取整理屏蔽词(本地 + 远程同步追加)
+                transfer_exclude_words = WordsHelper.get_merged_words(
                     SystemConfigKey.TransferExcludeWords
                 )
                 # 挂载盘空目录清理默认开启
@@ -2854,8 +2855,8 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
             else None
         )
 
-        # 整理屏蔽词
-        transfer_exclude_words = SystemConfigOper().get(
+        # 整理屏蔽词(本地 + 远程同步追加)
+        transfer_exclude_words = WordsHelper.get_merged_words(
             SystemConfigKey.TransferExcludeWords
         )
         # 汇总错误信息

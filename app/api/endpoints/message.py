@@ -12,7 +12,7 @@ from app.db import get_async_db
 from app.db.models import User
 from app.db.message_oper import MessageOper
 from app.db.systemconfig_oper import SystemConfigOper
-from app.db.user_oper import get_current_active_superuser
+from app.db.user_oper import get_current_admin
 from app.helper.service import ServiceConfigHelper
 from app.log import logger
 from app.modules.wechat.WXBizMsgCrypt3 import WXBizMsgCrypt
@@ -109,7 +109,7 @@ async def user_message(
 async def web_message(
     request: Request,
     text: Optional[str] = None,
-    current_user: User = Depends(get_current_active_superuser),
+    current_user: User = Depends(get_current_admin),
 ):
     """
     WEB消息响应

@@ -23,12 +23,7 @@ from app.db.models.sitestatistic import SiteStatistic
 from app.db.models.siteuserdata import SiteUserData
 from app.db.site_oper import SiteOper
 from app.db.systemconfig_oper import SystemConfigOper
-from app.db.user_oper import (
-    get_current_active_manage_user,
-    get_current_active_manage_user_async,
-    get_current_active_superuser,
-    get_current_active_superuser_async,
-)
+from app.db.user_oper import get_current_admin, get_current_admin_async
 from app.helper.sites import SitesHelper  # noqa
 from app.log import logger
 from app.scheduler import Scheduler
@@ -43,7 +38,7 @@ _cookiecloud_blacklist_lock = Lock()
 @router.get("/", summary="所有站点", response_model=List[schemas.Site])
 async def read_sites(
     db: AsyncSession = Depends(get_async_db),
-    _: User = Depends(get_current_active_manage_user_async),
+    _: User = Depends(get_current_admin_async),
 ) -> List[dict]:
     """
     获取站点列表
@@ -56,7 +51,7 @@ async def add_site(
     *,
     db: AsyncSession = Depends(get_async_db),
     site_in: schemas.Site,
-    _: User = Depends(get_current_active_manage_user_async),
+    _: User = Depends(get_current_admin_async),
 ) -> Any:
     """
     新增站点
@@ -95,7 +90,7 @@ async def update_site(
     *,
     db: AsyncSession = Depends(get_async_db),
     site_in: schemas.Site,
-    _: User = Depends(get_current_active_manage_user_async),
+    _: User = Depends(get_current_admin_async),
 ) -> Any:
     """
     更新站点信息
@@ -128,7 +123,7 @@ async def update_site(
 async def add_site_to_cookiecloud_blacklist(
     site_id: int,
     db: AsyncSession = Depends(get_async_db),
-    _: User = Depends(get_current_active_manage_user_async),
+    _: User = Depends(get_current_admin_async),
 ) -> Any:
     """将已保存站点的规范域名原子追加到 CookieCloud 同步黑名单。"""
     site = await Site.async_get(db, site_id)
@@ -184,7 +179,7 @@ async def add_site_to_cookiecloud_blacklist(
 @router.get("/cookiecloud", summary="CookieCloud同步", response_model=schemas.Response)
 async def cookie_cloud_sync(
     background_tasks: BackgroundTasks,
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
 ) -> Any:
     """
     运行CookieCloud同步站点信息
@@ -195,7 +190,7 @@ async def cookie_cloud_sync(
 
 @router.get("/reset", summary="重置站点", response_model=schemas.Response)
 def reset(
-    db: AsyncSession = Depends(get_db), _: User = Depends(get_current_active_superuser)
+    db: AsyncSession = Depends(get_db), _: User = Depends(get_current_admin)
 ) -> Any:
     """
     清空所有站点数据并重新同步CookieCloud站点信息
@@ -216,7 +211,7 @@ def reset(
 async def update_sites_priority(
     priorities: List[dict],
     db: AsyncSession = Depends(get_async_db),
-    _: User = Depends(get_current_active_manage_user_async),
+    _: User = Depends(get_current_admin_async),
 ) -> Any:
     """
     批量更新站点优先级
@@ -269,7 +264,7 @@ def update_cookie_by_body(
     site_id: int,
     site_cookie_update: schemas.SiteCookieUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_manage_user),
+    _: User = Depends(get_current_admin),
 ) -> Any:
     """
     使用请求体中的用户密码更新站点Cookie
@@ -292,7 +287,7 @@ def update_cookie(
     password: str,
     code: Optional[str] = None,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_manage_user),
+    _: User = Depends(get_current_admin),
 ) -> Any:
     """
     使用用户密码更新站点Cookie
@@ -312,7 +307,7 @@ def update_cookie(
 def refresh_userdata(
     site_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_manage_user),
+    _: User = Depends(get_current_admin),
 ) -> Any:
     """
     刷新站点用户数据
@@ -339,7 +334,7 @@ def refresh_userdata(
 )
 async def read_userdata_latest(
     db: AsyncSession = Depends(get_async_db),
-    _: User = Depends(get_current_active_manage_user_async),
+    _: User = Depends(get_current_admin_async),
 ) -> Any:
     """
     查询所有站点最新用户数据
@@ -357,7 +352,7 @@ async def read_userdata(
     site_id: int,
     workdate: Optional[str] = None,
     db: AsyncSession = Depends(get_async_db),
-    _: User = Depends(get_current_active_manage_user_async),
+    _: User = Depends(get_current_admin_async),
 ) -> Any:
     """
     查询站点用户数据
@@ -461,7 +456,7 @@ async def site_resource(
     cat: Optional[str] = None,
     page: Optional[int] = 0,
     db: AsyncSession = Depends(get_async_db),
-    _: User = Depends(get_current_active_manage_user_async),
+    _: User = Depends(get_current_admin_async),
 ) -> Any:
     """
     浏览站点资源
@@ -563,7 +558,7 @@ async def read_auth_sites(_: schemas.TokenPayload = Depends(verify_token)) -> di
 
 @router.post("/auth", summary="用户站点认证", response_model=schemas.Response)
 def auth_site(
-    auth_info: schemas.SiteAuth, _: User = Depends(get_current_active_superuser)
+    auth_info: schemas.SiteAuth, _: User = Depends(get_current_admin)
 ) -> Any:
     """
     用户站点认证
@@ -583,7 +578,7 @@ def auth_site(
 @router.get(
     "/mapping", summary="获取站点域名到名称的映射", response_model=schemas.Response
 )
-async def site_mapping(_: User = Depends(get_current_active_superuser_async)):
+async def site_mapping(_: User = Depends(get_current_admin_async)):
     """
     获取站点域名到名称的映射关系
     """
@@ -598,7 +593,7 @@ async def site_mapping(_: User = Depends(get_current_active_superuser_async)):
 
 
 @router.get("/supporting", summary="获取支持的站点列表", response_model=dict)
-async def support_sites(_: User = Depends(get_current_active_superuser_async)):
+async def support_sites(_: User = Depends(get_current_admin_async)):
     """
     获取支持的站点列表
     """
@@ -609,7 +604,7 @@ async def support_sites(_: User = Depends(get_current_active_superuser_async)):
 async def read_site(
     site_id: int,
     db: AsyncSession = Depends(get_async_db),
-    _: User = Depends(get_current_active_manage_user_async),
+    _: User = Depends(get_current_admin_async),
 ) -> Any:
     """
     通过ID获取站点信息
@@ -627,7 +622,7 @@ async def read_site(
 async def delete_site(
     site_id: int,
     db: AsyncSession = Depends(get_async_db),
-    _: User = Depends(get_current_active_manage_user_async),
+    _: User = Depends(get_current_admin_async),
 ) -> Any:
     """
     删除站点

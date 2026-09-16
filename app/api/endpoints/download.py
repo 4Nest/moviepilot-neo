@@ -11,7 +11,7 @@ from app.core.security import verify_token
 from app.db.models.user import User
 from app.db.site_oper import SiteOper
 from app.db.systemconfig_oper import SystemConfigOper
-from app.db.user_oper import get_current_active_user
+from app.db.user_oper import get_current_admin
 from app.helper.directory import DirectoryHelper
 from app.schemas.types import SystemConfigKey
 from app.utils.security import SecurityUtils
@@ -61,7 +61,7 @@ def download(
     torrent_in: schemas.TorrentInfo,
     downloader: Annotated[str | None, Body()] = None,
     save_path: Annotated[str | None, Body()] = None,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_admin),
 ) -> Any:
     """
     添加下载任务（含媒体信息）
@@ -105,7 +105,7 @@ def add(
     downloader: Annotated[str | None, Body()] = None,
     # 保存路径, 支持<storage>:<path>, 如rclone:/MP, smb:/server/share/Movies等
     save_path: Annotated[str | None, Body()] = None,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_admin),
 ) -> Any:
     """
     添加下载任务（不含媒体信息）
@@ -161,7 +161,7 @@ def download_subtitle(
     media_source: Annotated[MediaSource | None, Body()] = None,
     media_id: Annotated[str | None, Body()] = None,
     save_path: Annotated[str | None, Body()] = None,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_admin),
 ) -> Any:
     """
     下载字幕资源。

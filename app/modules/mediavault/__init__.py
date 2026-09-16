@@ -2,12 +2,10 @@ from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 
 from app import schemas
 from app.core.context import MediaInfo
-from app.core.event import eventmanager
 from app.log import logger
 from app.modules import _MediaServerBase, _ModuleBase
 from app.modules.mediavault.mediavault import MediaVault
-from app.schemas import AuthCredentials, AuthInterceptCredentials
-from app.schemas.types import ChainEventType, MediaServerType, MediaType, ModuleType
+from app.schemas.types import MediaServerType, MediaType, ModuleType
 
 
 class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
@@ -83,52 +81,7 @@ class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
                 return False, f"无法连接 MediaVault：{name}"
         return True, ""
 
-    def user_authenticate(
-        self, credentials: AuthCredentials, service_name: Optional[str] = None
-    ) -> Optional[AuthCredentials]:
-        """
-        使用 MediaVault 用户辅助完成用户认证
 
-        :param credentials: 认证数据
-        :param service_name: 指定要认证的媒体服务器名称，若为 None 则认证所有服务
-        :return: 认证数据
-        """
-        if not credentials or credentials.grant_type != "password":
-            return None
-        # 确定要认证的服务器列表
-        if service_name:
-            # 如果指定了服务名，获取该服务实例
-            servers = (
-                [(service_name, server)]
-                if (server := self.get_instance(service_name))
-                else []
-            )
-        else:
-            # 如果没有指定服务名，遍历所有服务
-            servers = self.get_instances().items()
-        # 遍历要认证的服务器
-        for name, server in servers:
-            # 触发认证拦截事件
-            intercept_event = eventmanager.send_event(
-                etype=ChainEventType.AuthIntercept,
-                data=AuthInterceptCredentials(
-                    username=credentials.username,
-                    channel=self.get_name(),
-                    service=name,
-                    status="triggered",
-                ),
-            )
-            if intercept_event and intercept_event.event_data:
-                intercept_data: AuthInterceptCredentials = intercept_event.event_data
-                if intercept_data.cancel:
-                    continue
-            token = server.authenticate(credentials.username, credentials.password)
-            if token:
-                credentials.channel = self.get_name()
-                credentials.service = name
-                credentials.token = token
-                return credentials
-        return None
 
     def media_exists(
         self,

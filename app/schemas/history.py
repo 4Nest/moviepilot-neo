@@ -60,6 +60,14 @@ class DownloadHistory(BaseModel):
     date: Optional[str] = None
     # 备注
     note: Optional[Any] = None
+    # 订阅ID
+    subscribe_id: Optional[int] = None
+    # 多版本订阅版本ID
+    version_rule_id: Optional[str] = None
+    # 版本完整设置快照
+    version_settings: Optional[Any] = None
+    # 自定义识别词
+    custom_words: Optional[str] = None
     # 自定义媒体类别
     media_category: Optional[str] = None
     # 自定义剧集组

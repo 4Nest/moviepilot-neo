@@ -29,11 +29,7 @@ from app.core.module import ModuleManager
 from app.core.security import verify_apitoken, verify_resource_token, verify_token
 from app.db.models import User
 from app.db.systemconfig_oper import SystemConfigOper
-from app.db.user_oper import (
-    get_current_active_superuser,
-    get_current_active_superuser_async,
-    get_current_active_user_async,
-)
+from app.db.user_oper import get_current_admin, get_current_admin_async
 from app.helper.image import ImageHelper
 from app.helper.locale import LocaleHelper
 from app.helper.market import (
@@ -606,7 +602,7 @@ def get_global_setting(token: str):
 @router.get(
     "/global/user", summary="查询用户相关系统设置", response_model=schemas.Response
 )
-async def get_user_global_setting(_: User = Depends(get_current_active_user_async)):
+async def get_user_global_setting(_: User = Depends(get_current_admin_async)):
     """
     查询用户相关系统设置（登录后获取）
     包含业务功能相关的配置和用户权限信息
@@ -633,7 +629,7 @@ async def get_user_global_setting(_: User = Depends(get_current_active_user_asyn
 
 @router.get("/env", summary="查询系统配置", response_model=schemas.Response)
 async def get_env_setting(
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
 ) -> schemas.Response:
     """
     查询系统环境变量，包括当前版本号（仅管理员）
@@ -653,7 +649,7 @@ async def get_env_setting(
 
 
 @router.get("/usage/statistic", summary="查询安装版本统计报表", response_model=schemas.Response)
-async def usage_statistic(_: User = Depends(get_current_active_user_async)):
+async def usage_statistic(_: User = Depends(get_current_admin_async)):
     """
     查询安装版本统计报表
     """
@@ -661,7 +657,7 @@ async def usage_statistic(_: User = Depends(get_current_active_user_async)):
 
 
 @router.get("/ping", summary="服务存活检测", response_model=schemas.Response)
-async def ping(_: User = Depends(get_current_active_user_async)) -> schemas.Response:
+async def ping(_: User = Depends(get_current_admin_async)) -> schemas.Response:
     """
     检测服务是否可用
     """
@@ -670,7 +666,7 @@ async def ping(_: User = Depends(get_current_active_user_async)) -> schemas.Resp
 
 @router.post("/env", summary="更新系统配置", response_model=schemas.Response)
 async def set_env_setting(
-    env: dict, _: User = Depends(get_current_active_superuser_async)
+    env: dict, _: User = Depends(get_current_admin_async)
 ):
     """
     更新系统环境变量（仅管理员）
@@ -732,7 +728,7 @@ async def get_progress(
 
 @router.get("/setting/public/{key}", summary="查询公开系统设置", response_model=schemas.Response)
 async def get_public_setting(
-    key: str, _: User = Depends(get_current_active_user_async)
+    key: str, _: User = Depends(get_current_admin_async)
 ) -> schemas.Response:
     """
     查询普通用户可读取的非敏感系统设置
@@ -752,7 +748,7 @@ async def get_public_setting(
 )
 async def sync_plugin_market_from_wiki(
     request: Optional[schemas.PluginMarketSyncRequest] = Body(default=None),
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
 ) -> schemas.Response:
     """
     从 Wiki 插件文档同步插件市场仓库地址。
@@ -814,7 +810,7 @@ async def sync_plugin_market_from_wiki(
 
 @router.get("/setting/{key}", summary="查询系统设置", response_model=schemas.Response)
 async def get_setting(
-    key: str, _: User = Depends(get_current_active_superuser_async)
+    key: str, _: User = Depends(get_current_admin_async)
 ) -> schemas.Response:
     """
     查询系统设置（仅管理员）
@@ -830,7 +826,7 @@ async def get_setting(
 async def set_setting(
     key: str,
     value: Annotated[Union[list, dict, bool, int, str] | None, Body()] = None,
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
 ):
     """
     更新系统设置（仅管理员）
@@ -1027,6 +1023,46 @@ async def latest_version(_: schemas.TokenPayload = Depends(verify_token)):
         if ver_json:
             return schemas.Response(success=True, data=ver_json)
     return schemas.Response(success=False)
+
+
+@router.post("/words/sync", summary="手动同步远程词表", response_model=schemas.Response)
+def sync_remote_words(
+    source_url: Optional[str] = None,
+    _: schemas.TokenPayload = Depends(verify_token),
+):
+    """
+    立即同步远程词表。source_url 指定单个源,缺省同步全部源。
+    远程内容追加合并到本地词表,不覆盖本地编辑。
+    """
+    from app.chain.words import WordsSyncChain
+    result = WordsSyncChain().sync(source_url=source_url)
+    return schemas.Response(
+        success=result.get("success", False),
+        message=result.get("message"),
+        data=result,
+    )
+
+
+@router.get("/words/sync/status", summary="查询词表同步状态", response_model=schemas.Response)
+def remote_words_sync_status(_: schemas.TokenPayload = Depends(verify_token)):
+    """返回同步源列表与各词表远程行数统计。"""
+    from app.chain.words import WordsSyncChain
+    return schemas.Response(success=True, data=WordsSyncChain.status())
+
+
+@router.get("/words/synced", summary="查询远程同步词表内容", response_model=schemas.Response)
+def remote_synced_words(_: schemas.TokenPayload = Depends(verify_token)):
+    """返回各类词表的远程同步内容(按源分组),供前端单独展示。"""
+    from app.chain.words import WordsSyncChain
+    from app.chain.words import WORDS_TABLE_IDS
+    data = {
+        table_id: [
+            {"source": source_url, "lines": lines}
+            for source_url, lines in WordsSyncChain.get_synced_lines(config_key)
+        ]
+        for table_id, config_key in WORDS_TABLE_IDS.items()
+    }
+    return schemas.Response(success=True, data=data)
 
 
 @router.get("/ruletest", summary="过滤规则测试", response_model=schemas.Response)
@@ -1249,7 +1285,7 @@ def moduletest(moduleid: str, _: schemas.TokenPayload = Depends(verify_token)):
 
 
 @router.get("/restart", summary="重启系统", response_model=schemas.Response)
-def restart_system(_: User = Depends(get_current_active_superuser)):
+def restart_system(_: User = Depends(get_current_admin)):
     """
     重启系统（仅管理员）
     """
@@ -1262,7 +1298,7 @@ def restart_system(_: User = Depends(get_current_active_superuser)):
 @router.post("/upgrade", summary="升级并重启系统", response_model=schemas.Response)
 def upgrade_system(
     mode: Annotated[str | None, Body()] = None,
-    _: User = Depends(get_current_active_superuser),
+    _: User = Depends(get_current_admin),
 ):
     """
     触发系统升级并重启（仅管理员）
@@ -1278,7 +1314,7 @@ def upgrade_system(
 
 
 @router.get("/runscheduler", summary="运行服务", response_model=schemas.Response)
-def run_scheduler(jobid: str, _: User = Depends(get_current_active_superuser)):
+def run_scheduler(jobid: str, _: User = Depends(get_current_admin)):
     """
     执行命令（仅管理员）
     """

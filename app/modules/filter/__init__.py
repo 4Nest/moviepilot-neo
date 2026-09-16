@@ -70,6 +70,8 @@ class FilterModule(_ModuleBase):
         SystemConfigKey.CustomIdentifiers.value,
         SystemConfigKey.CustomReleaseGroups.value,
         SystemConfigKey.Customization.value,
+        # 远程同步词表内容变更后重载,刷新 Rust 解析配置缓存
+        SystemConfigKey.SyncedWords.value,
     }
 
     # 保留一份只读内置规则定义，方便查询工具准确区分“内置规则”和“自定义规则”。

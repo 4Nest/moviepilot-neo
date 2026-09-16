@@ -102,8 +102,6 @@ class ConfigModel(BaseModel):
     SUPERUSER: str = "admin"
     # 超级管理员初始密码
     SUPERUSER_PASSWORD: Optional[str] = None
-    # 辅助认证，允许通过外部服务进行认证、单点登录以及自动创建用户
-    AUXILIARY_AUTH_ENABLE: bool = False
     # API密钥，需要更换
     API_TOKEN: Optional[str] = None
     # 用户认证站点

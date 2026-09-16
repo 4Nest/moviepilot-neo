@@ -4,7 +4,7 @@ import pickle
 from unittest.mock import Mock
 
 from app.api.endpoints import tmdb as tmdb_endpoint
-from app.db.user_oper import get_current_active_superuser_async
+from app.db.user_oper import get_current_admin_async
 from app.modules.themoviedb import tmdb_cache as tmdb_cache_module
 from app.modules.themoviedb.tmdb_cache import TmdbCache
 from app.schemas.types import MediaType, SystemConfigKey
@@ -116,7 +116,7 @@ def test_tmdb_cache_management_endpoints_require_superuser():
 
     for endpoint in endpoints:
         dependency = inspect.signature(endpoint).parameters["_"].default.dependency
-        assert dependency is get_current_active_superuser_async
+        assert dependency is get_current_admin_async
 
 
 def test_tmdb_cache_list_items_normalizes_media_type_and_sorting():

@@ -291,6 +291,7 @@ def _load_subscribe_chain_class():
 
     class _SubscribeModel:
         def __init__(self, **kwargs):
+            self.version_rules = None
             self.best_version_full = 0
             self.bangumiid = None
             self.anilistid = None
@@ -386,8 +387,8 @@ class SubscribeChainTest(TestCase):
             "current_priority": None,
             "episode_priority": None,
             "lack_episode": 3,
-            "state": "R",
             "note": [],
+            "version_rules": None,
             "manual_total_episode": 0,
             "tmdbid": 1,
             "doubanid": None,

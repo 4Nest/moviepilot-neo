@@ -14,11 +14,7 @@ from app.chain.transfer import TransferChain
 from app.core.config import settings
 from app.core.security import verify_token
 from app.db.models import User
-from app.db.user_oper import (
-    get_current_active_manage_user,
-    get_current_active_superuser,
-    get_current_active_superuser_async,
-)
+from app.db.user_oper import get_current_admin, get_current_admin_async
 from app.helper.progress import ProgressHelper
 from app.schemas.types import ProgressKey
 from app.utils.string import StringUtils
@@ -70,7 +66,7 @@ def check(
 
 
 @router.post("/save/{name}", summary="保存存储配置", response_model=schemas.Response)
-def save(name: str, conf: dict, _: User = Depends(get_current_active_superuser)) -> Any:
+def save(name: str, conf: dict, _: User = Depends(get_current_admin)) -> Any:
     """
     保存存储配置
     """
@@ -79,7 +75,7 @@ def save(name: str, conf: dict, _: User = Depends(get_current_active_superuser))
 
 
 @router.get("/reset/{name}", summary="重置存储配置", response_model=schemas.Response)
-def reset(name: str, _: User = Depends(get_current_active_superuser)) -> Any:
+def reset(name: str, _: User = Depends(get_current_admin)) -> Any:
     """
     重置存储配置
     """
@@ -92,7 +88,7 @@ def list_files(
     fileitem: schemas.FileItem,
     sort: Optional[str] = "updated_at",
     keyword: Optional[str] = None,
-    _: User = Depends(get_current_active_manage_user),
+    _: User = Depends(get_current_admin),
 ) -> Any:
     """
     查询当前目录下所有目录和文件
@@ -118,7 +114,7 @@ def list_files(
 def mkdir(
     fileitem: schemas.FileItem,
     name: str,
-    _: User = Depends(get_current_active_manage_user),
+    _: User = Depends(get_current_admin),
 ) -> Any:
     """
     创建目录
@@ -136,7 +132,7 @@ def mkdir(
 
 @router.post("/delete", summary="删除文件或目录", response_model=schemas.Response)
 def delete(
-    fileitem: schemas.FileItem, _: User = Depends(get_current_active_manage_user)
+    fileitem: schemas.FileItem, _: User = Depends(get_current_admin)
 ) -> Any:
     """
     删除文件或目录
@@ -151,7 +147,7 @@ def delete(
 
 @router.post("/download", summary="下载文件")
 def download(
-    fileitem: schemas.FileItem, _: User = Depends(get_current_active_manage_user)
+    fileitem: schemas.FileItem, _: User = Depends(get_current_admin)
 ) -> Any:
     """
     下载文件或目录
@@ -167,7 +163,7 @@ def download(
 
 @router.post("/image", summary="预览图片")
 def image(
-    fileitem: schemas.FileItem, _: User = Depends(get_current_active_manage_user)
+    fileitem: schemas.FileItem, _: User = Depends(get_current_admin)
 ) -> Any:
     """
     下载文件或目录
@@ -186,7 +182,7 @@ def rename(
     fileitem: schemas.FileItem,
     new_name: str,
     recursive: Optional[bool] = False,
-    _: User = Depends(get_current_active_manage_user),
+    _: User = Depends(get_current_admin),
 ) -> Any:
     """
     重命名文件或目录
@@ -258,7 +254,7 @@ def rename(
 @router.get(
     "/usage/{name}", summary="存储空间信息", response_model=schemas.StorageUsage
 )
-def usage(name: str, _: User = Depends(get_current_active_superuser)) -> Any:
+def usage(name: str, _: User = Depends(get_current_admin)) -> Any:
     """
     查询存储空间
     """
@@ -274,7 +270,7 @@ def usage(name: str, _: User = Depends(get_current_active_superuser)) -> Any:
     response_model=schemas.StorageTransType,
 )
 async def transtype(
-    name: str, _: User = Depends(get_current_active_superuser_async)
+    name: str, _: User = Depends(get_current_admin_async)
 ) -> Any:
     """
     查询支持的整理方式

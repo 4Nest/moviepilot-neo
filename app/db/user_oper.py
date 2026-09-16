@@ -36,81 +36,19 @@ async def get_current_user_async(
     return user
 
 
-def get_current_active_user(
-        current_user: User = Depends(get_current_user),
-) -> User:
-    """
-    获取当前激活用户
-    """
-    if not current_user.is_active:
-        raise HTTPException(status_code=403, detail="用户未激活")
+def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
+    """只允许 canonical admin 账号访问业务接口。"""
+    from app.core.config import settings
+    if not current_user.is_active or not current_user.is_superuser or current_user.name != settings.SUPERUSER:
+        raise HTTPException(status_code=403, detail="仅管理员账号可访问")
     return current_user
 
 
-async def get_current_active_user_async(
-        current_user: User = Depends(get_current_user_async),
-) -> User:
-    """
-    异步获取当前激活用户
-    """
-    if not current_user.is_active:
-        raise HTTPException(status_code=403, detail="用户未激活")
-    return current_user
-
-
-def _ensure_manage_user(current_user: User) -> User:
-    """
-    校验用户具备全局管理权限。
-    """
-    permissions = current_user.permissions or {}
-    if not current_user.is_superuser and not bool(permissions.get("manage")):
-        raise HTTPException(
-            status_code=400, detail="用户权限不足"
-        )
-    return current_user
-
-
-def get_current_active_manage_user(
-        current_user: User = Depends(get_current_active_user),
-) -> User:
-    """
-    获取当前拥有管理权限的激活用户。
-    """
-    return _ensure_manage_user(current_user)
-
-
-async def get_current_active_manage_user_async(
-        current_user: User = Depends(get_current_active_user_async),
-) -> User:
-    """
-    异步获取当前拥有管理权限的激活用户。
-    """
-    return _ensure_manage_user(current_user)
-
-
-def get_current_active_superuser(
-        current_user: User = Depends(get_current_user),
-) -> User:
-    """
-    获取当前激活超级管理员
-    """
-    if not current_user.is_superuser:
-        raise HTTPException(
-            status_code=400, detail="用户权限不足"
-        )
-    return current_user
-
-
-async def get_current_active_superuser_async(
-        current_user: User = Depends(get_current_user_async),
-) -> User:
-    """
-    异步获取当前激活超级管理员
-    """
-    if not current_user.is_superuser:
-        raise HTTPException(
-            status_code=400, detail="用户权限不足"
-        )
+async def get_current_admin_async(current_user: User = Depends(get_current_user_async)) -> User:
+    """异步版本的 canonical admin guard。"""
+    from app.core.config import settings
+    if not current_user.is_active or not current_user.is_superuser or current_user.name != settings.SUPERUSER:
+        raise HTTPException(status_code=403, detail="仅管理员账号可访问")
     return current_user
 
 
@@ -149,15 +87,6 @@ class UserOper(DbOper):
         异步根据用户 ID 获取用户。
         """
         return await User.async_get_by_id(self._db, user_id)
-
-    def get_permissions(self, name: str) -> dict:
-        """
-        获取用户权限
-        """
-        user = User.get_by_name(self._db, name)
-        if user:
-            return user.permissions or {}
-        return {}
 
     def get_settings(self, name: str) -> Optional[dict]:
         """

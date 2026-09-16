@@ -353,6 +353,10 @@ class TheMovieDbModule(_ModuleBase):
             if group_seasons:
                 self._fill_group_season_info(mediainfo, episode_group, group_seasons)
             else:
+                # 标准季年份已由 TMDB 季数据生成，未被选择剧集组时不允许覆盖；
+                # 剧集组的 order 与季号语义不同，覆盖会导致年份匹配（如 match_torrent）误判。
+                if mediainfo.season_years:
+                    return mediainfo
                 # 每季年份
                 season_years = {}
                 for group in mediainfo.episode_groups:
@@ -385,6 +389,9 @@ class TheMovieDbModule(_ModuleBase):
             if group_seasons:
                 self._fill_group_season_info(mediainfo, episode_group, group_seasons)
             else:
+                # 与同步版本一致：未被选择剧集组时不覆盖标准季年份。
+                if mediainfo.season_years:
+                    return mediainfo
                 # 每季年份
                 season_years = {}
                 for group in mediainfo.episode_groups:

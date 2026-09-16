@@ -13,11 +13,7 @@ from app.db import get_async_db, get_db
 from app.db.models import User
 from app.db.models.downloadhistory import DownloadHistory, DownloadFiles
 from app.db.models.transferhistory import TransferHistory
-from app.db.user_oper import (
-    get_current_active_manage_user,
-    get_current_active_superuser,
-    get_current_active_superuser_async,
-)
+from app.db.user_oper import get_current_admin, get_current_admin_async
 from app.schemas.types import EventType
 from app.utils.jieba import cut as jieba_cut
 
@@ -120,7 +116,7 @@ def delete_transfer_history(
     deletesrc: Optional[bool] = False,
     deletedest: Optional[bool] = False,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_manage_user),
+    _: User = Depends(get_current_admin),
 ) -> Any:
     """
     删除整理记录
@@ -155,13 +151,13 @@ def delete_transfer_history(
 
 
 
-@router.get("/empty/transfer", summary="清空整理记录", response_model=schemas.Response)
+@router.delete("/empty/transfer", summary="清空整理记录", response_model=schemas.Response)
 async def empty_transfer_history(
     db: AsyncSession = Depends(get_async_db),
-    _: User = Depends(get_current_active_superuser_async),
+    _: User = Depends(get_current_admin_async),
 ) -> Any:
     """
-    清空整理记录
+    清空整理记录（仅删除记录，不影响已整理的文件）
     """
-    await TransferHistory.async_truncate(db)
-    return schemas.Response(success=True)
+    deleted = await TransferHistory.async_truncate(db)
+    return schemas.Response(success=True, data={"deleted": deleted})

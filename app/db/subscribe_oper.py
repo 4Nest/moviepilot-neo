@@ -7,8 +7,7 @@ from app.db.models.subscribe import Subscribe
 from app.db.models.subscribehistory import SubscribeHistory
 from app.utils.media import resolve_media_identity
 
-INTEGER_FLAG_FIELDS = ("best_version", "best_version_full", "search_imdbid", "manual_total_episode")
-
+INTEGER_FLAG_FIELDS = ("best_version", "best_version_full", "search_imdbid", "manual_total_episode", "skip_library_check")
 
 def _normalize_integer_flags(payload: dict, fields: Tuple[str, ...] = INTEGER_FLAG_FIELDS) -> dict:
     """
@@ -20,7 +19,6 @@ def _normalize_integer_flags(payload: dict, fields: Tuple[str, ...] = INTEGER_FL
             normalized_payload[field] = int(normalized_payload[field])
     return normalized_payload
 
-
 class SubscribeOper(DbOper):
     """
     订阅管理
@@ -30,8 +28,6 @@ class SubscribeOper(DbOper):
         """
         新增订阅
         """
-        owner_scope = bool(kwargs.pop("owner_scope", False))
-        username = kwargs.get("username") if owner_scope else None
         media_source, media_id = resolve_media_identity(
             media=mediainfo,
             source=kwargs.get("media_source"),
@@ -47,12 +43,7 @@ class SubscribeOper(DbOper):
             "season": kwargs.get("season"),
             "episode_group": mediainfo.episode_group,
         }
-        if username:
-            subscribe = Subscribe.exists_by_username(self._db,
-                                                     username=username,
-                                                     **identity_params)
-        else:
-            subscribe = Subscribe.exists(self._db, **identity_params)
+        subscribe = Subscribe.exists(self._db, **identity_params)
         kwargs.update({
             "name": mediainfo.title,
             "year": mediainfo.year,
@@ -78,12 +69,7 @@ class SubscribeOper(DbOper):
             subscribe = Subscribe(**kwargs)
             subscribe.create(self._db)
             # 查询订阅
-            if username:
-                subscribe = Subscribe.exists_by_username(self._db,
-                                                         username=username,
-                                                         **identity_params)
-            else:
-                subscribe = Subscribe.exists(self._db, **identity_params)
+            subscribe = Subscribe.exists(self._db, **identity_params)
             return subscribe.id, "新增订阅成功"
         else:
             return subscribe.id, "订阅已存在"
@@ -92,8 +78,6 @@ class SubscribeOper(DbOper):
         """
         异步新增订阅
         """
-        owner_scope = bool(kwargs.pop("owner_scope", False))
-        username = kwargs.get("username") if owner_scope else None
         media_source, media_id = resolve_media_identity(
             media=mediainfo,
             source=kwargs.get("media_source"),
@@ -109,12 +93,7 @@ class SubscribeOper(DbOper):
             "season": kwargs.get("season"),
             "episode_group": mediainfo.episode_group,
         }
-        if username:
-            subscribe = await Subscribe.async_exists_by_username(self._db,
-                                                                 username=username,
-                                                                 **identity_params)
-        else:
-            subscribe = await Subscribe.async_exists(self._db, **identity_params)
+        subscribe = await Subscribe.async_exists(self._db, **identity_params)
         kwargs.update({
             "name": mediainfo.title,
             "year": mediainfo.year,
@@ -140,12 +119,7 @@ class SubscribeOper(DbOper):
             subscribe = Subscribe(**kwargs)
             await subscribe.async_create(self._db)
             # 查询订阅
-            if username:
-                subscribe = await Subscribe.async_exists_by_username(self._db,
-                                                                     username=username,
-                                                                     **identity_params)
-            else:
-                subscribe = await Subscribe.async_exists(self._db, **identity_params)
+            subscribe = await Subscribe.async_exists(self._db, **identity_params)
             return subscribe.id, "新增订阅成功"
         else:
             return subscribe.id, "订阅已存在"
@@ -270,13 +244,6 @@ class SubscribeOper(DbOper):
         获取指定tmdb_id的订阅
         """
         return Subscribe.get_by_tmdbid(self._db, tmdbid=tmdbid, season=season)
-
-    def list_by_username(self, username: str, state: Optional[str] = None,
-                         mtype: Optional[str] = None) -> List[Subscribe]:
-        """
-        获取指定用户的订阅
-        """
-        return Subscribe.list_by_username(self._db, username=username, state=state, mtype=mtype)
 
     def list_by_type(self, mtype: str, days: Optional[int] = 7) -> Subscribe:
         """

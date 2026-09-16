@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from app.db import db_query, Base, get_id_column, async_db_query
 
-
 class SubscribeHistory(Base):
     """
     订阅历史表
@@ -67,6 +66,10 @@ class SubscribeHistory(Base):
     best_version_full = Column(Integer, default=0)
     # 洗版时已下载剧集的优先级状态，格式：{"1": 90, "2": 100}
     episode_priority = Column(JSON)
+    # 多版本订阅完整规则快照及独立运行事实
+    version_rules = Column(JSON, nullable=True, default=list)
+    version_progress = Column(JSON, nullable=True, default=dict)
+    version_mode = Column(String, nullable=True, default='any')
     # 保存路径
     save_path = Column(String)
     # 是否使用 imdbid 搜索
@@ -100,31 +103,6 @@ class SubscribeHistory(Base):
         result = await db.execute(
             select(cls).filter(
                 cls.type == mtype
-            ).order_by(
-                cls.date.desc()
-            ).offset((page - 1) * count).limit(count)
-        )
-        return result.scalars().all()
-
-    @classmethod
-    @async_db_query
-    async def async_list_by_type_and_username(
-            cls,
-            db: AsyncSession,
-            mtype: str,
-            username: str,
-            page: Optional[int] = 1,
-            count: Optional[int] = 30
-    ):
-        """
-        按订阅 owner 查询指定类型的历史分页。
-        """
-        if not username:
-            return []
-        result = await db.execute(
-            select(cls).filter(
-                cls.type == mtype,
-                cls.username == username
             ).order_by(
                 cls.date.desc()
             ).offset((page - 1) * count).limit(count)

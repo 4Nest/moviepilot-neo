@@ -17,6 +17,27 @@ def compute_subscribe_completed_episode(subscribe: "Subscribe") -> Optional[int]
         return None
 
     start_episode = subscribe.start_episode or 1
+    version_rules = getattr(subscribe, "version_rules", None) or []
+    if version_rules:
+        # 多版本订阅:父行 lack_episode 不承载事实(停留在初始值),下载事实在各版本
+        # version_progress.note。已完成集数取启用版本 note 与目标范围的并集大小。
+        target = set(range(start_episode, total_episode + 1))
+        downloaded: set = set()
+        progress = subscribe.version_progress or {}
+        for rule in version_rules:
+            if isinstance(rule, dict) and not rule.get("enabled", True):
+                continue
+            rule_id = rule.get("id") if isinstance(rule, dict) else getattr(rule, "id", None)
+            entry = progress.get(str(rule_id))
+            note = entry.get("note") if isinstance(entry, dict) else getattr(entry, "note", None)
+            for episode in note or []:
+                try:
+                    episode_number = int(episode)
+                except (TypeError, ValueError):
+                    continue
+                if episode_number in target:
+                    downloaded.add(episode_number)
+        return len(downloaded)
     if not subscribe.best_version:
         lack = subscribe.lack_episode or 0
         return max(total_episode - lack, 0)
@@ -43,9 +64,68 @@ def compute_subscribe_completed_episode(subscribe: "Subscribe") -> Optional[int]
     return min(max(start_episode - 1, 0), total_episode) + priority_completed
 
 
+class SubscribeVersionSettings(BaseModel):
+    """版本子订阅的完整、独立设置快照。"""
+
+    keyword: Optional[str] = None
+    filter: Optional[str] = None
+    include: Optional[str] = None
+    exclude: Optional[str] = None
+    quality: Optional[str] = None
+    resolution: Optional[str] = None
+    effect: Optional[str] = None
+    total_episode: Optional[int] = 0
+    start_episode: Optional[int] = 0
+    sites: List[int] = Field(default_factory=list)
+    downloader: Optional[str] = None
+    best_version: Optional[int] = None
+    best_version_full: Optional[int] = None
+    save_path: Optional[str] = None
+    search_imdbid: Optional[int] = 0
+    manual_total_episode: Optional[int] = 0
+    custom_words: Optional[str] = None
+    media_category: Optional[str] = None
+    filter_groups: List[str] = Field(default_factory=list)
+    episode_group: Optional[str] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class SubscribeVersionRule(BaseModel):
+    """一个具名版本及其独立匹配设置。"""
+
+    id: str
+    name: str
+    enabled: bool = True
+    release_group: Optional[str] = None
+    settings: SubscribeVersionSettings
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _validate_release_group(self) -> "SubscribeVersionRule":
+        if self.release_group:
+            import re
+            re.compile(self.release_group)
+        return self
+
+
+class SubscribeVersionProgress(BaseModel):
+    """版本运行事实；只读输入，不允许公共写接口覆盖。"""
+
+    state: Optional[str] = None
+    last_update: Optional[str] = None
+    lack_episode: Optional[int] = None
+    note: Any = None
+    current_priority: Optional[int] = None
+    episode_priority: Dict[str, int] = Field(default_factory=dict)
+    completed: bool = False
+
+
 class Subscribe(BaseModel):
     # 公共创建和更新接口不得接收系统字段和运行事实；其余字段默认作为订阅输入透传。
     PUBLIC_WRITE_EXCLUDED_FIELDS: ClassVar[frozenset[str]] = frozenset({
+        "version_progress", "version_mode", "legacy_version_id",
         "id", "poster", "backdrop", "vote", "description", "lack_episode", "completed_episode",
         "note", "state", "last_update", "username", "current_priority", "episode_priority", "date",
     })
@@ -78,6 +158,10 @@ class Subscribe(BaseModel):
     description: Optional[str] = None
     # 过滤规则
     filter: Optional[str] = None
+    # 多版本规则由客户端完整提交；进度仅由服务端运行链路写入
+    version_rules: Optional[List[SubscribeVersionRule]] = None
+    version_mode: Optional[str] = None
+    version_progress: Optional[Dict[str, SubscribeVersionProgress]] = None
     # 包含
     include: Optional[str] = None
     # 排除
@@ -120,6 +204,8 @@ class Subscribe(BaseModel):
     save_path: Optional[str] = None
     # 是否使用 imdbid 搜索
     search_imdbid: Optional[int] = 0
+    # 是否跳过媒体库存在检测 0否 1是
+    skip_library_check: Optional[int] = 0
     # 时间
     date: Optional[str] = None
     # 自定义识别词
@@ -129,20 +215,28 @@ class Subscribe(BaseModel):
     # 过滤规则组
     filter_groups: Optional[List[str]] = Field(default_factory=list)
     # 剧集组
+    legacy_version_id: Optional[str] = None
     episode_group: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
     @model_validator(mode="after")
     def _fill_completed_episode(self) -> "Subscribe":
-        """
-        填充 ``completed_episode`` 派生字段。电视剧订阅按 best_version 分支计算，
-        电影或缺少 total_episode 时保持 None。
-        """
-        if self.completed_episode is not None:
-            # 调用方显式提供过的值不覆盖
-            return self
-        self.completed_episode = compute_subscribe_completed_episode(self)
+        """填充电视剧订阅的派生完成集数。"""
+        if self.completed_episode is None:
+            self.completed_episode = compute_subscribe_completed_episode(self)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_version_rules(self) -> "Subscribe":
+        if self.version_mode not in (None, "any", "all"):
+            raise ValueError("version_mode must be any or all")
+        if self.version_rules is not None:
+            ids = [rule.id for rule in self.version_rules]
+            if len(ids) != len(set(ids)):
+                raise ValueError("version rule IDs must be unique")
+            if self.version_rules and self.version_mode not in (None, "all"):
+                raise ValueError("structured version rules require all mode")
         return self
 
     def to_public_write_payload(self) -> Dict[str, Any]:

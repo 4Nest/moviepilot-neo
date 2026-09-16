@@ -174,10 +174,6 @@ class ChainEventType(Enum):
     PluginDataReset = "plugin.data.reset"
     # 名称识别
     NameRecognize = "name.recognize"
-    # 认证验证
-    AuthVerification = "auth.verification"
-    # 认证拦截
-    AuthIntercept = "auth.intercept"
     # 命令注册
     CommandRegister = "command.register"
     # 整理重命名
@@ -284,6 +280,10 @@ class SystemConfigKey(Enum):
     UgreenSessionCache = "UgreenSessionCache"
     # 共享媒体识别成功次数
     MediaRecognizeShareCount = "MediaRecognizeShareCount"
+    # 词表远程同步源列表
+    WordsSyncSources = "WordsSyncSources"
+    # 远程同步词表内容(按源分组,与本地词表追加合并)
+    SyncedWords = "SyncedWords"
 
 
 # 处理进度Key字典

@@ -1,6 +1,6 @@
 import regex as re
 
-from app.db.systemconfig_oper import SystemConfigOper
+from app.helper.words import WordsHelper
 from app.schemas.types import SystemConfigKey
 from app.utils.singleton import Singleton
 
@@ -86,16 +86,13 @@ class ReleaseGroupsMatcher(metaclass=Singleton):
             for release_group in site_groups:
                 release_groups.append(release_group)
         self.__release_groups = '|'.join(release_groups)
-        self.systemconfig = SystemConfigOper()
         self.__groups_re_cache = {}
 
     def get_release_groups(self) -> str:
         """
         返回内置与用户自定义制作组组成的匹配规则。
         """
-        custom_release_groups = self.systemconfig.get(SystemConfigKey.CustomReleaseGroups)
-        if isinstance(custom_release_groups, list):
-            custom_release_groups = list(filter(None, custom_release_groups))
+        custom_release_groups = list(filter(None, WordsHelper.get_merged_words(SystemConfigKey.CustomReleaseGroups)))
         if custom_release_groups:
             custom_release_groups_str = '|'.join(custom_release_groups)
             return f"{self.__release_groups}|{custom_release_groups_str}"
