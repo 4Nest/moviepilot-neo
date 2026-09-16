@@ -89,6 +89,23 @@ def extract_anime_video_encode(title: str):
     return _normalize_anime_video_encode(match.group(0)) if match else None
 
 
+
+ANIME_CN_NAME_NOISE_RE = re.compile(r"^第[一二三四五六七八九十\d]*[季集话話期]$")
+
+
+def extract_anime_cn_name(anime_title: str, current_name: str = None):
+    """从多别名动漫标题(如 "中文名 English / Romaji")的前置别名中提取中文名。"""
+    if not anime_title or anime_title == current_name:
+        return None
+    for alias in anime_title.split("/"):
+        for word in alias.split():
+            cleaned = word.strip("[]【】()（）")
+            if len(cleaned) >= 2 and StringUtils.is_all_chinese(cleaned) \
+                    and not ANIME_CN_NAME_NOISE_RE.match(cleaned) \
+                    and not CATEGORY_TAG_RE.fullmatch(cleaned):
+                return cleaned
+    return None
+
 class MetaAnime(MetaBase):
     """
     识别动漫
@@ -177,6 +194,11 @@ class MetaAnime(MetaBase):
                             else:
                                 self.en_name = "%s %s" % (self.en_name or "", word)
                                 lastword_type = "en"
+                # 预处理仅保留末段别名(如 "中文名 English / Romaji" 只剩 Romaji),
+                # 从原始标题被丢弃的前置别名中抢救中文名
+                if not self.cn_name:
+                    self.cn_name = extract_anime_cn_name(
+                        (anitopy_info_origin or {}).get("anime_title"), name)
                 if self.cn_name:
                     _, self.cn_name, _, _, _, _ = StringUtils.get_keyword(self.cn_name)
                     if self.cn_name:

@@ -4,10 +4,12 @@ from functools import lru_cache
 from typing import Tuple, List, Optional
 
 import regex as re
+import anitopy
 
 from app.core.config import settings
 from app.core.meta import MetaAnime, MetaVideo, MetaBase
 from app.core.meta.metaanime import (
+    extract_anime_cn_name,
     extract_anime_resource_type,
     extract_anime_video_encode,
     has_versioned_anime_episode,
@@ -410,6 +412,9 @@ def _meta_from_rust(parsed: dict) -> Optional[MetaBase]:
             meta.resource_type = extract_anime_resource_type(meta.org_string or meta.title)
         if not meta.video_encode:
             meta.video_encode = extract_anime_video_encode(meta.org_string or meta.title)
+        if not meta.cn_name:
+            origin_title = (anitopy.parse(meta.org_string or meta.title or "") or {}).get("anime_title")
+            meta.cn_name = extract_anime_cn_name(origin_title, meta.en_name)
     # 年份被误判为集数(如 "标题 2026 [02]")时结果不可信,回退 Python 解析
     if any(isinstance(ep, int) and 1900 <= ep <= 2099
            for ep in (meta.begin_episode, meta.end_episode)):

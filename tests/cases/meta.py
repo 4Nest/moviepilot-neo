@@ -207,7 +207,7 @@ meta_cases = [{
     "subtitle": "",
     "target": {
         "type": "电视剧",
-        "cn_name": "",
+        "cn_name": "诛仙",
         "en_name": "Jade Dynasty",
         "year": "2022",
         "part": "",
@@ -445,7 +445,7 @@ meta_cases = [{
     "subtitle": "",
     "target": {
         "type": "电视剧",
-        "cn_name": "",
+        "cn_name": "神印王座",
         "en_name": "Throne Of Seal",
         "year": "2022",
         "part": "",
@@ -734,7 +734,7 @@ meta_cases = [{
     "subtitle": "",
     "target": {
         "type": "电视剧",
-        "cn_name": "",
+        "cn_name": "异世界归来的舅舅",
         "en_name": "Isekai Ojisan",
         "year": "",
         "part": "",
@@ -921,7 +921,7 @@ meta_cases = [{
     "subtitle": "",
     "target": {
         "type": "电视剧",
-        "cn_name": "",
+        "cn_name": "传颂之物",
         "en_name": "うたわれるもの",
         "year": "",
         "part": "",

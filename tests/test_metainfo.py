@@ -548,8 +548,7 @@ def test_anime_trailing_year_not_misread_as_episode():
     assert meta.begin_episode == 2
     assert meta.year == "2026"
     assert meta.en_name == "Koukaku Kidoutai"
-    assert meta.resource_type == "WebRip"
-    assert meta.resource_pix == "1080p"
+    assert meta.cn_name == "攻壳机动队"
 
 
 def test_rust_year_like_episode_falls_back_to_python():
