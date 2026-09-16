@@ -521,7 +521,7 @@ meta_cases = [{
         "episode": "E03",
         "restype": "WebRip",
         "pix": "1080p",
-        "video_codec": "",
+        "video_codec": "HEVC",
         "audio_codec": "AAC",
         "fps": None
     }
@@ -572,7 +572,7 @@ meta_cases = [{
         "episode": "E01",
         "restype": "WebRip",
         "pix": "1080p",
-        "video_codec": "",
+        "video_codec": "HEVC",
         "audio_codec": "EAC3",
         "fps": None
     }
@@ -589,7 +589,7 @@ meta_cases = [{
         "episode": "E01",
         "restype": "WebRip",
         "pix": "1080p",
-        "video_codec": "",
+        "video_codec": "HEVC",
         "audio_codec": "AAC",
         "fps": None
     }
@@ -929,7 +929,7 @@ meta_cases = [{
         "episode": "E01-E26",
         "restype": "",
         "pix": "1080p",
-        "video_codec": "",
+        "video_codec": "HEVC",
         "audio_codec": "flac",
         "fps": None
     }

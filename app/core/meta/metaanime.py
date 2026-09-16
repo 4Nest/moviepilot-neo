@@ -29,6 +29,10 @@ ANIME_WEBRIP_RE = re.compile(
     r"(?<![A-Za-z0-9])WEBRIP(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
+ANIME_VIDEO_ENCODE_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:HEVC|H\.?26[45]|X\.?26[45]|AVC|AV1|VP9|VC-?1|MPEG-?2|XVID|DIVX)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 MIXED_CHINESE_TOKEN_RE = re.compile(r'[\d|#:：\-()（）\u4e00-\u9fff]')
 VERSIONED_ANIME_EPISODE_RE = re.compile(
     r"(?P<episode>"
@@ -69,6 +73,20 @@ def extract_anime_resource_type(title: str, parsed_source=None):
     if source and re.sub(r"[\s._-]", "", str(source)).upper() == "WEBRIP":
         return "WebRip"
     return "WebRip" if title and ANIME_WEBRIP_RE.search(title) else None
+
+
+def _normalize_anime_video_encode(token: str) -> str:
+    """将动漫标题中的视频编码统一为 MetaVideo 使用的规范写法。"""
+    cleaned = re.sub(r"[.\-]", "", token).upper()
+    return cleaned.lower() if re.fullmatch(r"X26[45]", cleaned) else cleaned
+
+
+def extract_anime_video_encode(title: str):
+    """从原始动漫标题提取视频编码，弥补 anitopy 无法识别 HEVC-10bit 等组合令牌的问题。"""
+    if not title:
+        return None
+    match = ANIME_VIDEO_ENCODE_RE.search(title)
+    return _normalize_anime_video_encode(match.group(0)) if match else None
 
 
 class MetaAnime(MetaBase):
@@ -250,6 +268,8 @@ class MetaAnime(MetaBase):
                 self.video_encode = anitopy_info.get("video_term")
                 if isinstance(self.video_encode, list):
                     self.video_encode = self.video_encode[0]
+                if not self.video_encode:
+                    self.video_encode = extract_anime_video_encode(original_title)
                 # 视频位深
                 self.video_bit = self.extract_video_bit(original_title) or self.extract_video_bit(self.video_encode)
                 # 音频编码
