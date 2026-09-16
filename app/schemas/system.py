@@ -74,6 +74,8 @@ class DownloaderConf(BaseModel):
     default: Optional[bool] = False
     # 是否 BT(公开)站点默认
     bt_default: Optional[bool] = False
+    # BT(公开)站点默认下载路径,仅经 BT 默认选中该下载器时生效
+    bt_save_path: Optional[str] = None
     config: Optional[dict] = Field(default_factory=dict)
     # 是否启用
     enabled: Optional[bool] = False

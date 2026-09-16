@@ -222,6 +222,10 @@ def _patch_bt_download_env(monkeypatch):
         "app.helper.directory.DirectoryHelper.get_download_dirs",
         lambda _self: _download_dirs(),
     )
+    monkeypatch.setattr(
+        "app.helper.directory.DirectoryHelper.get_dir",
+        lambda _self, _media, include_unsorted=True: _download_dirs()[0],
+    )
     monkeypatch.setattr(download_module, "ThreadHelper", _FakeThreadHelper)
     monkeypatch.setattr(download_module, "DownloadHistoryOper", _FakeDownloadHistoryOper)
     monkeypatch.setattr(download_module, "TorrentHelper", _FakeTorrentHelper)
@@ -230,7 +234,8 @@ def _patch_bt_download_env(monkeypatch):
         "get_downloader_configs",
         staticmethod(lambda: [
             DownloaderConf(name="qb-pt", type="qbittorrent", enabled=True, default=True),
-            DownloaderConf(name="qb-bt", type="qbittorrent", enabled=True, bt_default=True),
+            DownloaderConf(name="qb-bt", type="qbittorrent", enabled=True, bt_default=True,
+                           bt_save_path="/media/Raw/AnimeBT"),
         ]),
     )
 
@@ -293,6 +298,43 @@ def test_download_single_bt_default_downloader_respects_priority(monkeypatch):
         username="tester",
     )
     assert chain.download.call_args.kwargs["downloader"] is None
+
+
+def test_download_single_uses_bt_save_path_for_public_site(monkeypatch):
+    """BT(公开)站点资源未指定保存路径时,应使用 BT 默认下载器配置的下载路径。"""
+    _patch_bt_download_env(monkeypatch)
+    chain = _bt_download_chain()
+
+    result = chain.download_single(
+        context=_bt_download_context(site_public=True),
+        torrent_content=b"torrent-content",
+        username="tester",
+    )
+
+    assert result == "hash123"
+    assert chain.download.call_args.kwargs["downloader"] == "qb-bt"
+    assert chain.download.call_args.kwargs["download_dir"] == Path("/media/Raw/AnimeBT")
+
+
+def test_download_single_bt_save_path_respects_explicit_save_path(monkeypatch):
+    """显式保存路径优先于 BT 默认下载路径;非 BT 站点不应用 BT 路径。"""
+    _patch_bt_download_env(monkeypatch)
+    chain = _bt_download_chain()
+
+    chain.download_single(
+        context=_bt_download_context(site_public=True),
+        torrent_content=b"torrent-content",
+        save_path="/downloads",
+        username="tester",
+    )
+    assert chain.download.call_args.kwargs["download_dir"] == Path("/downloads")
+
+    chain.download_single(
+        context=_bt_download_context(site_public=False),
+        torrent_content=b"torrent-content",
+        username="tester",
+    )
+    assert chain.download.call_args.kwargs["download_dir"] == Path("/downloads")
 
 def test_download_single_supplements_category_before_download_event(monkeypatch):
     """下载事件和目录选择前应已有 TMDB 分类，同时保留原识别源身份。"""

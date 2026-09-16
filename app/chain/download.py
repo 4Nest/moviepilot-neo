@@ -785,12 +785,12 @@ class DownloadChain(ChainBase):
         return content, download_folder, files
 
     @staticmethod
-    def _resolve_bt_default_downloader(torrent: TorrentInfo) -> Optional[str]:
+    def _resolve_bt_default_config(torrent: TorrentInfo) -> Optional[schemas.DownloaderConf]:
         """
         公开(BT)站点资源在未显式或站点级指定下载器时,回退到配置的 BT 默认下载器。
 
         :param torrent: 种子信息
-        :return: BT 默认下载器名称;非 BT 站点或未配置时返回 None
+        :return: BT 默认下载器配置;非 BT 站点或未配置时返回 None
         """
         is_public = torrent.site_public
         if is_public is None and torrent.site:
@@ -800,8 +800,21 @@ class DownloadChain(ChainBase):
             return None
         for conf in ServiceConfigHelper.get_downloader_configs():
             if conf.enabled and conf.bt_default:
-                return conf.name
+                return conf
         return None
+
+    @staticmethod
+    def _resolve_bt_save_path(save_path: str) -> Tuple[str, Path, str]:
+        """
+        解析 BT 默认下载路径。该路径来自管理员级下载器配置,
+        与下载目录配置同一信任级别,不经过保存路径白名单校验,
+        也不追加媒体类型/类别子目录。
+        """
+        value = save_path.strip()
+        if re.match(r"^[A-Za-z]:/", value):
+            return 'local', Path(value), ""
+        file_uri = FileURI.from_uri(value)
+        return file_uri.storage or 'local', Path(file_uri.path), ""
 
     def download_single(self, context: Context,
                         torrent_file: Path = None,
@@ -841,7 +854,10 @@ class DownloadChain(ChainBase):
         _meta = context.meta_info
         _site_downloader = _torrent.site_downloader
         # 显式指定 > 站点指定 > BT(公开)站点默认
-        _effective_downloader = downloader or _site_downloader or self._resolve_bt_default_downloader(_torrent)
+        _bt_conf = None
+        if not downloader and not _site_downloader:
+            _bt_conf = self._resolve_bt_default_config(_torrent)
+        _effective_downloader = downloader or _site_downloader or (_bt_conf.name if _bt_conf else None)
 
         # 下载目录和下载器分类依赖 TMDB 辅助分类，但媒体主身份保持不变。
         _media = MediaChain().supplement_tmdb_info(_media, _meta)
@@ -919,10 +935,14 @@ class DownloadChain(ChainBase):
         # 获取种子文件的文件夹名和文件清单
         _folder_name, _file_list = TorrentHelper().get_fileinfo_from_torrent_content(torrent_content)
 
-        storage, download_dir, error_msg = self._resolve_media_download_dir(
-            media_info=_media,
-            save_path=save_path,
-        )
+        # 显式保存路径优先;BT 默认下载器配置的路径次之;否则按下载目录设置
+        if not save_path and _bt_conf and _bt_conf.bt_save_path:
+            storage, download_dir, error_msg = self._resolve_bt_save_path(_bt_conf.bt_save_path)
+        else:
+            storage, download_dir, error_msg = self._resolve_media_download_dir(
+                media_info=_media,
+                save_path=save_path,
+            )
         if not download_dir:
             if error_msg == "未找到下载目录":
                 self.messagehelper.put(f"{_media.type.value} {_media.title_year} 未找到下载目录！",
