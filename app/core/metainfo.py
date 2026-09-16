@@ -407,6 +407,10 @@ def _meta_from_rust(parsed: dict) -> Optional[MetaBase]:
             meta.resource_type = extract_anime_resource_type(meta.org_string or meta.title)
         if not meta.video_encode:
             meta.video_encode = extract_anime_video_encode(meta.org_string or meta.title)
+    # 年份被误判为集数(如 "标题 2026 [02]")时结果不可信,回退 Python 解析
+    if any(isinstance(ep, int) and 1900 <= ep <= 2099
+           for ep in (meta.begin_episode, meta.end_episode)):
+        return None
     return meta
 
 

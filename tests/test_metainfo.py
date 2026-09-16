@@ -536,6 +536,44 @@ def test_anime_hevc_populates_video_encode_for_both_parsers():
     assert rust_meta.video_bit == "10bit"
 
 
+
+def test_anime_trailing_year_not_misread_as_episode():
+    """标题中紧跟别名的裸年份不得被识别为集数,并应拆分为年份字段。"""
+    title = (
+        "[绿茶字幕组] 攻壳机动队 The Ghost in the Shell / Koukaku Kidoutai 2026 "
+        "[02][WebRip][1080p][简繁日内封]"
+    )
+    meta = MetaInfo(title)
+
+    assert meta.begin_episode == 2
+    assert meta.year == "2026"
+    assert meta.en_name == "Koukaku Kidoutai"
+    assert meta.resource_type == "WebRip"
+    assert meta.resource_pix == "1080p"
+
+
+def test_rust_year_like_episode_falls_back_to_python():
+    """Rust 结果集数为年份形态时必须回退 Python 解析。"""
+    title = (
+        "[绿茶字幕组] 攻壳机动队 The Ghost in the Shell / Koukaku Kidoutai 2026 "
+        "[02][WebRip][1080p][简繁日内封]"
+    )
+    rust_result = {
+        "kind": "anime",
+        "title": title,
+        "org_string": title,
+        "type": MediaType.TV.value,
+        "en_name": "Koukaku Kidoutai",
+        "begin_episode": 2026,
+        "total_episode": 1,
+        "resource_pix": "1080p",
+    }
+    with patch("app.core.metainfo.rust_accel.parse_metainfo", return_value=rust_result):
+        meta = MetaInfo(title)
+
+    assert meta.begin_episode == 2
+    assert meta.year == "2026"
+
 def test_streaming_platform_word_kept_in_movie_title():
     """测试正式片名中的流媒体平台词不会被预置清理规则移除。"""
     with patch("app.core.metainfo.rust_accel.parse_metainfo", return_value=None):

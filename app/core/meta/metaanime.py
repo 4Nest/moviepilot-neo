@@ -159,13 +159,15 @@ class MetaAnime(MetaBase):
                     # 拆分中英文
                     if _split_flag:
                         lastword_type = ""
-                        for word in name.split():
-                            if not word:
-                                continue
-                            if word.endswith(']'):
-                                word = word[:-1]
+                        words = [word[:-1] if word.endswith(']') else word for word in name.split() if word]
+                        for index, word in enumerate(words):
                             if word.isdigit():
-                                if lastword_type == "cn":
+                                # 名称末尾的 4 位裸年份归入年份,不并入名称
+                                if index == len(words) - 1 \
+                                        and re.fullmatch(r"(?:19|20)\d{2}", word) \
+                                        and not self.year:
+                                    self.year = word
+                                elif lastword_type == "cn":
                                     self.cn_name = "%s %s" % (self.cn_name or "", word)
                                 elif lastword_type == "en":
                                     self.en_name = "%s %s" % (self.en_name or "", word)
