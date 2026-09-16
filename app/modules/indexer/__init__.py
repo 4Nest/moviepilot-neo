@@ -165,6 +165,7 @@ class IndexerModule(_ModuleBase):
                             site_proxy=site.get("proxy"),
                             site_order=site.get("pri"),
                             site_downloader=site.get("downloader"),
+                            site_public=bool(site.get("public")),
                             **result) for result in result_array]
 
     @staticmethod

@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 from unittest.mock import MagicMock
 
 import pytest
@@ -9,7 +10,7 @@ from app.chain.download import DownloadChain
 from app.core.config import settings
 from app.core.context import Context, MediaInfo, SubtitleInfo, TorrentInfo
 from app.core.metainfo import MetaInfo
-from app.schemas import DownloaderTorrent, FileItem, NotExistMediaInfo, TransferDirectoryConf
+from app.schemas import DownloaderConf, DownloaderTorrent, FileItem, NotExistMediaInfo, TransferDirectoryConf
 from app.schemas.types import MediaType
 
 
@@ -192,6 +193,106 @@ def test_download_single_submits_download_added_to_background(monkeypatch):
         torrent_content=b"torrent-content",
     )
 
+
+
+def _bt_download_context(site_public: Optional[bool]) -> Context:
+    """构造指定站点公开属性的下载上下文。"""
+    return Context(
+        meta_info=MetaInfo("Demo Movie 2024"),
+        media_info=MediaInfo(
+            type=MediaType.MOVIE,
+            title="Demo Movie",
+            year="2024",
+            tmdb_id=1,
+            genre_ids=[18],
+        ),
+        torrent_info=TorrentInfo(
+            title="Demo Movie 2024",
+            enclosure="https://example.com/demo.torrent",
+            site_name="BtSite",
+            site_public=site_public,
+        ),
+    )
+
+
+def _patch_bt_download_env(monkeypatch):
+    """隔离下载目录、后台线程与下载器配置,聚焦下载器选择逻辑。"""
+    _FakeThreadHelper.submitted = []
+    monkeypatch.setattr(
+        "app.helper.directory.DirectoryHelper.get_download_dirs",
+        lambda _self: _download_dirs(),
+    )
+    monkeypatch.setattr(download_module, "ThreadHelper", _FakeThreadHelper)
+    monkeypatch.setattr(download_module, "DownloadHistoryOper", _FakeDownloadHistoryOper)
+    monkeypatch.setattr(download_module, "TorrentHelper", _FakeTorrentHelper)
+    monkeypatch.setattr(
+        download_module.ServiceConfigHelper,
+        "get_downloader_configs",
+        staticmethod(lambda: [
+            DownloaderConf(name="qb-pt", type="qbittorrent", enabled=True, default=True),
+            DownloaderConf(name="qb-bt", type="qbittorrent", enabled=True, bt_default=True),
+        ]),
+    )
+
+
+def _bt_download_chain():
+    """构造最小可用的下载链测试实例。"""
+    chain = DownloadChain.__new__(DownloadChain)
+    chain.download = MagicMock(return_value=("qb-bt", "hash123", "Original", "添加下载成功"))
+    chain.download_added = MagicMock()
+    chain.eventmanager = MagicMock()
+    chain.eventmanager.send_event.return_value = None
+    chain.post_message = MagicMock()
+    return chain
+
+
+def test_download_single_uses_bt_default_downloader_for_public_site(monkeypatch):
+    """BT(公开)站点资源未指定下载器时,应回退到配置的 BT 默认下载器。"""
+    _patch_bt_download_env(monkeypatch)
+    chain = _bt_download_chain()
+
+    result = chain.download_single(
+        context=_bt_download_context(site_public=True),
+        torrent_content=b"torrent-content",
+        save_path="/downloads",
+        username="tester",
+    )
+
+    assert result == "hash123"
+    assert chain.download.call_args.kwargs["downloader"] == "qb-bt"
+
+
+def test_download_single_bt_default_downloader_respects_priority(monkeypatch):
+    """显式与站点级下载器优先于 BT 默认;非 BT 站点不应用 BT 默认。"""
+    _patch_bt_download_env(monkeypatch)
+    chain = _bt_download_chain()
+
+    site_context = _bt_download_context(site_public=True)
+    site_context.torrent_info.site_downloader = "site-dl"
+    chain.download_single(
+        context=site_context,
+        torrent_content=b"torrent-content",
+        save_path="/downloads",
+        username="tester",
+    )
+    assert chain.download.call_args.kwargs["downloader"] == "site-dl"
+
+    chain.download_single(
+        context=_bt_download_context(site_public=True),
+        torrent_content=b"torrent-content",
+        save_path="/downloads",
+        username="tester",
+        downloader="explicit-dl",
+    )
+    assert chain.download.call_args.kwargs["downloader"] == "explicit-dl"
+
+    chain.download_single(
+        context=_bt_download_context(site_public=False),
+        torrent_content=b"torrent-content",
+        save_path="/downloads",
+        username="tester",
+    )
+    assert chain.download.call_args.kwargs["downloader"] is None
 
 def test_download_single_supplements_category_before_download_event(monkeypatch):
     """下载事件和目录选择前应已有 TMDB 分类，同时保留原识别源身份。"""

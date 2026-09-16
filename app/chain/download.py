@@ -22,7 +22,9 @@ from app.core.metainfo import MetaInfo
 from app.db.downloadfailure_oper import DownloadFailureOper
 from app.db.downloadhistory_oper import DownloadHistoryOper
 from app.db.mediaserver_oper import MediaServerOper
+from app.db.site_oper import SiteOper
 from app.helper.directory import DirectoryHelper, validate_download_save_path
+from app.helper.service import ServiceConfigHelper
 from app.helper.thread import ThreadHelper
 from app.helper.torrent import TorrentHelper
 from app.log import logger
@@ -782,6 +784,25 @@ class DownloadChain(ChainBase):
         # 返回 种子文件路径，种子目录名，种子文件清单
         return content, download_folder, files
 
+    @staticmethod
+    def _resolve_bt_default_downloader(torrent: TorrentInfo) -> Optional[str]:
+        """
+        公开(BT)站点资源在未显式或站点级指定下载器时,回退到配置的 BT 默认下载器。
+
+        :param torrent: 种子信息
+        :return: BT 默认下载器名称;非 BT 站点或未配置时返回 None
+        """
+        is_public = torrent.site_public
+        if is_public is None and torrent.site:
+            site = SiteOper().get(torrent.site)
+            is_public = bool(site and site.public)
+        if not is_public:
+            return None
+        for conf in ServiceConfigHelper.get_downloader_configs():
+            if conf.enabled and conf.bt_default:
+                return conf.name
+        return None
+
     def download_single(self, context: Context,
                         torrent_file: Path = None,
                         torrent_content: Optional[Union[str, bytes]] = None,
@@ -819,6 +840,8 @@ class DownloadChain(ChainBase):
         _media = context.media_info
         _meta = context.meta_info
         _site_downloader = _torrent.site_downloader
+        # 显式指定 > 站点指定 > BT(公开)站点默认
+        _effective_downloader = downloader or _site_downloader or self._resolve_bt_default_downloader(_torrent)
 
         # 下载目录和下载器分类依赖 TMDB 辅助分类，但媒体主身份保持不变。
         _media = MediaChain().supplement_tmdb_info(_media, _meta)
@@ -887,7 +910,7 @@ class DownloadChain(ChainBase):
             self._record_download_failure(
                 context=context,
                 error_msg="下载种子内容为空",
-                downloader=downloader or _site_downloader,
+                downloader=_effective_downloader,
                 source=source,
                 episodes=episodes,
             )
@@ -915,7 +938,7 @@ class DownloadChain(ChainBase):
                                                 download_dir=download_dir,
                                                 category=_media.category,
                                                 label=label,
-                                                downloader=downloader or _site_downloader)
+                                                downloader=_effective_downloader)
         if result:
             _downloader, _hash, _layout, error_msg = result
         else:
@@ -1038,7 +1061,7 @@ class DownloadChain(ChainBase):
             self._record_download_failure(
                 context=context,
                 error_msg=error_msg,
-                downloader=_downloader or downloader or _site_downloader,
+                downloader=_downloader or _effective_downloader,
                 source=source,
                 episodes=episodes,
             )

@@ -35,6 +35,8 @@ class TorrentInfo:
     site_order: int = 0
     # 站点下载器
     site_downloader: str = None
+    # 站点是否公开(BT)站点
+    site_public: Optional[bool] = None
     # 种子名称
     title: str = None
     # 种子副标题

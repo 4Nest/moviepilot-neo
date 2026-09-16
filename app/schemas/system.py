@@ -72,7 +72,8 @@ class DownloaderConf(BaseModel):
     type: Optional[str] = None
     # 是否默认
     default: Optional[bool] = False
-    # 配置
+    # 是否 BT(公开)站点默认
+    bt_default: Optional[bool] = False
     config: Optional[dict] = Field(default_factory=dict)
     # 是否启用
     enabled: Optional[bool] = False

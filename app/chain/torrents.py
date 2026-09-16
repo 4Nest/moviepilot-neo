@@ -469,6 +469,7 @@ class TorrentsChain(ChainBase):
                     site_proxy=site.get("proxy"),
                     site_order=site.get("pri"),
                     site_downloader=site.get("downloader"),
+                    site_public=bool(site.get("public")),
                     title=item.get("title"),
                     enclosure=item.get("enclosure"),
                     page_url=item.get("link"),
