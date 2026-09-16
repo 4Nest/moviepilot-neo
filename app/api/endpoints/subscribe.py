@@ -282,6 +282,8 @@ async def reset_subscribes(
                 "episode_priority": {},
                 # 重置代表放弃手动总集数，后续订阅检查重新按 TMDB 集数更新。
                 "manual_total_episode": 0,
+                # 多版本的独立运行事实必须同时清空，否则展开运行视图后旧进度会恢复。
+                "version_progress": {},
                 "state": "R",
             },
         )

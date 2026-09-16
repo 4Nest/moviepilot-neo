@@ -25,6 +25,10 @@ FILE_SIZE_RE = re.compile(r'[0-9.]+\s*[MGT]i?B(?![A-Z]+)', re.IGNORECASE)
 TV_EPISODE_BRACKET_RE = re.compile(r"\[TV\s+(\d{1,4})", re.IGNORECASE)
 FOUR_K_BRACKET_RE = re.compile(r'\[4k]', re.IGNORECASE)
 NUMERIC_BRACKET_RE = re.compile(r"\[\d+", re.IGNORECASE)
+ANIME_WEBRIP_RE = re.compile(
+    r"(?<![A-Za-z0-9])WEBRIP(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 MIXED_CHINESE_TOKEN_RE = re.compile(r'[\d|#:：\-()（）\u4e00-\u9fff]')
 VERSIONED_ANIME_EPISODE_RE = re.compile(
     r"(?P<episode>"
@@ -55,6 +59,16 @@ def normalize_versioned_anime_episode(title: str) -> str:
         return f"{episode}{close}"
 
     return VERSIONED_ANIME_EPISODE_RE.sub(replace, title)
+
+
+def extract_anime_resource_type(title: str, parsed_source=None):
+    """从 anitopy 结果或原始动漫标题提取 WebRip 资源类型。"""
+    source = parsed_source
+    if isinstance(source, list):
+        source = source[0] if source else None
+    if source and re.sub(r"[\s._-]", "", str(source)).upper() == "WEBRIP":
+        return "WebRip"
+    return "WebRip" if title and ANIME_WEBRIP_RE.search(title) else None
 
 
 class MetaAnime(MetaBase):
@@ -211,6 +225,10 @@ class MetaAnime(MetaBase):
                         self.type = MediaType.TV
                     else:
                         self.type = MediaType.MOVIE
+                # 资源类型
+                self.resource_type = extract_anime_resource_type(
+                    original_title, anitopy_info.get("source")
+                )
                 # 分辨率
                 self.resource_pix = anitopy_info.get("video_resolution")
                 if isinstance(self.resource_pix, list):

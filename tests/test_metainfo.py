@@ -476,6 +476,36 @@ def test_video_bit_extracted_for_anime_title():
     assert meta.video_bit == "10bit"
 
 
+def test_anime_webrip_source_populates_resource_type_for_both_parsers():
+    """动漫标题中的 WebRip 应进入重命名使用的资源类型字段。"""
+    title = (
+        "[Nekomoe kissaten&LoliHouse] 20 Seiki Denki Mokuroku - 05 "
+        "[WebRip 1080p HEVC-10bit AAC ASSx2].mkv"
+    )
+    with patch("app.core.metainfo.rust_accel.parse_metainfo", return_value=None):
+        python_meta = MetaInfo(title)
+
+    rust_result = {
+        "kind": "anime",
+        "title": title,
+        "org_string": title.removesuffix(".mkv"),
+        "type": MediaType.TV.value,
+        "en_name": "Seiki Denki Mokuroku",
+        "begin_episode": 5,
+        "total_episode": 1,
+        "resource_type": None,
+        "resource_pix": "1080p",
+        "audio_encode": "AAC",
+    }
+    with patch("app.core.metainfo.rust_accel.parse_metainfo", return_value=rust_result):
+        rust_meta = MetaInfo(title)
+
+    assert python_meta.resource_type == "WebRip"
+    assert python_meta.edition == "WebRip"
+    assert rust_meta.resource_type == "WebRip"
+    assert rust_meta.edition == "WebRip"
+
+
 def test_streaming_platform_word_kept_in_movie_title():
     """测试正式片名中的流媒体平台词不会被预置清理规则移除。"""
     with patch("app.core.metainfo.rust_accel.parse_metainfo", return_value=None):

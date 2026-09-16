@@ -7,7 +7,7 @@ import regex as re
 
 from app.core.config import settings
 from app.core.meta import MetaAnime, MetaVideo, MetaBase
-from app.core.meta.metaanime import has_versioned_anime_episode
+from app.core.meta.metaanime import extract_anime_resource_type, has_versioned_anime_episode
 from app.core.meta.infopath import (
     clear_parsed_title_for_parent_merge,
     should_use_parent_title_for_file_stem,
@@ -398,6 +398,8 @@ def _meta_from_rust(parsed: dict) -> Optional[MetaBase]:
     }
     for key, value in fields.items():
         setattr(meta, key, value)
+    if parsed.get("kind") == "anime" and not meta.resource_type:
+        meta.resource_type = extract_anime_resource_type(meta.org_string or meta.title)
     return meta
 
 

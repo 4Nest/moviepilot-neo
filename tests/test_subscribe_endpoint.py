@@ -664,6 +664,14 @@ class SubscribeEndpointTest(TestCase):
             note=[1, 2],
             current_priority=80,
             episode_priority={"1": 80},
+            version_progress={
+                "main": {
+                    "state": "R",
+                    "note": [1, 2],
+                    "lack_episode": 3,
+                    "completed": False,
+                }
+            },
         )
 
         with patch(
@@ -696,11 +704,13 @@ class SubscribeEndpointTest(TestCase):
                 "manual_total_episode",
                 "note",
                 "state",
+                "version_progress",
             ],
         )
         self.assertEqual(payload["subscribe_info"]["note"], [])
         self.assertEqual(payload["subscribe_info"]["lack_episode"], 10)
         self.assertEqual(payload["subscribe_info"]["manual_total_episode"], 0)
+        self.assertEqual(payload["subscribe_info"]["version_progress"], {})
 
     def test_update_subscribe_sends_modified_event_payload_without_progress_refresh(self):
         """
