@@ -358,7 +358,11 @@
     "订阅元数据更新完成": "Subscription metadata update completed",
     "未配置 Follow 订阅用户，跳过刷新": "No Follow subscription users configured, skipping refresh",
     "订阅日历预缓存完成": "Subscription calendar precache completed",
-    "内容不能为空": "Content cannot be empty"
+    "内容不能为空": "Content cannot be empty",
+    "通知渠道配置必须是列表": "Notification channel configuration must be a list",
+    "通知渠道名称不能重复": "Notification channel names must be unique",
+    "通知场景不能重复": "Notification scenarios must be unique",
+    "测试通知发送成功": "Test notification sent successfully"
   },
   "message_patterns": [
     {
@@ -368,6 +372,26 @@
     {
       "source": "配置结构错误：{reason}",
       "target": "Configuration structure error: {reason}"
+    },
+    {
+      "source": "通知渠道 {channel} 的凭证已失效，请重新填写",
+      "target": "The credentials for notification channel {channel} have expired. Please enter them again"
+    },
+    {
+      "source": "未知通知模板：{types}",
+      "target": "Unknown notification template: {types}"
+    },
+    {
+      "source": "通知模板 {template} 第 {line} 行语法错误：{reason}",
+      "target": "Syntax error in notification template {template} at line {line}: {reason}"
+    },
+    {
+      "source": "通知模板 {template} 必须是字典格式",
+      "target": "Notification template {template} must be a dictionary"
+    },
+    {
+      "source": "通知模板 {template} 包含未知字段：{fields}",
+      "target": "Notification template {template} contains unknown fields: {fields}"
     },
     {
       "source": "工具 '{tool}' 未找到",
