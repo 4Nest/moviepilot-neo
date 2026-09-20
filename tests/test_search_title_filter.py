@@ -37,6 +37,24 @@ def _patch_search_filter_rule_groups(monkeypatch, rule_groups: list[str]) -> Non
     monkeypatch.setattr(search_module, "SystemConfigOper", lambda: oper)
 
 
+def test_process_waits_between_multiple_keywords_without_failing(monkeypatch):
+    """多关键词订阅搜索应在关键词间随机等待并继续完成搜索。"""
+    chain = _make_chain()
+    search_words = []
+    waits = []
+    media = SimpleNamespace(tmdb_id=1, title="复现订阅", names=["复现订阅"])
+
+    chain._SearchChain__prepare_params = lambda **_kwargs: ({}, ["关键词一", "关键词二"])
+    chain._SearchChain__search_all_sites = lambda **kwargs: search_words.append(kwargs["keyword"]) or []
+    chain._SearchChain__parse_result = lambda **_kwargs: []
+    monkeypatch.setattr(search_module.time, "sleep", waits.append)
+
+    assert chain.process(mediainfo=media) == []
+    assert search_words == ["关键词一", "关键词二"]
+    assert len(waits) == 1
+    assert 1 <= waits[0] <= 10
+
+
 def test_search_by_title_applies_default_search_filter_rule_groups(monkeypatch):
     """
     标题搜索应在组装上下文前应用默认搜索过滤规则。
