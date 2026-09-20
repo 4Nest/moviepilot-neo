@@ -85,10 +85,8 @@ moviepilot help init
 moviepilot help setup
 moviepilot help uninstall
 moviepilot help update
-moviepilot help agent
 moviepilot help config
 moviepilot help config set
-moviepilot help tool
 moviepilot help scheduler
 ```
 
@@ -100,12 +98,6 @@ moviepilot config keys API
 moviepilot config describe API_TOKEN
 ```
 
-动态工具清单与参数说明：
-
-```shell
-moviepilot tool list
-moviepilot tool show <tool_name>
-```
 
 ## 完整命令清单
 
@@ -122,7 +114,6 @@ moviepilot update all
 moviepilot startup enable
 moviepilot startup disable
 moviepilot startup status
-moviepilot agent
 moviepilot start
 moviepilot stop
 moviepilot restart
@@ -136,9 +127,6 @@ moviepilot config get
 moviepilot config set
 moviepilot config keys
 moviepilot config describe
-moviepilot tool list
-moviepilot tool show
-moviepilot tool run
 moviepilot scheduler list
 moviepilot scheduler run
 moviepilot help
@@ -371,7 +359,7 @@ moviepilot doctor --deep
 说明：
 
 - `doctor` 不依赖后端服务已经启动，会直接读取配置目录、运行时文件、日志、进程、端口、依赖、数据库和前端资源
-- `--json` 输出稳定 JSON，可供 Agent、脚本或 Issue 流程收集
+- `--json` 输出稳定 JSON，可供自动化脚本或 Issue 流程收集
 - `--fix` 只执行白名单安全修复，例如清理过期 runtime 文件或补齐不合法的 `API_TOKEN`
 - `--deep` 执行可能较慢的深度探测，例如 PostgreSQL TCP 连通性检查
 - Doctor 只分析最近 24 小时日志，并跨主日志、控制台镜像和插件独立日志聚合相同错误

@@ -8,7 +8,7 @@
 # Minimum: run tests directly related to the change
 pytest tests/test_<domain>.py
 
-# If the change affects common modules, startup flow, CLI, or agent runtime
+# If the change affects common modules, startup flow, or CLI
 pytest
 ```
 
@@ -20,7 +20,6 @@ Run the full test suite when changing:
 - `app/modules/__init__.py` — module base class
 - `app/main.py` — application startup
 - The CLI entrypoint (`moviepilot`)
-- Agent runtime (`app/agent/`)
 - Any shared schema in `app/schemas/types.py`
 
 ### Honest Reporting
@@ -35,7 +34,6 @@ Run the full test suite when changing:
 - When adding a feature, add at minimum the smallest useful test coverage.
 - Test files go in `tests/`, named `test_<domain>.py`.
 - Use the patterns established in adjacent test files (fixtures, mock patterns, assertion style).
-- Agent-related tests are under `tests/test_agent_*.py`. Integration-style tests may be in `tests/cases/` or `tests/manual/`.
 
 ---
 
@@ -67,7 +65,7 @@ safety check -r requirements.txt --policy-file=safety.policy.yml
 
 ### API Authentication
 
-All REST and MCP API endpoints require authentication. The project supports two mechanisms:
+All REST API endpoints require authentication. The project supports two mechanisms:
 
 | Method | Format |
 |---|---|
@@ -133,7 +131,7 @@ Before marking any task as complete:
 - [ ] No new pylint error-level issues in `pylint app/`
 - [ ] If dependencies changed: the package is in the correct runtime or dev dependency entry, and `safety check` passes for the affected entry
 - [ ] If CLI behavior changed: `docs/cli.md` and related tests are updated
-- [ ] If MCP/API behavior changed: `docs/mcp-api.md` and related skill files are updated
+- [ ] If API behavior changed: related interface documentation and tests are updated
 - [ ] If database schema changed: a new Alembic migration exists under `database/versions/`
 - [ ] No secrets are included in code, logs, or committed files
 - [ ] Public classes and methods have Chinese docstrings

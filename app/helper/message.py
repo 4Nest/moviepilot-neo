@@ -849,11 +849,8 @@ class MessageHelper(metaclass=Singleton):
             "note": note
         }))
 
-    def get(self, role: str = "system") -> Optional[str]:
-        """
-        取消息
-        :param role: 兼容旧参数，当前所有 SSE 消息共用一个队列
-        """
+    def get(self) -> Optional[str]:
+        """取出一条实时消息。"""
         if not self.sys_queue.empty():
             return self.sys_queue.get(block=False)
         return None

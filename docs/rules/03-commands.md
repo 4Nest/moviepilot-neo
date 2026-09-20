@@ -207,20 +207,9 @@ moviepilot config describe API_TOKEN --show-secrets
 
 ---
 
-## Local CLI — Tools and Scheduler
+## Local CLI — Scheduler
 
 ```bash
-# List all MCP tools
-moviepilot tool list
-
-# Show tool parameters
-moviepilot tool show query_schedulers
-moviepilot tool show search_torrents
-
-# Run a tool directly
-moviepilot tool run query_schedulers
-moviepilot tool run search_torrents media_type=movie tmdb_id=12345
-
 # List scheduled tasks
 moviepilot scheduler list
 
@@ -228,20 +217,6 @@ moviepilot scheduler list
 moviepilot scheduler run subscribe_refresh
 ```
 
----
-
-## Local CLI — Agent
-
-```bash
-moviepilot agent "Help me analyze the last search failure"
-moviepilot agent --user-id admin "Check the current downloader configuration"
-moviepilot agent --session cli-debug-1 "Why was the last transfer not triggered?"
-moviepilot agent --new-session "Summarize any obvious problems with the current system config"
-```
-
-**Prerequisites:** `AI_AGENT_ENABLE` must be set to true, and LLM provider settings (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`) must be configured.
-
----
 
 ## Docker CLI — Doctor
 

@@ -377,7 +377,7 @@ def test_telegram_module_plain_post_message_keeps_chat_without_editing_source_me
             Notification(
                 channel=MessageChannel.Telegram,
                 source="telegram-test",
-                title="Agent 回复",
+                title="任务回复",
                 text="处理完成",
                 original_message_id=123,
                 original_chat_id="chat-a",

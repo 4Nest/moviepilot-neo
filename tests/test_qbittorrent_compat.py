@@ -366,7 +366,7 @@ def test_get_completed_torrents_includes_finished_stopped_tasks():
 
 def test_list_torrents_include_all_tags_removes_builtin_tag_filter():
     """
-    智能体扩大查询范围时，qBittorrent 查询应取消内置标签过滤。
+    显式扩大查询范围时，qBittorrent 查询应取消内置标签过滤。
     """
     server = MagicMock()
     server.get_torrents.return_value = (

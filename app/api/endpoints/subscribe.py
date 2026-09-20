@@ -259,50 +259,79 @@ def refresh_subscribes(
     Scheduler().start("subscribe_refresh")
     return schemas.Response(success=True)
 
-@router.get("/reset/{subid}", summary="重置订阅", response_model=schemas.Response)
-async def reset_subscribes(
+async def _clear_subscribe_progress(subid: int, db: AsyncSession) -> schemas.Response:
+    """清空订阅运行事实并恢复搜索状态。"""
+    subscribe = await Subscribe.async_get(db, subid)
+    if not subscribe:
+        return schemas.Response(success=False, message="订阅不存在")
+    old_subscribe_dict = subscribe.to_dict()
+    await subscribe.async_update(
+        db,
+        {
+            "note": [],
+            "lack_episode": subscribe.total_episode,
+            "current_priority": None,
+            "episode_priority": {},
+            "manual_total_episode": 0,
+            "version_progress": {},
+            "decision_summary": None,
+            "state": "R",
+        },
+    )
+    updated_subscribe = await Subscribe.async_get(db, subid)
+    await eventmanager.async_send_event(
+        EventType.SubscribeModified,
+        SubscribeModifiedEventData(
+            subscribe_id=subid,
+            old_subscribe_info=old_subscribe_dict,
+            subscribe_info=updated_subscribe.to_dict() if updated_subscribe else {},
+            scene="reset",
+        ).to_dict(),
+    )
+    return schemas.Response(success=True)
+
+
+@router.post("/{subid}/clear-progress", summary="清空订阅进度", response_model=schemas.Response)
+async def clear_subscribe_progress(
     subid: int,
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(get_current_admin_async),
-) -> Any:
-    """
-    重置订阅
-    """
+) -> schemas.Response:
+    """清空下载事实、版本进度和完成状态。"""
+    return await _clear_subscribe_progress(subid, db)
+
+
+@router.post("/{subid}/recompute-progress", summary="重新计算订阅进度", response_model=schemas.Response)
+async def recompute_subscribe_progress(
+    subid: int,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(get_current_admin_async),
+) -> schemas.Response:
+    """根据媒体库与下载事实重新计算进度，不清空任何事实。"""
     subscribe = await Subscribe.async_get(db, subid)
-    if subscribe:
-        # 在更新之前获取旧数据
-        old_subscribe_dict = subscribe.to_dict()
-        # 更新订阅
-        await subscribe.async_update(
-            db,
-            {
-                "note": [],
-                "lack_episode": subscribe.total_episode,
-                "current_priority": None,
-                "episode_priority": {},
-                # 重置代表放弃手动总集数，后续订阅检查重新按 TMDB 集数更新。
-                "manual_total_episode": 0,
-                # 多版本的独立运行事实必须同时清空，否则展开运行视图后旧进度会恢复。
-                "version_progress": {},
-                "state": "R",
-            },
-        )
-        # 重新获取更新后的订阅数据
-        updated_subscribe = await Subscribe.async_get(db, subid)
-        # 发送订阅调整事件
-        await eventmanager.async_send_event(
-            EventType.SubscribeModified,
-            SubscribeModifiedEventData(
-                subscribe_id=subid,
-                old_subscribe_info=old_subscribe_dict,
-                subscribe_info=updated_subscribe.to_dict()
-                if updated_subscribe
-                else {},
-                scene="reset",
-            ).to_dict(),
-        )
-        return schemas.Response(success=True)
-    return schemas.Response(success=False, message="订阅不存在")
+    if not subscribe:
+        return schemas.Response(success=False, message="订阅不存在")
+    summary = SubscribeChain().refresh_subscribe_progress(subscribe, scene="manual_recompute")
+    return schemas.Response(success=summary.get("reason") != "resolve_missing_failed", data=summary)
+
+
+@router.post("/{subid}/force-search", summary="强制搜索一次", response_model=schemas.Response)
+async def force_search_subscribe(
+    subid: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(get_current_admin_async),
+) -> schemas.Response:
+    """本次忽略媒体库已有判断执行搜索，不修改订阅持久设置。"""
+    if not await Subscribe.async_get(db, subid):
+        return schemas.Response(success=False, message="订阅不存在")
+    background_tasks.add_task(
+        Scheduler().start,
+        job_id="subscribe_search",
+        **{"sid": subid, "state": None, "manual": True, "force_search": True},
+    )
+    return schemas.Response(success=True)
+
 
 
 @router.get("/check", summary="刷新订阅 TMDB 信息", response_model=schemas.Response)

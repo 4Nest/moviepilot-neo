@@ -56,7 +56,7 @@ class TestMediaRecognizeShare(unittest.TestCase):
         query_mock.assert_not_called()
 
     def test_shared_result_media_type_uses_conversion_helpers(self):
-        """共享识别结果应在 Agent 类型值与系统枚举之间完整转换。"""
+        """共享识别结果应在外部接口类型值与系统枚举之间完整转换。"""
         params = MoviePilotServerHelper.to_recognize_params({
             "type": "tv",
             "tmdbid": 200,

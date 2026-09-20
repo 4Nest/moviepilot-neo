@@ -19,7 +19,6 @@ def _make_chain() -> SearchChain:
     构造不触发外部依赖初始化的搜索链实例。
     """
     chain = object.__new__(SearchChain)
-    chain.cancel_ai_recommend = lambda: None
     chain.save_last_search_params = lambda **_kwargs: None
     chain.save_cache = lambda _cache, _filename: None
     chain.async_save_last_search_params = lambda **_kwargs: None

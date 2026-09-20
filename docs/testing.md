@@ -31,7 +31,7 @@ python tests/run.py                       # 等价于 pytest 全量（参数透�
 
 ## 外部依赖：一律 mock，零真实网络
 
-测试**禁止**发起任何真实外部请求，包括但不限于 TMDB（`api.themoviedb.org`）、LLM 目录（`models.dev`）、下载器、媒体服务器、MP 服务器（`movie-pilot.org` 的共享识别 API）、以及任意外链图片/资源。**验收标准是全量跑测零真实出站**。
+测试**禁止**发起任何真实外部请求，包括但不限于 TMDB（`api.themoviedb.org`）、下载器、媒体服务器、MP 服务器（`movie-pilot.org` 的共享识别 API）、以及任意外链图片/资源。**验收标准是全量跑测零真实出站**。
 
 两种标准做法：
 

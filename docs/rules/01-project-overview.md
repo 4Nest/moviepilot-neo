@@ -10,8 +10,7 @@ MoviePilot is a self-hosted media automation platform targeting Chinese-language
 4. **Transfer** — moves or hard-links completed downloads into a structured media library.
 5. **Scraping** — fetches metadata (posters, descriptions, episode info) from TMDB, TheTVDB, Douban, and Bangumi.
 6. **Media Server Integration** — notifies and refreshes Emby, Jellyfin, or Plex after files are organized.
-7. **Messaging** — sends status notifications through Telegram, WeChat, Feishu, Slack, Discord, and other channels.
-8. **AI Agent** — provides a conversational agent interface (via MCP and LLM chain) for natural-language management tasks.
+7. **Messaging** — sends status notifications through Telegram and WeCom.
 
 ---
 
@@ -22,7 +21,7 @@ MoviePilot is a self-hosted media automation platform targeting Chinese-language
 | Path | Content |
 |---|---|
 | `app/` | FastAPI backend application |
-| `moviepilot` | Local CLI entrypoint (install, init, start, stop, update, agent) |
+| `moviepilot` | Local CLI entrypoint (install, init, start, stop, update) |
 | `app/api/endpoints/` | HTTP endpoint handlers |
 | `app/chain/` | Business orchestration layer |
 | `app/modules/` | Pluggable backend integrations (downloaders, media servers, etc.) |
@@ -30,11 +29,9 @@ MoviePilot is a self-hosted media automation platform targeting Chinese-language
 | `app/db/` | SQLAlchemy models and data access wrappers |
 | `app/core/` | Config, event system, module manager, plugin manager, security |
 | `app/schemas/` | Pydantic request/response models and shared enums |
-| `app/agent/` | LLM agent runtime |
 | `app/workflow/` | Workflow engine |
 | `database/versions/` | Alembic migration scripts |
-| `docs/` | CLI, MCP/API, and development workflow documentation |
-| `skills/` | AI agent skills and associated scripts |
+| `docs/` | CLI, API, and development workflow documentation |
 | `tests/` | Pytest test suite |
 
 ### What Is NOT in This Repository
@@ -65,8 +62,7 @@ An alternative for users running from source. The `moviepilot` CLI handles insta
 | Download clients | qBittorrent, Transmission, rTorrent |
 | Media servers | Emby, Jellyfin, Plex, TrimMedia, Zspace, Ugreen |
 | Metadata sources | TMDB, TheTVDB, Douban, Bangumi, Fanart |
-| Message channels | Telegram, WeChat, WeChatClawBot, Feishu, Slack, Discord, VoceChat, Synology Chat, WebPush, QQBot |
-| LLM providers | OpenAI-compatible, Anthropic, and other configurable providers |
+| Message channels | Telegram, WeCom application, WeCom bot |
 
 ---
 
@@ -78,7 +74,6 @@ An alternative for users running from source. The `moviepilot` CLI handles insta
 | Transfer | The process of moving or hard-linking downloaded files into the organized media library |
 | Chain | A business orchestration class that coordinates multiple modules for a use case |
 | Module | A pluggable backend integration loaded by the module manager |
-| Skill | A packaged AI agent capability that can be invoked via the MCP interface |
 | SystemConfig | Runtime key-value configuration stored in the database and managed via `SystemConfigKey` |
 
 *Last Updated: 2026-05-25*

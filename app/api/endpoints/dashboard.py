@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.security import verify_apitoken
 from app.db import get_db
 from app.db.models.transferhistory import TransferHistory
+from app.db.models.schedulerhistory import SchedulerHistory
 from app.db.user_oper import get_current_admin
 from app.helper.directory import DirectoryHelper
 from app.scheduler import Scheduler
@@ -177,6 +178,15 @@ async def schedule(_: Any = Depends(get_current_admin)) -> Any:
     查询后台服务信息
     """
     return Scheduler().list()
+
+@router.get("/schedule/history", summary="后台服务执行历史")
+async def schedule_history(
+    limit: int = 100,
+    failed_only: bool = False,
+    _: Any = Depends(get_current_admin),
+) -> Any:
+    """查询最近的后台服务执行结果。"""
+    return SchedulerHistory.list_recent(limit=limit, failed_only=failed_only)
 
 
 @router.get(

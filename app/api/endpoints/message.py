@@ -261,7 +261,7 @@ def incoming_verify(
     source: Optional[str] = None,
     _: schemas.TokenPayload = Depends(verify_apitoken),
 ) -> Any:
-    微信验证响应
+    """响应消息渠道的回调验证请求。"""
     logger.info(
         f"收到验证请求: token={token}, echostr={echostr}, "
         f"msg_signature={msg_signature}, timestamp={timestamp}, nonce={nonce}"

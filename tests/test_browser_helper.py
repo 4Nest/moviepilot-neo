@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 from unittest.mock import patch
 
-import pytest
 
-from app.helper.browser import BrowserSessionHelper, PlaywrightHelper
+from app.helper.browser import PlaywrightHelper
 
 
 class _FakeResponse:
@@ -45,7 +42,6 @@ class _FakePage:
         self.clicks = []
         self.fills = []
         self.selects = []
-        self.close_thread_id = None
 
     def set_extra_http_headers(self, headers: dict[str, str]) -> None:
         """记录额外请求头。"""
@@ -100,23 +96,7 @@ class _FakePage:
         return "<html>ok</html>"
 
     def evaluate(self, expression: str, *args, **kwargs):
-        """返回可交互元素或脚本结果。"""
-        if "data-moviepilot-agent-ref" in expression:
-            return [
-                {
-                    "ref": "e1",
-                    "tag": "button",
-                    "type": "button",
-                    "text": "保存",
-                    "name": "",
-                    "id": "save",
-                    "role": "",
-                    "placeholder": "",
-                    "href": "",
-                    "value": "",
-                    "selector": '[data-moviepilot-agent-ref="e1"]',
-                }
-            ]
+        """返回脚本执行结果。"""
         return {"ok": True}
 
     def screenshot(self, *args, **kwargs) -> bytes:
@@ -125,7 +105,6 @@ class _FakePage:
 
     def close(self) -> None:
         """记录页面关闭状态。"""
-        self.close_thread_id = threading.get_ident()
         self.closed = True
 
 
@@ -135,7 +114,6 @@ class _FakeContext:
     def __init__(self, pages: Optional[list[_FakePage]] = None) -> None:
         self.pages = pages or [_FakePage()]
         self.closed = False
-        self.close_thread_id = None
 
     def new_page(self) -> _FakePage:
         """返回或创建模拟页面。"""
@@ -149,16 +127,9 @@ class _FakeContext:
 
     def close(self) -> None:
         """记录上下文关闭状态。"""
-        self.close_thread_id = threading.get_ident()
         self.closed = True
 
 
-@pytest.fixture(autouse=True)
-def browser_sessions_cleanup():
-    """确保每个测试后清理浏览器会话。"""
-    BrowserSessionHelper.close_all_sessions()
-    yield
-    BrowserSessionHelper.close_all_sessions()
 
 
 def test_default_emulation_uses_cloakbrowser_context():
@@ -203,103 +174,3 @@ def test_legacy_playwright_emulation_uses_cloakbrowser_context():
         source = PlaywrightHelper().get_page_source(url="https://example.com")
 
     assert source == "<html>ok</html>"
-
-
-def test_legacy_browser_type_constructor_is_accepted():
-    """旧版 browser_type 构造参数应保持兼容。"""
-    page = _FakePage()
-    context = _FakeContext([page])
-
-    with patch.object(
-        PlaywrightHelper,
-        "_PlaywrightHelper__launch_cloakbrowser_context",
-        return_value=context,
-    ):
-        source = PlaywrightHelper(browser_type="firefox").get_page_source(
-            url="https://example.com"
-        )
-
-    assert source == "<html>ok</html>"
-
-
-def test_browser_session_helper_blocks_private_network_by_default():
-    """默认应阻止 Agent 浏览器访问本机或私网地址。"""
-    with pytest.raises(ValueError, match="默认不允许访问本机或私网地址"):
-        BrowserSessionHelper.validate_url("http://127.0.0.1:3000")
-
-
-def test_browser_session_helper_allows_private_network_when_explicit():
-    """显式允许时可访问本机或私网地址。"""
-    assert (
-        BrowserSessionHelper.validate_url(
-            "http://127.0.0.1:3000",
-            allow_private_network=True,
-        )
-        == "http://127.0.0.1:3000"
-    )
-
-
-def test_browser_session_helper_reuses_page_within_session():
-    """同一 session_key 应复用同一个浏览器页面。"""
-    page = _FakePage()
-    context = _FakeContext([page])
-
-    with patch.object(BrowserSessionHelper, "_launch_context", return_value=context):
-        helper = BrowserSessionHelper()
-        first = helper.with_session("session-1", lambda session: id(session.active_page))
-        second = helper.with_session("session-1", lambda session: id(session.active_page))
-
-    assert first == second
-    assert not page.closed
-    assert not context.closed
-
-
-def test_browser_session_helper_runs_same_session_on_one_worker_thread():
-    """同一 session_key 的浏览器操作应固定在同一个工作线程。"""
-    page = _FakePage()
-    context = _FakeContext([page])
-    helper = BrowserSessionHelper()
-    caller_thread_ids = set()
-    session_thread_ids = []
-    barrier = threading.Barrier(2)
-
-    def _run_from_caller_thread() -> int:
-        """从外部调用线程进入同一个浏览器会话。"""
-        caller_thread_ids.add(threading.get_ident())
-        barrier.wait(timeout=1)
-        return helper.with_session(
-            "session-1",
-            lambda _session: threading.get_ident(),
-        )
-
-    with patch.object(BrowserSessionHelper, "_launch_context", return_value=context):
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [
-                executor.submit(_run_from_caller_thread),
-                executor.submit(_run_from_caller_thread),
-            ]
-            session_thread_ids = [future.result(timeout=1) for future in futures]
-
-    assert len(caller_thread_ids) == 2
-    assert len(set(session_thread_ids)) == 1
-    assert session_thread_ids[0] not in caller_thread_ids
-
-
-def test_browser_session_helper_closes_session_on_worker_thread():
-    """关闭会话时应在创建浏览器对象的工作线程内释放资源。"""
-    page = _FakePage()
-    context = _FakeContext([page])
-    helper = BrowserSessionHelper()
-
-    with patch.object(BrowserSessionHelper, "_launch_context", return_value=context):
-        session_thread_id = helper.with_session(
-            "session-1",
-            lambda _session: threading.get_ident(),
-        )
-        closed = BrowserSessionHelper.close_session("session-1")
-
-    assert closed is True
-    assert page.close_thread_id == session_thread_id
-    assert context.close_thread_id == session_thread_id
-
-

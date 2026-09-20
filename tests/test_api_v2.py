@@ -53,10 +53,6 @@ def api_app() -> FastAPI:
         """返回带路径参数校验的示例数据。"""
         return {"id": item_id}
 
-    @app.get("/api/v2/openai/v1/models")
-    async def get_openai_models() -> dict:
-        """返回需要保持原始协议结构的 OpenAI 模型列表。"""
-        return {"object": "list", "data": []}
 
     @app.get("/api/v2/events")
     async def get_events() -> None:
@@ -135,12 +131,6 @@ async def test_v2_moves_validation_error_to_message(api_app: FastAPI):
     assert payload["data"] == {}
 
 
-async def test_v2_keeps_protocol_response_unwrapped(api_app: FastAPI):
-    """OpenAI 等标准协议接口应保持原始响应结构。"""
-    async with make_client(api_app) as client:
-        response = await client.get("/api/v2/openai/v1/models")
-
-    assert response.json() == {"object": "list", "data": []}
 
 
 async def test_v2_keeps_streaming_response_unwrapped(api_app: FastAPI):
@@ -168,15 +158,11 @@ def test_v2_openapi_uses_response_schema(api_app: FastAPI):
     schema = api_app.openapi()
 
     raw_schema = schema["paths"]["/api/v2/items"]["get"]["responses"]["200"]
-    protocol_schema = schema["paths"]["/api/v2/openai/v1/models"]["get"]
     stream_schema = schema["paths"]["/api/v2/events"]["get"]
 
     assert raw_schema["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/Response"
     }
-    assert protocol_schema["responses"]["200"]["content"]["application/json"][
-        "schema"
-    ] != {"$ref": "#/components/schemas/Response"}
     assert stream_schema["responses"]["200"]["content"]["application/json"].get(
         "schema"
     ) != {"$ref": "#/components/schemas/Response"}

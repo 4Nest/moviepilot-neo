@@ -72,9 +72,9 @@ All new code must follow these conventions. Consistent naming is how the codebas
 
 | Context | Convention | Examples |
 |---|---|---|
-| `Settings` / `ConfigModel` fields | `UPPER_SNAKE_CASE` | `API_TOKEN`, `LLM_MODEL`, `QB_HOST` |
+| `Settings` / `ConfigModel` fields | `UPPER_SNAKE_CASE` | `API_TOKEN`, `QB_HOST`, `DB_TYPE` |
 | `SystemConfigKey` enum members | `PascalCase` | `SystemConfigKey.RssUrls`, `SystemConfigKey.SubscribeFilter` |
-| Environment variable names | `UPPER_SNAKE_CASE` | `AI_AGENT_ENABLE`, `DB_TYPE` |
+| Environment variable names | `UPPER_SNAKE_CASE` | `API_TOKEN`, `DB_TYPE` |
 
 ---
 

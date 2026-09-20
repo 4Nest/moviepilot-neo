@@ -445,7 +445,7 @@ def test_disconnect_closes_session():
     assert client.is_authenticated() is False
 
 
-# ── PR-Agent 审查修复的回归 ──────────────────────────────────────────
+# ── 分页查询回归 ────────────────────────────────────────────────────
 
 
 def test_get_movies_pages_past_the_first_page():

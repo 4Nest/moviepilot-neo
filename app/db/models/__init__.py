@@ -10,6 +10,7 @@ from .sitestatistic import SiteStatistic
 from .siteuserdata import SiteUserData
 from .subscribe import Subscribe
 from .subscribehistory import SubscribeHistory
+from .schedulerhistory import SchedulerHistory
 from .systemconfig import SystemConfig
 from .transferhistory import TransferHistory
 from .user import User

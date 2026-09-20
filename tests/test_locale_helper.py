@@ -214,10 +214,6 @@ def test_locale_helper_translates_common_backend_response_messages():
         "工具 'query_schedulers' 未找到": "Tool 'query_schedulers' was not found",
         "插件 test 不存在或未加载": "Plugin test does not exist or is not loaded",
         "站点 1 不存在": "Site 1 does not exist",
-        "智能助手未启用，请先在系统设置中开启。": (
-            "The assistant is not enabled. Enable it in system settings first."
-        ),
-        "智能助手执行失败: timeout": "Assistant execution failed: timeout",
     }
 
     for message, expected in samples.items():

@@ -192,7 +192,34 @@ def build_subscribe_version_progress(subscribe: Subscribe, completed: Optional[b
         "note": copy.deepcopy(subscribe.note),
         "current_priority": subscribe.current_priority,
         "episode_priority": copy.deepcopy(subscribe.episode_priority or {}),
+        "decision_summary": copy.deepcopy(getattr(subscribe, "decision_summary", None)),
         "completed": SubscribeChain.is_subscribe_complete(subscribe) if completed is None else completed,
+    }
+
+def build_subscribe_decision_summary(
+        subscribe: Subscribe,
+        *,
+        result: str,
+        searched: int = 0,
+        matched: int = 0,
+        downloaded: int = 0,
+        reason: Optional[str] = None,
+) -> dict:
+    """构建可直接返回给前端的最近一次订阅搜索判定。"""
+    if subscribe.type == MediaType.TV.value:
+        start = subscribe.start_episode or 1
+        end = subscribe.total_episode or start
+        target = f"S{int(subscribe.season or 1):02d}E{start:02d}-E{end:02d}"
+    else:
+        target = subscribe.name
+    return {
+        "target": target,
+        "searched": searched,
+        "matched": matched,
+        "downloaded": downloaded,
+        "result": result,
+        "reason": reason,
+        "updated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
     }
 
 class SubscribeChain(ChainBase):
@@ -1428,6 +1455,7 @@ class SubscribeChain(ChainBase):
             sid: Optional[int] = None,
             state: Optional[str] = 'N',
             manual: Optional[bool] = False,
+            force_search: Optional[bool] = False,
             progress_callback: Optional[Callable[..., None]] = None,
     ) -> None:
         """
@@ -1435,6 +1463,7 @@ class SubscribeChain(ChainBase):
         :param sid: 订阅ID，有值时只处理该订阅
         :param state: 订阅状态 N:新建, R:订阅中, P:待定, S:暂停
         :param manual: 是否手动搜索
+        :param force_search: 本次搜索忽略媒体库已有内容，但不修改订阅配置
         :param progress_callback: 定时服务进度更新回调
         :return: 更新订阅状态为R或删除订阅
         """
@@ -1454,6 +1483,10 @@ class SubscribeChain(ChainBase):
             else:
                 subscribes = subscribeoper.list(self.get_states_for_search(state))
             subscribes = expand_subscribe_runtime_views(subscribes)
+            if force_search:
+                for subscribe in subscribes:
+                    subscribe.skip_library_check = 1
+
             total_num = len(subscribes)
             if progress_callback:
                 progress_callback(
@@ -1523,10 +1556,15 @@ class SubscribeChain(ChainBase):
                                                                                      mediainfo=mediainfo,
                                                                                      mediakey=mediakey)
                         if exist_flag:
+                            subscribe.decision_summary = build_subscribe_decision_summary(
+                                subscribe, result="satisfied", reason="媒体库或下载事实已满足目标范围",
+                            )
                             version_rule_id = getattr(subscribe, "_version_rule_id", None)
                             if version_rule_id:
                                 parent_subscribe = getattr(subscribe, "_version_parent")
                                 self.__persist_version_progress(parent_subscribe, version_rule_id, subscribe, completed=True)
+                            else:
+                                subscribeoper.update(subscribe.id, {"decision_summary": subscribe.decision_summary})
                             continue
 
                         # 站点范围
@@ -1549,15 +1587,21 @@ class SubscribeChain(ChainBase):
                                                          area="imdbid" if subscribe.search_imdbid else "title",
                                                          custom_words=custom_word_list,
                                                          filter_params=self.get_params(subscribe))
+                        searched_count = len(contexts or [])
                         if not contexts:
+                            subscribe.decision_summary = build_subscribe_decision_summary(
+                                subscribe, result="no_results", searched=0, reason="搜索源未返回资源",
+                            )
                             logger.warn(f'订阅 {subscribe.keyword or subscribe.name} 未搜索到资源')
                             version_rule_id = getattr(subscribe, "_version_rule_id", None)
                             if version_rule_id:
                                 parent_subscribe = getattr(subscribe, "_version_parent")
                                 self.__persist_version_progress(parent_subscribe, version_rule_id, subscribe)
                             else:
-                                self.finish_subscribe_or_not(subscribe=subscribe, meta=meta,
-                                                             mediainfo=mediainfo, lefts=no_exists)
+                                subscribeoper.update(subscribe.id, {"decision_summary": subscribe.decision_summary})
+                                self.finish_subscribe_or_not(
+                                    subscribe=subscribe, meta=meta, mediainfo=mediainfo, lefts=no_exists,
+                                )
                             continue
 
                         # 过滤搜索结果
@@ -1623,14 +1667,22 @@ class SubscribeChain(ChainBase):
                             del contexts
 
                         if not matched_contexts:
+                            subscribe.decision_summary = build_subscribe_decision_summary(
+                                subscribe,
+                                result="filtered",
+                                searched=searched_count,
+                                reason="资源未通过订阅范围或优先级条件",
+                            )
                             logger.warn(f'订阅 {subscribe.name} 没有符合过滤条件的资源')
                             version_rule_id = getattr(subscribe, "_version_rule_id", None)
                             if version_rule_id:
                                 parent_subscribe = getattr(subscribe, "_version_parent")
                                 self.__persist_version_progress(parent_subscribe, version_rule_id, subscribe)
                             else:
-                                self.finish_subscribe_or_not(subscribe=subscribe, meta=meta,
-                                                             mediainfo=mediainfo, lefts=no_exists)
+                                subscribeoper.update(subscribe.id, {"decision_summary": subscribe.decision_summary})
+                                self.finish_subscribe_or_not(
+                                    subscribe=subscribe, meta=meta, mediainfo=mediainfo, lefts=no_exists,
+                                )
                             continue
 
                         version_rule_id = getattr(subscribe, "_version_rule_id", None)
@@ -1641,6 +1693,7 @@ class SubscribeChain(ChainBase):
                             ]
                             for context in matched_contexts:
                                 context.version_rule_id = version_rule_id
+                        matched_count = len(matched_contexts)
                         # 自动下载
                         downloads, lefts = self.__download_best_version_with_full_pack_first(
                             contexts=matched_contexts,
@@ -1656,6 +1709,19 @@ class SubscribeChain(ChainBase):
                                 subscribe, getattr(subscribe, "_version_rule", {})
                             ) if version_rule_id else None,
                         )
+                        subscribe.decision_summary = build_subscribe_decision_summary(
+                            subscribe,
+                            result="downloaded" if downloads else "not_downloaded",
+                            searched=searched_count,
+                            matched=matched_count,
+                            downloaded=len(downloads or []),
+                            reason=None if downloads else "候选资源未形成可提交的下载任务",
+                        )
+                        if version_rule_id:
+                            parent_subscribe = getattr(subscribe, "_version_parent")
+                            self.__persist_version_progress(parent_subscribe, version_rule_id, subscribe)
+                        else:
+                            subscribeoper.update(subscribe.id, {"decision_summary": subscribe.decision_summary})
 
                         # 版本视图必须保留父订阅引用；legacy 分支再从数据库同步。
                         if not version_rule_id:

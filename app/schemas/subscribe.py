@@ -110,6 +110,18 @@ class SubscribeVersionRule(BaseModel):
         return self
 
 
+
+class SubscribeDecisionSummary(BaseModel):
+    """最近一次订阅搜索的结构化判定结果。"""
+
+    target: Optional[str] = None
+    searched: int = 0
+    matched: int = 0
+    downloaded: int = 0
+    result: str
+    reason: Optional[str] = None
+    updated_at: str
+
 class SubscribeVersionProgress(BaseModel):
     """版本运行事实；只读输入，不允许公共写接口覆盖。"""
 
@@ -120,12 +132,13 @@ class SubscribeVersionProgress(BaseModel):
     current_priority: Optional[int] = None
     episode_priority: Dict[str, int] = Field(default_factory=dict)
     completed: bool = False
+    decision_summary: Optional[SubscribeDecisionSummary] = None
 
 
 class Subscribe(BaseModel):
     # 公共创建和更新接口不得接收系统字段和运行事实；其余字段默认作为订阅输入透传。
     PUBLIC_WRITE_EXCLUDED_FIELDS: ClassVar[frozenset[str]] = frozenset({
-        "version_progress", "version_mode", "legacy_version_id",
+        "version_progress", "version_mode", "legacy_version_id", "decision_summary",
         "id", "poster", "backdrop", "vote", "description", "lack_episode", "completed_episode",
         "note", "state", "last_update", "username", "current_priority", "episode_priority", "date",
     })
@@ -162,6 +175,7 @@ class Subscribe(BaseModel):
     version_rules: Optional[List[SubscribeVersionRule]] = None
     version_mode: Optional[str] = None
     version_progress: Optional[Dict[str, SubscribeVersionProgress]] = None
+    decision_summary: Optional[SubscribeDecisionSummary] = None
     # 包含
     include: Optional[str] = None
     # 排除

@@ -32,7 +32,7 @@ This repository maintains a structured documentation library covering the full d
 
 * **09 External APIs, Protocols, and Responses**
   * File: `09-external-response.md`
-  * Scope: HTTP client conventions, MCP protocol, standardized response formats, and error handling by layer.
+  * Scope: HTTP client conventions, standardized response formats, and error handling by layer.
 
 * **10 Data and Persistent Management**
   * File: `10-data-and-persistent.md`

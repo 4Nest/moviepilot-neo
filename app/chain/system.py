@@ -169,6 +169,7 @@ class SystemChain(ChainBase):
         server_release_version = self.__get_server_release_version()
         if server_release_version:
             server_release_version = server_release_version.removeprefix("neo-")
+        front_release_version = self.__get_front_release_version()
         server_local_version = self.get_server_local_version()
         front_local_version = self.get_frontend_version()
         if server_release_version == server_local_version:

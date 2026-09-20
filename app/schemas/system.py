@@ -1,7 +1,8 @@
+import re
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Optional, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 @dataclass
@@ -39,6 +40,7 @@ class MediaServerConf(BaseModel):
     sync_libraries: Optional[list] = Field(default_factory=list)
     # 自动同步间隔（小时），未设置时使用旧全局配置
     sync_interval: Optional[int] = None
+    model_config = ConfigDict(extra="forbid")
 
     @field_validator("sync_interval", mode="before")
     @classmethod
@@ -81,34 +83,101 @@ class DownloaderConf(BaseModel):
     enabled: Optional[bool] = False
     # 路径映射
     path_mapping: Optional[list[tuple[str, str]]] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid")
+
+
+class TelegramNotificationConfig(BaseModel):
+    """Telegram 通知渠道参数。"""
+
+    TELEGRAM_TOKEN: str = Field(min_length=1)
+    TELEGRAM_CHAT_ID: str = Field(min_length=1)
+    TELEGRAM_USERS: Optional[str] = None
+    TELEGRAM_ADMINS: Optional[str] = None
+    API_URL: Optional[str] = None
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class WechatNotificationConfig(BaseModel):
+    """企业微信应用或智能机器人参数。"""
+
+    WECHAT_MODE: Literal["app", "bot"] = "app"
+    WECHAT_CORPID: Optional[str] = None
+    WECHAT_APP_ID: Optional[str] = None
+    WECHAT_APP_SECRET: Optional[str] = None
+    WECHAT_PROXY: Optional[str] = None
+    WECHAT_TOKEN: Optional[str] = None
+    WECHAT_ENCODING_AESKEY: Optional[str] = None
+    WECHAT_BOT_ID: Optional[str] = None
+    WECHAT_BOT_SECRET: Optional[str] = None
+    WECHAT_BOT_CHAT_ID: Optional[str] = None
+    WECHAT_BOT_WS_URL: Optional[str] = None
+    WECHAT_ADMINS: Optional[str] = None
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    @model_validator(mode="after")
+    def validate_mode_credentials(self) -> "WechatNotificationConfig":
+        required = (
+            ("WECHAT_BOT_ID", "WECHAT_BOT_SECRET")
+            if self.WECHAT_MODE == "bot"
+            else ("WECHAT_CORPID", "WECHAT_APP_ID", "WECHAT_APP_SECRET")
+        )
+        missing = [field for field in required if not getattr(self, field)]
+        if missing:
+            raise ValueError(f"企业微信 {self.WECHAT_MODE} 模式缺少配置：{', '.join(missing)}")
+        return self
 
 
 class NotificationConf(BaseModel):
-    """
-    通知配置
-    """
+    """可直接运行的通知渠道配置。"""
 
-    # 名称
-    name: Optional[str] = None
-    # 类型 telegram/wechat
-    type: Optional[str] = None
-    # 配置
-    config: Optional[dict] = Field(default_factory=dict)
-    # 场景开关
-    switchs: Optional[list] = Field(default_factory=list)
-    # 是否启用
-    enabled: Optional[bool] = False
+    id: Optional[str] = Field(default=None, min_length=1)
+    name: str = Field(min_length=1)
+    type: Literal["telegram", "wechat"]
+    config: dict = Field(default_factory=dict)
+    switchs: list[Literal[
+        "资源下载", "整理入库", "订阅", "站点", "媒体服务器", "手动处理", "插件", "其它"
+    ]] = Field(default_factory=list)
+    enabled: bool = False
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    @model_validator(mode="after")
+    def validate_channel_config(self) -> "NotificationConf":
+        config_type = TelegramNotificationConfig if self.type == "telegram" else WechatNotificationConfig
+        self.config = config_type.model_validate(self.config).model_dump(exclude_none=True)
+        return self
 
 
 class NotificationSwitchConf(BaseModel):
-    """
-    通知场景开关配置
-    """
+    """通知场景的接收范围。"""
 
-    # 场景名称
-    type: str = None
-    # 通知范围 all/user/admin
-    action: Optional[str] = "all"
+    type: Literal["资源下载", "整理入库", "订阅", "站点", "媒体服务器", "手动处理", "插件", "其它"]
+    action: Literal["all", "user", "admin", "user,admin"] = "all"
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class NotificationTimePeriod(BaseModel):
+    """允许发送通知的每日时间段。"""
+
+    start: str
+    end: str
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("start", "end")
+    @classmethod
+    def validate_time(cls, value: str) -> str:
+        """校验 24 小时时间并将历史秒级值规范化为 HH:MM。"""
+        match = re.fullmatch(r"(\d{2}):(\d{2})(?::(\d{2}))?", value)
+        if not match:
+            raise ValueError("时间必须使用 HH:MM 格式")
+        hour, minute, second = (int(part) if part is not None else 0 for part in match.groups())
+        if hour > 23 or minute > 59 or second > 59:
+            raise ValueError("时间必须在 00:00 到 23:59 之间")
+        return f"{hour:02d}:{minute:02d}"
 
 
 class PluginMarketSyncRequest(BaseModel):
@@ -133,6 +202,7 @@ class StorageConf(BaseModel):
     name: Optional[str] = None
     # 配置
     config: Optional[dict] = Field(default_factory=dict)
+    model_config = ConfigDict(extra="forbid")
 
 
 class TransferDirectoryConf(BaseModel):
@@ -178,3 +248,4 @@ class TransferDirectoryConf(BaseModel):
     library_type_folder: Optional[bool] = False
     # 媒体库类别子目录
     library_category_folder: Optional[bool] = False
+    model_config = ConfigDict(extra="forbid")

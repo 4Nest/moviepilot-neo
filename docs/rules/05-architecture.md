@@ -37,7 +37,7 @@ Before creating a new file under `app/api/endpoints/`, `app/chain/`, `app/helper
 
 ### Entrypoint Layer
 
-**Directories:** `app/api/endpoints/`, `moviepilot` (CLI), `app/agent/`, scheduler callbacks, webhook handlers, message interactions.
+**Directories:** `app/api/endpoints/`, `moviepilot` (CLI), scheduler callbacks, webhook handlers, message interactions.
 
 **Responsibilities:**
 - HTTP concerns: authentication, parameter parsing, response model serialization, streaming adaptation, simple input validation.
@@ -82,7 +82,7 @@ Before creating a new file under `app/api/endpoints/`, `app/chain/`, `app/helper
 |---|---|
 | `ModuleType.Downloader` | qBittorrent, Transmission, rTorrent |
 | `ModuleType.MediaServer` | Emby, Jellyfin, Plex, TrimMedia, Zspace, Ugreen |
-| `ModuleType.MessageChannel` | Telegram, WeChat, Feishu, Slack, Discord |
+| `ModuleType.Notification` | Telegram, WeCom application, WeCom bot |
 | `ModuleType.MetaData` | TMDB, TheTVDB, Douban, Bangumi, Fanart |
 | `ModuleType.Indexer` | Site-specific torrent indexers |
 | `ModuleType.Storage` | Alist, rclone, u115, local storage |

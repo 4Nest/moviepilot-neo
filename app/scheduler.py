@@ -33,6 +33,7 @@ from app.db import SessionFactory
 from app.db.models.downloadhistory import DownloadHistory, DownloadFiles
 from app.db.models.message import Message
 from app.db.models.siteuserdata import SiteUserData
+from app.db.models.schedulerhistory import SchedulerHistory
 from app.db.models.transferhistory import TransferHistory
 from app.db.systemconfig_oper import SystemConfigOper
 from app.helper.image import WallpaperHelper
@@ -816,6 +817,18 @@ class Scheduler(ConfigReloadMixin, metaclass=SingletonClass):
                 job["running"] = False
                 job["last_finished_at"] = finished_at
                 job["last_error"] = error
+        try:
+            SchedulerHistory.record(
+                job_id=job_id,
+                name=job.get("name") if job else job_id,
+                provider=job.get("provider_name", "[系统]") if job else None,
+                success=success,
+                started_at=job.get("last_started_at") if job else None,
+                finished_at=finished_at,
+                error=error,
+            )
+        except Exception as err:
+            logger.error(f"保存定时任务 {job_id} 执行历史失败：{str(err)}")
         job_name = job.get("name") if job else job_id
         progress = ProgressHelper(self._get_progress_key(job_id))
         current_progress = progress.get() or {}

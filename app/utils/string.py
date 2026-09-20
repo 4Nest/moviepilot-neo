@@ -216,7 +216,7 @@ class StringUtils:
             # NFKC 规范化:全角字母数字转半角(Ｔ→T、２→2),兼容罗马数字转 ASCII(Ⅲ→III),
             # 全角波浪号等兼容字符归一后再走符号清洗,避免同一语义字符以多种形态漏网
             text = unicodedata.normalize("NFKC", text)
-            text = re.sub(r"[​-‌﻿]",
+            text = re.sub(r"[\u200B-\u200C\uFEFF]",
                           "",
                           re.sub(r"%s" % CONVERT_EMPTY_CHARS, replace_word, text),
                           flags=re.IGNORECASE)

@@ -86,48 +86,6 @@ def test(self) -> Optional[Tuple[bool, str]]:
 
 ---
 
-## MCP Protocol
-
-MoviePilot exposes an MCP (Model Context Protocol) interface for AI agent integration.
-
-- **Transport:** HTTP, JSON-RPC 2.0
-- **Base path:** `/api/v1/mcp`
-- **Protocol versions supported:** `2025-11-25`, `2025-06-18`, `2024-11-05`
-
-### Authentication
-
-```
-Header: X-API-KEY: <api_key>
-Query:  ?apikey=<api_key>
-```
-
-### Supported Methods
-
-| Method | Description |
-|---|---|
-| `initialize` | Initialize session, negotiate protocol version and capabilities |
-| `notifications/initialized` | Client confirmation of initialization |
-| `tools/list` | List all available tools |
-| `tools/call` | Invoke a specific tool |
-| `ping` | Connection liveness check |
-
-### Error Codes
-
-| Code | Message | Meaning |
-|---|---|---|
-| -32700 | Parse error | Malformed JSON |
-| -32600 | Invalid Request | Invalid JSON-RPC request structure |
-| -32601 | Method not found | Unknown method |
-| -32602 | Invalid params | Parameter validation failure |
-| -32002 | Session not found | Session does not exist or has expired |
-| -32003 | Not initialized | Session has not completed initialization |
-| -32603 | Internal error | Server-side error |
-
-### Tool Response Format
-
-MCP tools return structured content. Errors must use the JSON-RPC error object format, not HTTP status codes.
-
----
 
 ## Notification and Messaging
 

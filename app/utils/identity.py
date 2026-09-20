@@ -1,7 +1,7 @@
 from typing import Optional, Union
 
 # 后台任务会话使用的内部占位用户ID。
-# 它只用于在 agent/memory/session 侧标识“系统触发的任务”，
+# 它只用于后台任务侧标识“系统触发的任务”，
 # 不能直接作为真实消息接收人下发到 Telegram/企业微信 等通知渠道。
 SYSTEM_INTERNAL_USER_ID = "system"
 

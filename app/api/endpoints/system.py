@@ -1,13 +1,19 @@
+import ast
 import asyncio
+import copy
 import io
+import os
 import json
 import re
 import zipfile
 from collections import deque
 from datetime import datetime
+import threading
+import time
 from pathlib import Path
 from typing import Any, Optional, Union, Annotated
 from urllib.parse import urljoin, urlparse
+from uuid import uuid4
 
 import aiofiles
 import anyio
@@ -15,7 +21,10 @@ import pillow_avif  # noqa 用于自动注册AVIF支持
 from anyio import Path as AsyncPath
 from app.helper.sites import SitesHelper  # noqa  # noqa
 from fastapi import APIRouter, Body, Depends, HTTPException, Header, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+import requests
+from jinja2 import Environment, TemplateSyntaxError
+from pydantic import TypeAdapter, ValidationError
 
 from app import schemas
 from app.chain.media import MediaChain
@@ -46,7 +55,7 @@ from app.helper.system import SystemHelper
 from app.log import logger
 from app.scheduler import Scheduler
 from app.schemas import ConfigChangeEventData
-from app.schemas.types import SystemConfigKey, EventType
+from app.schemas.types import ContentType, SystemConfigKey, EventType
 from app.utils.crypto import HashUtils
 from app.utils.http import RequestUtils, AsyncRequestUtils
 from app.utils import rust_accel
@@ -72,6 +81,300 @@ _PUBLIC_SYSTEM_CONFIG_KEYS = {
 _PUBLIC_SETTINGS_KEYS = {"PLUGIN_MARKET"}
 _LOG_DOWNLOAD_LIMIT = 10
 _LOG_DOWNLOAD_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+_SECRET_MASK = "********"
+_NOTIFICATION_SECRET_FIELDS = {
+    "telegram": {"TELEGRAM_TOKEN"},
+    "wechat": {
+        "WECHAT_APP_SECRET",
+        "WECHAT_TOKEN",
+        "WECHAT_ENCODING_AESKEY",
+        "WECHAT_BOT_SECRET",
+    },
+}
+_NOTIFICATION_TEST_COOLDOWN_SECONDS = 5.0
+_notification_test_slots = threading.BoundedSemaphore(3)
+_notification_test_lock = threading.Lock()
+_notification_test_last_attempts: dict[tuple[Any, str], float] = {}
+_NOTIFICATION_TEST_FAILURE_MESSAGES = {
+    "AUTH_FAILED": "通知渠道认证失败，请检查凭证",
+    "TARGET_NOT_FOUND": "通知接收目标不存在或当前凭证无权访问",
+    "NETWORK_TIMEOUT": "连接通知服务超时，请检查网络或代理",
+    "PROXY_ERROR": "连接通知服务的代理不可用",
+    "CHANNEL_NOT_READY": "通知渠道未就绪，请检查配置",
+    "RATE_LIMITED": "测试发送过于频繁，请稍后重试",
+    "UNKNOWN_ERROR": "测试通知发送失败，请检查渠道配置和接收目标",
+}
+
+
+def _notification_test_response(reason: str, status_code: int = 200) -> schemas.Response | JSONResponse:
+    """构造不包含第三方原始响应的稳定测试失败结果。"""
+    message = _NOTIFICATION_TEST_FAILURE_MESSAGES.get(reason, _NOTIFICATION_TEST_FAILURE_MESSAGES["UNKNOWN_ERROR"])
+    if status_code == 200:
+        return schemas.Response(success=False, message=message, data={"reason": reason})
+    return JSONResponse(
+        status_code=status_code,
+        content={"success": False, "message": message, "data": {"reason": reason}},
+    )
+
+
+def _classify_notification_test_error(err: Exception) -> str:
+    """将传输异常映射为安全、稳定的客户端原因码。"""
+    if isinstance(err, requests.exceptions.Timeout):
+        return "NETWORK_TIMEOUT"
+    if isinstance(err, requests.exceptions.ProxyError):
+        return "PROXY_ERROR"
+    if isinstance(err, requests.exceptions.ConnectionError):
+        return "CHANNEL_NOT_READY"
+    return "UNKNOWN_ERROR"
+
+
+def _begin_notification_test(
+    user_id: Any,
+    notification: schemas.NotificationConf,
+    channel_key: Optional[str] = None,
+) -> bool:
+    """原子获取全局发送槽，并登记管理员与渠道冷却时间。"""
+    channel_key = channel_key or notification.id or f"{notification.type}:{notification.name}"
+    key = (user_id, channel_key)
+    now = time.monotonic()
+    with _notification_test_lock:
+        last_attempt = _notification_test_last_attempts.get(key)
+        if last_attempt is not None and now - last_attempt < _NOTIFICATION_TEST_COOLDOWN_SECONDS:
+            return False
+        if not _notification_test_slots.acquire(blocking=False):
+            return False
+        _notification_test_last_attempts[key] = now
+        expired_before = now - _NOTIFICATION_TEST_COOLDOWN_SECONDS
+        for stale_key, attempted_at in list(_notification_test_last_attempts.items()):
+            if attempted_at < expired_before:
+                _notification_test_last_attempts.pop(stale_key, None)
+        return True
+
+
+def _ensure_notification_ids(value: Any) -> tuple[Any, bool]:
+    """为可识别的存量通知配置补充持久化稳定 ID。"""
+    if not isinstance(value, list):
+        return value, False
+    result = copy.deepcopy(value)
+    changed = False
+    used_ids: set[str] = set()
+    for item in result:
+        if not isinstance(item, dict):
+            continue
+        channel_id = item.get("id")
+        if not isinstance(channel_id, str) or not channel_id.strip() or channel_id in used_ids:
+            channel_id = uuid4().hex
+            item["id"] = channel_id
+            changed = True
+        used_ids.add(channel_id)
+    return result, changed
+
+
+def _is_secret_field(field: Any) -> bool:
+    """识别通知配置中的已知及历史敏感字段。"""
+    if not isinstance(field, str):
+        return False
+    upper_field = field.upper()
+    return upper_field.endswith(("_TOKEN", "_SECRET", "_PASSWORD", "_API_KEY", "_AESKEY"))
+
+
+def _mask_notification_item(item: dict) -> dict:
+    """复制并遮罩一条通知配置，未知敏感字段同样不得回显。"""
+    masked = copy.deepcopy(item)
+    config = masked.get("config")
+    if isinstance(config, dict):
+        for field, value in config.items():
+            if value not in (None, "") and _is_secret_field(field):
+                config[field] = _SECRET_MASK
+    return masked
+
+
+def _notification_validation_errors(item: Any) -> list[str]:
+    """生成不包含原始输入值的存量配置诊断。"""
+    if not isinstance(item, dict):
+        return ["配置必须是对象"]
+    try:
+        schemas.NotificationConf.model_validate(item)
+        return []
+    except ValidationError as err:
+        return [
+            f"{'.'.join(str(part) for part in error['loc'])}：{error['msg']}"
+            for error in err.errors(include_input=False)
+        ]
+
+
+def _present_notification_settings(value: Any) -> tuple[list[dict], list[dict]]:
+    """返回浏览器可见的脱敏配置及存量非法项诊断。"""
+    value, _ = _ensure_notification_ids(value)
+    if not isinstance(value, list):
+        return [], [{"id": "invalid-root", "name": "通知配置", "errors": ["配置必须是列表"]}]
+    visible: list[dict] = []
+    invalid: list[dict] = []
+    for index, item in enumerate(value):
+        errors = _notification_validation_errors(item)
+        if isinstance(item, dict):
+            masked = _mask_notification_item(item)
+            visible.append(masked)
+            channel_id = str(masked.get("id") or f"invalid-{index}")
+            name = str(masked.get("name") or f"无效通知配置 {index + 1}")
+        else:
+            channel_id = f"invalid-{index}"
+            name = f"无效通知配置 {index + 1}"
+        if errors:
+            invalid.append({"id": channel_id, "name": name, "errors": errors})
+    return visible, invalid
+
+
+def _restore_notification_secrets(value: Any, saved_value: Any) -> list[dict]:
+    """按稳定 ID 恢复遮罩凭证，并拒绝无法绑定到原渠道的遮罩值。"""
+    if not isinstance(value, list):
+        raise HTTPException(status_code=422, detail="通知渠道配置必须是列表")
+    value, _ = _ensure_notification_ids(value)
+    saved_value, _ = _ensure_notification_ids(saved_value)
+    saved_by_id = {
+        item.get("id"): item
+        for item in (saved_value or [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        channel_type = item.get("type")
+        config = item.get("config")
+        if not isinstance(config, dict):
+            continue
+        saved_item = saved_by_id.get(item.get("id"))
+        saved_config = saved_item.get("config", {}) if isinstance(saved_item, dict) else {}
+        for field in _NOTIFICATION_SECRET_FIELDS.get(channel_type, set()):
+            if config.get(field) != _SECRET_MASK:
+                continue
+            saved_secret = saved_config.get(field) if isinstance(saved_config, dict) else None
+            if not saved_secret or saved_item.get("type") != channel_type:
+                raise HTTPException(status_code=422, detail=f"通知渠道 {item.get('name') or item.get('id')} 的凭证已失效，请重新填写")
+            config[field] = saved_secret
+    return value
+_SETTING_VALUE_ADAPTERS = {
+    SystemConfigKey.Notifications.value: TypeAdapter(list[schemas.NotificationConf]),
+    SystemConfigKey.NotificationSwitchs.value: TypeAdapter(list[schemas.NotificationSwitchConf]),
+    SystemConfigKey.NotificationTemplates.value: TypeAdapter(dict[str, str]),
+    SystemConfigKey.NotificationSendTime.value: TypeAdapter(
+        schemas.NotificationTimePeriod | list[schemas.NotificationTimePeriod]
+    ),
+    SystemConfigKey.Downloaders.value: TypeAdapter(list[schemas.DownloaderConf]),
+    SystemConfigKey.MediaServers.value: TypeAdapter(list[schemas.MediaServerConf]),
+    SystemConfigKey.Storages.value: TypeAdapter(list[schemas.StorageConf]),
+    SystemConfigKey.Directories.value: TypeAdapter(list[schemas.TransferDirectoryConf]),
+}
+
+
+def _validate_setting_value(key: str, value: Any) -> Any:
+    """按配置键校验高风险系统设置，并转换为可持久化 JSON 数据。"""
+    adapter = _SETTING_VALUE_ADAPTERS.get(key)
+    if adapter is None or value is None:
+        return value
+    try:
+        validated = adapter.validate_python(value)
+    except ValidationError as err:
+        raise HTTPException(
+            status_code=422,
+            detail=err.errors(include_input=False),
+        ) from err
+
+    if key == SystemConfigKey.Notifications.value:
+        names = [item.name for item in validated]
+        if len(names) != len(set(names)):
+            raise HTTPException(status_code=422, detail="通知渠道名称不能重复")
+    elif key == SystemConfigKey.NotificationSwitchs.value:
+        types = [item.type for item in validated]
+        if len(types) != len(set(types)):
+            raise HTTPException(status_code=422, detail="通知场景不能重复")
+    elif key == SystemConfigKey.NotificationTemplates.value:
+        allowed_types = {item.value for item in ContentType}
+        unknown_types = set(validated) - allowed_types
+        if unknown_types:
+            raise HTTPException(
+                status_code=422,
+                detail=f"未知通知模板：{', '.join(sorted(unknown_types))}",
+            )
+        allowed_fields = {"title", "text", "image", "link"}
+        environment = Environment()
+        for template_type, template_content in validated.items():
+            try:
+                environment.parse(template_content)
+            except TemplateSyntaxError as err:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"通知模板 {template_type} 第 {err.lineno} 行语法错误：{err.message}",
+                ) from err
+            try:
+                template_value = ast.literal_eval(template_content)
+            except (SyntaxError, ValueError) as err:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"通知模板 {template_type} 必须是字典格式",
+                ) from err
+            if not isinstance(template_value, dict):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"通知模板 {template_type} 必须是字典格式",
+                )
+            unknown_fields = set(template_value) - allowed_fields
+            if unknown_fields:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"通知模板 {template_type} 包含未知字段：{', '.join(sorted(unknown_fields))}",
+                )
+
+    return adapter.dump_python(validated, mode="json", exclude_none=True)
+
+
+def _send_test_notification(conf: schemas.NotificationConf) -> tuple[bool, Optional[str]]:
+    """创建一次性客户端并发送测试消息，返回稳定失败原因。"""
+    if conf.type == "telegram":
+        api_url = (conf.config.get("API_URL") or "https://api.telegram.org").rstrip("/")
+        token = conf.config["TELEGRAM_TOKEN"]
+        try:
+            response = requests.post(
+                f"{api_url}/bot{token}/sendMessage",
+                json={
+                    "chat_id": conf.config["TELEGRAM_CHAT_ID"],
+                    "text": "MoviePilot 测试通知\n通知渠道配置成功，测试消息已送达。",
+                },
+                proxies=settings.PROXY,
+                timeout=20,
+                verify=False,
+            )
+            payload = response.json() if response.content else {}
+            if response.ok and payload.get("ok") is True:
+                return True, None
+            if response.status_code in {401, 403}:
+                return False, "AUTH_FAILED"
+            if response.status_code == 429:
+                return False, "RATE_LIMITED"
+            if response.status_code == 400:
+                return False, "TARGET_NOT_FOUND"
+            return False, "UNKNOWN_ERROR"
+        except (requests.RequestException, ValueError) as err:
+            logger.warning(f"发送 Telegram 测试通知失败：{type(err).__name__}")
+            return False, _classify_notification_test_error(err)
+
+    from app.modules.wechat.wechat import WeChat
+    from app.modules.wechat.wechatbot import WeChatBot
+
+    client = None
+    try:
+        if conf.config.get("WECHAT_MODE") == "bot":
+            client = WeChatBot(name=conf.name, **conf.config)
+        else:
+            client = WeChat(name=conf.name, **conf.config)
+        success = client.send_msg(
+            title="MoviePilot 测试通知",
+            text="通知渠道配置成功，测试消息已送达。",
+        ) is True
+        return (True, None) if success else (False, "CHANNEL_NOT_READY")
+    finally:
+        if client and hasattr(client, "stop"):
+            client.stop()
 
 
 
@@ -419,26 +722,22 @@ def _validate_nettest_url(url: str) -> Optional[str]:
         return "测试地址无效"
     if parsed.username or parsed.password:
         return "测试地址不支持携带账号信息"
-    if not _get_nettest_rule(url):
+    if not any(rule.get("url") == url for rule in _build_nettest_rules()):
         return "测试地址不在允许的测试目标列表中"
     return None
 
 
-def _get_nettest_rule(
-    url: Optional[str] = None, target_id: Optional[str] = None
-) -> Optional[dict[str, Any]]:
+def _get_nettest_rule(target_id: str) -> Optional[dict[str, Any]]:
     """
-    根据 target_id 或历史兼容参数匹配网络测试规则。
+    根据服务端下发的目标 ID 匹配网络测试规则。
 
-    现在的主路径是 target_id。保留 url 参数是为了兼容旧前端或未升级的调用方，
-    但匹配结果仍然只能落到服务端预定义规则上。
+    :param target_id: 网络测试目标 ID
+    :return: 匹配的服务端规则，不存在时返回 None
     """
-    for rule in _build_nettest_rules():
-        if target_id and rule.get("id") == target_id:
-            return rule
-        if url and rule.get("url") == url:
-            return rule
-    return None
+    return next(
+        (rule for rule in _build_nettest_rules() if rule.get("id") == target_id),
+        None,
+    )
 
 
 def _is_allowed_nettest_redirect(url: str, rule: dict[str, Any]) -> bool:
@@ -641,6 +940,10 @@ async def get_env_setting(
             "AUTH_VERSION": SitesHelper().auth_version,
             "INDEXER_VERSION": SitesHelper().indexer_version,
             "FRONTEND_VERSION": SystemChain().get_frontend_version(),
+            "BACKEND_BUILD_SHA": os.getenv("MOVIEPILOT_BACKEND_BUILD_SHA", "unknown"),
+            "FRONTEND_BUILD_SHA": os.getenv("MOVIEPILOT_FRONTEND_BUILD_SHA", "unknown"),
+            "BUILD_CHANNEL": os.getenv("MOVIEPILOT_BUILD_CHANNEL", "unknown"),
+            "BUILD_TIME": os.getenv("MOVIEPILOT_BUILD_TIME", "unknown"),
             "RUST_ACCEL_AVAILABLE": rust_accel.is_available(),
             "RUST_ACCEL_ENABLED": rust_accel.is_enabled(),
         }
@@ -812,13 +1115,17 @@ async def sync_plugin_market_from_wiki(
 async def get_setting(
     key: str, _: User = Depends(get_current_admin_async)
 ) -> schemas.Response:
-    """
-    查询系统设置（仅管理员）
-    """
+    """查询系统设置（仅管理员）。"""
     if hasattr(settings, key):
         value = getattr(settings, key)
     else:
         value = SystemConfigOper().get(key)
+    if key == SystemConfigKey.Notifications.value:
+        value, changed = _ensure_notification_ids(value)
+        if changed:
+            await SystemConfigOper().async_set(key, value)
+        visible, invalid = _present_notification_settings(value)
+        return schemas.Response(success=True, data={"value": visible, "invalid": invalid})
     return schemas.Response(success=True, data={"value": value})
 
 
@@ -828,13 +1135,10 @@ async def set_setting(
     value: Annotated[Union[list, dict, bool, int, str] | None, Body()] = None,
     _: User = Depends(get_current_admin_async),
 ):
-    """
-    更新系统设置（仅管理员）
-    """
+    """更新系统设置（仅管理员）。"""
     if hasattr(settings, key):
         success, message = settings.update_setting(key=key, value=value)
         if success:
-            # 发送配置变更事件
             await eventmanager.async_send_event(
                 etype=EventType.ConfigChanged,
                 data=ConfigChangeEventData(key=key, value=value, change_type="update"),
@@ -842,26 +1146,65 @@ async def set_setting(
         elif success is None:
             success = True
         return schemas.Response(success=success, message=message)
-    elif key in {item.value for item in SystemConfigKey}:
-        if isinstance(value, list):
-            value = list(filter(None, value))
-            value = value if value else None
-        success = await SystemConfigOper().async_set(key, value)
-        if success:
-            # 发送配置变更事件
-            await eventmanager.async_send_event(
-                etype=EventType.ConfigChanged,
-                data=ConfigChangeEventData(key=key, value=value, change_type="update"),
-            )
-        return schemas.Response(success=True)
-    else:
+    if key not in {item.value for item in SystemConfigKey}:
         return schemas.Response(success=False, message=f"配置项 '{key}' 不存在")
+
+    if key == SystemConfigKey.Notifications.value:
+        saved_value = SystemConfigOper().get(key)
+        value = _restore_notification_secrets(value, saved_value)
+    value = _validate_setting_value(key, value)
+    if isinstance(value, list):
+        value = list(filter(None, value)) or None
+    success = await SystemConfigOper().async_set(key, value)
+    if success:
+        await eventmanager.async_send_event(
+            etype=EventType.ConfigChanged,
+            data=ConfigChangeEventData(key=key, value=value, change_type="update"),
+        )
+    return schemas.Response(success=True)
+
+
+@router.post(
+    "/notification/test",
+    summary="发送测试通知",
+    response_model=schemas.Response,
+)
+async def test_notification(
+    notification_payload: Annotated[Any, Body()],
+    _: User = Depends(get_current_admin_async),
+) -> schemas.Response | JSONResponse:
+    """使用未保存的渠道配置发送测试消息，不影响正式模块实例。"""
+    try:
+        restored_payload = _restore_notification_secrets(
+            [notification_payload],
+            SystemConfigOper().get(SystemConfigKey.Notifications),
+        )[0]
+        notification = schemas.NotificationConf.model_validate(restored_payload)
+    except ValidationError as err:
+        raise HTTPException(
+            status_code=422,
+            detail=err.errors(include_input=False),
+        ) from err
+    requested_channel_key = notification_payload.get("id") if isinstance(notification_payload, dict) else None
+    requested_channel_key = requested_channel_key or f"{notification.type}:{notification.name}"
+    if not _begin_notification_test(getattr(_, "id", None), notification, requested_channel_key):
+        return _notification_test_response("RATE_LIMITED", status_code=429)
+    try:
+        success, reason = await anyio.to_thread.run_sync(_send_test_notification, notification)
+    except Exception as err:
+        reason = _classify_notification_test_error(err)
+        logger.error(f"发送测试通知失败：{type(err).__name__}")
+        return _notification_test_response(reason)
+    finally:
+        _notification_test_slots.release()
+    if success:
+        return schemas.Response(success=True, message="测试通知发送成功")
+    return _notification_test_response(reason or "UNKNOWN_ERROR")
 
 
 @router.get("/message", summary="实时消息")
 async def get_message(
     request: Request,
-    role: Optional[str] = "system",
     _: schemas.TokenPayload = Depends(verify_resource_token),
 ):
     """
@@ -874,7 +1217,7 @@ async def get_message(
             while not global_vars.is_system_stopped:
                 if await request.is_disconnected():
                     break
-                detail = message.get(role)
+                detail = message.get()
                 yield f"data: {detail or ''}\n\n"
                 await asyncio.sleep(3)
         except asyncio.CancelledError:
@@ -1161,18 +1504,16 @@ async def nettest_targets(_: schemas.TokenPayload = Depends(verify_token)):
 
 @router.get("/nettest", summary="测试网络连通性")
 async def nettest(
-    target_id: Optional[str] = None,
-    url: Optional[str] = None,
-    include: Optional[str] = None,
+    target_id: str,
     _: schemas.TokenPayload = Depends(verify_token),
 ):
     """
-    测试内置目标的网络连通性。
+    按服务端下发的目标 ID 测试网络连通性。
 
-    `target_id` 是当前前端使用的正式入口。`url/proxy/include` 仅作兼容保留，
-    其中 `include` 不再参与客户端可控的内容匹配，具体校验由服务端规则决定。
+    客户端不能提供请求地址或内容匹配条件；URL、代理、内容校验与重定向
+    白名单全部由服务端规则决定。
     """
-    target = _get_nettest_rule(url=url, target_id=target_id)
+    target = _get_nettest_rule(target_id)
     if not target:
         return schemas.Response(success=False, message="测试目标不存在")
     # 记录开始的毫秒数
@@ -1182,8 +1523,6 @@ async def nettest(
     if invalid_message:
         logger.warning(f"拦截不安全的网络测试地址: {url}")
         return schemas.Response(success=False, message=invalid_message)
-    if include:
-        logger.debug("nettest include 参数已忽略，改为服务端固定校验")
 
     request_utils = AsyncRequestUtils(
         proxies=settings.PROXY if target.get("proxy") else None,

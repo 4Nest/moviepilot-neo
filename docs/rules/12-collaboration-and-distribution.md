@@ -32,7 +32,7 @@ This project uses **Conventional Commits**. The release workflow parses commit m
 ```
 feat: support MiniMax audio provider
 fix: sign media server image proxy URLs
-docs: add MCP client configuration examples
+docs: add API client configuration examples
 chore: upgrade pydantic to 2.9.0
 refactor: extract transfer path resolution into helper
 test: add subscribe endpoint validation tests

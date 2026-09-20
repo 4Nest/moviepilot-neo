@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, get_args, get_origin
 
 import click
 import psutil

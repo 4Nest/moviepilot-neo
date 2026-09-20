@@ -120,8 +120,16 @@ RUN echo "frontend dist tag: ${FRONTEND_DIST_TAG}" \
 # final 阶段: 安装运行时依赖和配置最终镜像
 FROM prepare_package AS final
 
+ARG BACKEND_BUILD_SHA=unknown
+ARG FRONTEND_BUILD_SHA=unknown
+ARG BUILD_CHANNEL=unknown
+ARG BUILD_TIME=unknown
 ENV LD_PRELOAD="/usr/local/lib/libjemalloc.so" \
-    MOVIEPILOT_DOCKER_KEEPALIVE_ON_FAILURE="true"
+    MOVIEPILOT_DOCKER_KEEPALIVE_ON_FAILURE="true" \
+    MOVIEPILOT_BACKEND_BUILD_SHA="${BACKEND_BUILD_SHA}" \
+    MOVIEPILOT_FRONTEND_BUILD_SHA="${FRONTEND_BUILD_SHA}" \
+    MOVIEPILOT_BUILD_CHANNEL="${BUILD_CHANNEL}" \
+    MOVIEPILOT_BUILD_TIME="${BUILD_TIME}"
 
 # 引入支持 amr 编码的静态 ffmpeg
 COPY --from=mwader/static-ffmpeg:8.1.1 /ffmpeg /usr/local/bin/

@@ -648,11 +648,11 @@ class SubscribeEndpointTest(TestCase):
         self.assertEqual(payload["old_subscribe_info"]["state"], "R")
         self.assertEqual(payload["subscribe_info"]["state"], "S")
 
-    def test_reset_sends_modified_event_payload_with_reset_scene(self):
+    def test_clear_progress_sends_modified_event_payload_with_reset_scene(self):
         """
-        reset 事件需要明确 scene，消费者不需要再从字段差异猜测用户意图。
+        清空进度事件需要明确 scene，消费者不需要再从字段差异猜测用户意图。
         """
-        from app.api.endpoints.subscribe import reset_subscribes
+        from app.api.endpoints.subscribe import clear_subscribe_progress
 
         subscribe = _EndpointSubscribe(
             id=6,
@@ -682,7 +682,7 @@ class SubscribeEndpointTest(TestCase):
             new=AsyncMock(),
         ) as send_event:
             response = asyncio.run(
-                reset_subscribes(
+                clear_subscribe_progress(
                     subid=6,
                     db=object(),
                     current_user=_EndpointUser(name="admin", is_superuser=True),

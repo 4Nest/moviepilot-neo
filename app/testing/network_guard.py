@@ -21,7 +21,7 @@ _ALLOWED_NETWORK_HOSTS = {"127.0.0.1", "::1", "localhost", "0.0.0.0", "::", ""}
 def block_real_network(monkeypatch):
     """防御纵深：拦截对非本地主机的真实出站，强制测试零真实网络。
 
-    补在各用例自身 mock 之上：某用例万一漏 mock 外部依赖（TMDB / LLM 目录 / 下载器 /
+    补在各用例自身 mock 之上：某用例万一漏 mock 外部依赖（TMDB / 下载器 /
     媒体服务器 / 任意外链），其 DNS 解析或 socket 连接会被拦截。本地回环放行（sqlite 等）。
     所有拦截记录会在用例收尾再次断言，避免业务代码捕获网络异常后让漏 mock 的用例静默通过。
     ``monkeypatch`` 在用例结束后自动还原，不影响其他用例与进程退出。

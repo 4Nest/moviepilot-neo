@@ -28,7 +28,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    name: Tests and Static Checks
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements-dev.in
+      - name: Run tests
+        run: python -m pytest tests -q
+      - name: Run high-confidence static checks
+        run: pylint app/ --score=no
+
   build:
+    needs: quality
     runs-on: ubuntu-latest
     name: Build and Push GHCR Image
     steps:
@@ -73,6 +95,19 @@ jobs:
           done
           echo "Frontend asset was not published: ${frontend_asset_url}" >&2
           exit 1
+
+      - name: Resolve build identity
+        id: identity
+        run: |
+          echo "built_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            channel="release"
+          elif [[ "${{ inputs.publish_latest }}" == "true" ]]; then
+            channel="latest"
+          else
+            channel="neo"
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
       # Unraid 主机为 x86，仅构建 linux/amd64，runner 原生架构无需 QEMU
       - name: Set Up Buildx
         uses: docker/setup-buildx-action@v3
@@ -104,6 +139,10 @@ jobs:
             FRONTEND_REPO=${{ env.FRONTEND_REPO }}
             FRONTEND_DIST_ASSET=${{ steps.frontend.outputs.asset }}
             FRONTEND_DIST_TAG=${{ steps.frontend.outputs.sha }}
+            BACKEND_BUILD_SHA=${{ github.sha }}
+            FRONTEND_BUILD_SHA=${{ steps.frontend.outputs.sha }}
+            BUILD_CHANNEL=${{ steps.identity.outputs.channel }}
+            BUILD_TIME=${{ steps.identity.outputs.built_at }}
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

@@ -43,7 +43,7 @@ Before executing any task, identify the domain and load the corresponding docume
 
 ### Testing
 * **Primary Reference:** `docs/testing.md`
-* **Required Constraints:** pytest is the only runner; `tests/conftest.py` isolates each run to a temporary `CONFIG_DIR`. Tests must not touch the real database, network, or external services (TMDB, LLM catalogs, downloaders, media servers, MP server) — mock at the boundary or replay recorded responses; the bar is zero real outbound traffic. Tests must restore any process-level state they stub (`sys.modules`, singletons, caches, settings). New tests must be pytest-native (function + `assert` + fixtures); do not add new `unittest.TestCase`. Convert existing `TestCase` files to pytest-native opportunistically when you modify them. Before opening a PR to `v2`, run the full suite locally (`python tests/run.py`) and confirm it is green with zero real network calls; the `.github/workflows/test.yml` gate runs the same suite on every PR/push to `v2`.
+* **Required Constraints:** pytest is the only runner; `tests/conftest.py` isolates each run to a temporary `CONFIG_DIR`. Tests must not touch the real database, network, or external services (TMDB, downloaders, media servers, MP server) — mock at the boundary or replay recorded responses; the bar is zero real outbound traffic. Tests must restore any process-level state they stub (`sys.modules`, singletons, caches, settings). New tests must be pytest-native (function + `assert` + fixtures); do not add new `unittest.TestCase`. Convert existing `TestCase` files to pytest-native opportunistically when you modify them. Before opening a PR to `v2`, run the full suite locally (`python tests/run.py`) and confirm it is green with zero real network calls.
 
 ### Commands and Development Workflow
 * **Primary Reference:** `docs/rules/03-commands.md`
@@ -90,11 +90,10 @@ When modifying the following, you must also update the listed artifacts:
 | Changed Content | Must Also Update |
 |---|---|
 | CLI behavior | `moviepilot` entrypoint, `docs/cli.md`, related tests |
-| MCP / REST API, exposed tools | `docs/mcp-api.md`, `skills/*/SKILL.md`, related tests |
+| REST API behavior | Related interface documentation and tests |
 | Dev workflow, dependency management, security checks | `docs/development-setup.md` |
 | Database model schema | New Alembic migration under `database/versions/` |
 | User-visible config or init flow | Related docs, help text, setup/init flows, tests |
-| New skill | Follow `skills/<name>/SKILL.md` structure, keep YAML front matter |
 
 ---
 

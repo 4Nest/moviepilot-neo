@@ -46,7 +46,6 @@ _STUB_MODULES = dict([
     _stub("app.db.models", User=_Dummy),
     _stub("app.db.systemconfig_oper", SystemConfigOper=_Dummy),
     _stub("app.db.user_oper", get_current_admin=_Dummy, get_current_admin_async=_Dummy),
-    _stub("app.helper.llm", LLMHelper=_Dummy, LLMTestError=_DummyError, LLMTestTimeout=_DummyError),
     _stub("app.helper.mediaserver", MediaServerHelper=_Dummy),
     _stub("app.helper.message", MessageHelper=_Dummy),
     _stub("app.helper.progress", ProgressHelper=_Dummy),
@@ -319,7 +318,6 @@ class NettestSecurityTest(unittest.TestCase):
             resp = asyncio.run(
                 system_endpoint.nettest(
                     target_id="github_proxy_web",
-                    include="tag_name",
                     _="token",
                 )
             )

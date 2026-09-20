@@ -75,7 +75,7 @@ class TelegramModule(_ModuleBase, _MessageBase[Telegram]):
         测试模块连接性
         """
         if not self.get_instances():
-            return None
+            return False, "未配置通知渠道"
         for name, client in self.get_instances().items():
             state = client.get_state()
             if not state:

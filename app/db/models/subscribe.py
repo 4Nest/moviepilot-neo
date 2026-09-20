@@ -83,6 +83,8 @@ class Subscribe(Base):
     # 多版本订阅完整规则快照及独立运行事实
     version_rules = Column(JSON, nullable=True, default=list)
     version_progress = Column(JSON, nullable=True, default=dict)
+    # 最近一次搜索判定摘要（只读运行事实）
+    decision_summary = Column(JSON, nullable=True)
     version_mode = Column(String, nullable=True, default='any')
     # 保存路径
     save_path = Column(String)

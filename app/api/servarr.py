@@ -704,12 +704,12 @@ async def arr_add_series(
 
 @arr_router.put("/series", summary="更新剧集订阅")
 async def arr_update_series(
-    tv: schemas.SonarrSeries, _: Annotated[str, Depends(verify_apikey)]
+    tv: schemas.SonarrSeries,
+    _: Annotated[str, Depends(verify_apikey)],
+    db: AsyncSession = Depends(get_async_db),
 ) -> Any:
-    """
-    更新Sonarr剧集订阅
-    """
-    return await arr_add_series(tv)
+    """更新 Sonarr 剧集订阅。"""
+    return await arr_add_series(tv=tv, _=_, db=db)
 
 
 @arr_router.delete("/series/{tid}", summary="删除剧集订阅")

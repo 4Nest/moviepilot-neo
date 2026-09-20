@@ -43,18 +43,6 @@
 
 ---
 
-## LLM and AI Agent
-
-| Item | Detail |
-|---|---|
-| Agent runtime | `app/agent/` — custom LLM agent orchestration |
-| LLM abstraction | LangChain-based with multi-provider support |
-| Supported providers | OpenAI-compatible APIs, Anthropic, and other configurable providers |
-| Configuration | `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, `LLM_BASE_URL` in settings |
-| Enable flag | `AI_AGENT_ENABLE` |
-| MCP protocol | JSON-RPC 2.0 at `/api/v1/mcp`; see `docs/mcp-api.md` |
-
----
 
 ## Module Integrations
 
@@ -79,15 +67,7 @@
 | Module | Directory |
 |---|---|
 | Telegram | `app/modules/telegram/` |
-| WeChat | `app/modules/wechat/` |
-| WeChatClawBot | `app/modules/wechatclawbot/` |
-| Feishu | `app/modules/feishu/` |
-| Slack | `app/modules/slack/` |
-| Discord | `app/modules/discord/` |
-| VoceChat | `app/modules/vocechat/` |
-| Synology Chat | `app/modules/synologychat/` |
-| WebPush | `app/modules/webpush/` |
-| QQBot | `app/modules/qqbot/` |
+| WeCom application and bot | `app/modules/wechat/` |
 
 ### Metadata Sources
 | Module | Directory |

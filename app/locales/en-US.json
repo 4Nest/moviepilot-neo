@@ -86,15 +86,8 @@
     "无法识别媒体信息": "Unable to recognize media information",
     "未识别到媒体信息": "Unable to recognize media information",
     "记录不存在": "Record does not exist",
-    "MoviePilot智能助手未启用": "MoviePilot Assistant is not enabled",
     "整理记录不存在": "Organization record does not exist",
     "未提供有效的整理记录": "No valid organization record was provided",
-    "请配置LLM提供商和模型": "Please configure the LLM provider and model",
-    "请先配置 LLM 模型": "Please configure the LLM model first",
-    "请先启用智能助手": "Please enable Assistant first",
-    "请先配置 LLM API Key": "Please configure the LLM API Key first",
-    "模型响应为空": "Model response is empty",
-    "LLM 调用超时": "LLM call timed out",
     "刮削路径无效": "Scraping path is invalid",
     "指定媒体ID时必须同时指定媒体数据源": "The media source must be specified together with the media ID",
     "媒体ID格式无效": "Invalid media ID format",
@@ -251,7 +244,6 @@
     "字幕下载链接签名无效": "Subtitle download URL signature is invalid",
     "字幕站点信息不存在": "Subtitle site information does not exist",
     "附件不存在或已过期": "Attachment does not exist or has expired",
-    "附件超过 32MB，无法发送给智能助手": "The attachment exceeds 32MB and cannot be sent to the assistant",
     "认证票据无效或已过期": "Authentication ticket is invalid or has expired",
     "用户不存在或已禁用": "The user does not exist or has been disabled",
     "用户权限不足": "Insufficient user permissions",
@@ -261,9 +253,7 @@
     "授权失败": "Authorization failed",
     "报文内容为空": "Request payload is empty",
     "配置项不存在": "Configuration item does not exist",
-    "智能助手未启用，请先在系统设置中开启。": "The assistant is not enabled. Enable it in system settings first.",
     "语音识别失败，请稍后重试。": "Speech recognition failed. Please try again later.",
-    "请输入要发送给智能助手的内容或选择附件。": "Enter content to send to the assistant or choose an attachment.",
     "请输入至少一个有效的站点 ID": "Enter at least one valid site ID",
     "所有订阅搜索完成": "All subscription searches are complete",
     "请输入订阅 ID，多个 ID 用空格分隔，或输入 all": "Enter subscription IDs separated by spaces, or enter all",
@@ -344,7 +334,6 @@
     "插件市场缓存": "Plugin Market Cache",
     "订阅日历缓存": "Subscription Calendar Cache",
     "主动内存回收": "Manual Memory Reclamation",
-    "智能体定时任务": "Agent Scheduled Task",
     "安装版本统计上报": "Installation Version Statistics Report",
     "开始清理数据表 ...": "Starting data table cleanup ...",
     "站点资源刷新完成": "Site resource refresh completed",
@@ -423,10 +412,6 @@
     {
       "source": "{path} 不是文件",
       "target": "{path} is not a file"
-    },
-    {
-      "source": "智能助手执行失败: {reason}",
-      "target": "Assistant execution failed: {reason}"
     },
     {
       "source": "无法连接Qbittorrent下载器：{name}",
