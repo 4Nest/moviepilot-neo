@@ -173,6 +173,106 @@ def build_subscribe_version_view(subscribe: Subscribe, rule: dict) -> Subscribe:
     return view
 
 
+# 二级分类订阅规则可覆盖的订阅字段
+SUBSCRIBE_CATEGORY_RULE_FIELDS = (
+    "quality", "resolution", "effect", "include", "exclude", "sites", "downloader", "save_path", "filter_groups",
+)
+# 下载回填支持的订阅字段
+SUBSCRIBE_BACKFILL_FIELDS = ("resolution", "quality", "effect", "include", "sites")
+# 回填值必须与订阅编辑页下拉选项的取值完全一致，界面才能显示为选中；按顺序取首个命中
+_BACKFILL_RESOLUTIONS = (
+    (re.compile(r"4K|2160[pi]|x2160", re.IGNORECASE), "4K|2160p|x2160"),
+    (re.compile(r"1080[pi]|x1080", re.IGNORECASE), "1080[pi]|x1080"),
+    (re.compile(r"720[pi]|x720", re.IGNORECASE), "720[pi]|x720"),
+)
+_BACKFILL_QUALITIES = (
+    (re.compile(r"Remux", re.IGNORECASE), "Remux"),
+    (re.compile(r"UHD|UltraHD", re.IGNORECASE), "UHD|UltraHD"),
+    (re.compile(r"Blu-?Ray", re.IGNORECASE), "Blu-?Ray"),
+    (re.compile(r"WEB-?DL|WEB-?RIP", re.IGNORECASE), "WEB-?DL|WEB-?RIP"),
+    (re.compile(r"HDTV", re.IGNORECASE), "HDTV"),
+)
+_BACKFILL_EFFECTS = (
+    (re.compile(r"Dolby[\s.]*Vision|DOVI|\bDV\b", re.IGNORECASE), r"Dolby[\s.]+Vision|DOVI|[\s.]+DV[\s.]+"),
+    (re.compile(r"HDR", re.IGNORECASE), r"[\s.]+HDR[\s.]+|HDR10|HDR10\+"),
+    (re.compile(r"SDR", re.IGNORECASE), r"[\s.]+SDR[\s.]+"),
+)
+
+
+def match_subscribe_category_rule(mtype: MediaType, category: Optional[str],
+                                  rules: Optional[List[dict]]) -> Optional[dict]:
+    """
+    按媒体类型与二级分类查找第一条启用的分类订阅规则。
+
+    :param mtype: 媒体类型
+    :param category: 二级分类名称
+    :param rules: 分类订阅规则列表，每条含 type（电影/电视剧）、categories（分类名列表）及要覆盖的订阅字段
+    :return: 命中的规则，未命中返回 None
+    """
+    if not category or not rules:
+        return None
+    for rule in rules:
+        if not isinstance(rule, dict) or not rule.get("enabled", True):
+            continue
+        if rule.get("type") and rule.get("type") != mtype.value:
+            continue
+        if category in (rule.get("categories") or []):
+            return rule
+    return None
+
+
+def _match_backfill_option(value: Optional[str], options: tuple) -> Optional[str]:
+    """把识别出的资源属性映射为订阅下拉选项取值。"""
+    if not value:
+        return None
+    for pattern, option in options:
+        if pattern.search(value):
+            return option
+    return None
+
+
+def build_subscribe_backfill(subscribe: Subscribe, context: Context, fields: Optional[List[str]],
+                             rss_sites: Optional[List[int]]) -> dict:
+    """
+    根据电视剧订阅下载的资源，为订阅中尚未设置的字段生成回填值，使后续集数沿用同一版本资源。
+    只填充空字段，不覆盖用户已有设置；填充后字段非空，因此天然只回填一次。
+
+    :param subscribe: 订阅
+    :param context: 已下载资源的上下文
+    :param fields: 启用回填的字段，取值见 SUBSCRIBE_BACKFILL_FIELDS
+    :param rss_sites: 全局订阅站点，站点只在其范围内（或未设置全局订阅站点）时回填
+    :return: 需要更新到订阅的字段
+    """
+    if not fields or not context:
+        return {}
+    meta = context.meta_info
+    torrent = context.torrent_info
+    update = {}
+    if "resolution" in fields and not subscribe.resolution:
+        value = _match_backfill_option(getattr(meta, "resource_pix", None), _BACKFILL_RESOLUTIONS)
+        if value:
+            update["resolution"] = value
+    if "quality" in fields and not subscribe.quality:
+        value = _match_backfill_option(getattr(meta, "resource_type", None), _BACKFILL_QUALITIES)
+        if value:
+            update["quality"] = value
+    if "effect" in fields and not subscribe.effect:
+        value = _match_backfill_option(getattr(meta, "resource_effect", None), _BACKFILL_EFFECTS)
+        if value:
+            update["effect"] = value
+    if "include" in fields and not subscribe.include:
+        # 制作组与自定义占位符按字面匹配，转义正则特殊字符
+        team = getattr(meta, "resource_team", None)
+        customization = getattr(meta, "customization", None)
+        parts = [re.escape(item) for item in (customization, team) if item]
+        if parts:
+            update["include"] = ".+".join(parts)
+    if "sites" in fields and not subscribe.sites and torrent and torrent.site:
+        if not rss_sites or torrent.site in rss_sites:
+            update["sites"] = [torrent.site]
+    return update
+
+
 def expand_subscribe_runtime_views(subscribes: List[Subscribe]) -> List[Subscribe]:
     """把结构化订阅展开为共享媒体身份、隔离设置和进度的运行工作项。"""
     views: List[Subscribe] = []
@@ -976,39 +1076,58 @@ class SubscribeChain(ChainBase):
                     )
         return None
 
-    def __get_default_kwargs(self, mtype: MediaType, **kwargs) -> dict:
+    def __get_category_rule(self, mediainfo: MediaInfo, **kwargs) -> Optional[dict]:
         """
-        获取订阅默认配置
+        查找与待添加订阅二级分类匹配的分类订阅规则。
+        订阅指定了自定义分类时以其为准，否则使用识别出的二级分类。
+        """
+        category = kwargs.get("media_category") or getattr(mediainfo, "category", None)
+        rule = match_subscribe_category_rule(
+            mtype=mediainfo.type,
+            category=category,
+            rules=SystemConfigOper().get(SystemConfigKey.SubscribeCategoryRules),
+        )
+        if rule:
+            logger.info(f"{mediainfo.title_year} 二级分类 {category} 命中分类订阅规则")
+        return rule
+
+    def __get_default_kwargs(self, mtype: MediaType, category_rule: Optional[dict] = None,
+                             media_name: Optional[str] = None, **kwargs) -> dict:
+        """
+        获取订阅默认配置，优先级：显式传入 > 二级分类订阅规则 > 电影/电视剧默认订阅规则
         :param mtype: 媒体类型
-        :param key: 配置键
-        :return: 配置值
+        :param category_rule: 命中的二级分类订阅规则
+        :param media_name: 媒体名称（含年份），用于替换保存路径中的 {name}
+        :return: 订阅配置
         """
+        rule = category_rule or {}
+
+        def _default(key: str) -> Any:
+            if key in SUBSCRIBE_CATEGORY_RULE_FIELDS and rule.get(key):
+                value = rule.get(key)
+                if key == "save_path" and media_name:
+                    value = str(value).replace("{name}", media_name)
+                return value
+            return self.__get_default_subscribe_config(mtype, key)
+
         return {
-            'quality': self.__get_default_subscribe_config(mtype, "quality") if not kwargs.get(
-                "quality") else kwargs.get("quality"),
-            'resolution': self.__get_default_subscribe_config(mtype, "resolution") if not kwargs.get(
-                "resolution") else kwargs.get("resolution"),
-            'effect': self.__get_default_subscribe_config(mtype, "effect") if not kwargs.get(
-                "effect") else kwargs.get("effect"),
-            'include': self.__get_default_subscribe_config(mtype, "include") if not kwargs.get(
-                "include") else kwargs.get("include"),
-            'exclude': self.__get_default_subscribe_config(mtype, "exclude") if not kwargs.get(
-                "exclude") else kwargs.get("exclude"),
-            'best_version': self.__get_default_subscribe_config(mtype, "best_version")
+            'quality': _default("quality") if not kwargs.get("quality") else kwargs.get("quality"),
+            'resolution': _default("resolution") if not kwargs.get("resolution") else kwargs.get("resolution"),
+            'effect': _default("effect") if not kwargs.get("effect") else kwargs.get("effect"),
+            'include': _default("include") if not kwargs.get("include") else kwargs.get("include"),
+            'exclude': _default("exclude") if not kwargs.get("exclude") else kwargs.get("exclude"),
+            'best_version': _default("best_version")
             if kwargs.get("best_version") is None else kwargs.get("best_version"),
-            'best_version_full': self.__get_default_subscribe_config(mtype, "best_version_full")
+            'best_version_full': _default("best_version_full")
             if kwargs.get("best_version_full") is None else kwargs.get("best_version_full"),
-            'search_imdbid': self.__get_default_subscribe_config(mtype, "search_imdbid") if not kwargs.get(
+            'search_imdbid': _default("search_imdbid") if not kwargs.get(
                 "search_imdbid") else kwargs.get("search_imdbid"),
-            'skip_library_check': self.__get_default_subscribe_config(mtype, "skip_library_check")
+            'skip_library_check': _default("skip_library_check")
             if kwargs.get("skip_library_check") is None else kwargs.get("skip_library_check"),
-            'sites': self.__get_default_subscribe_config(mtype, "sites") or None if not kwargs.get(
-                "sites") else kwargs.get("sites"),
-            'downloader': self.__get_default_subscribe_config(mtype, "downloader") if not kwargs.get(
-                "downloader") else kwargs.get("downloader"),
-            'save_path': self.__get_default_subscribe_config(mtype, "save_path") if not kwargs.get(
-                "save_path") else kwargs.get("save_path"),
-            'filter_groups': self.__get_default_subscribe_config(mtype, "filter_groups") if not kwargs.get(
+            'sites': _default("sites") or None if not kwargs.get("sites") else kwargs.get("sites"),
+            'downloader': _default("downloader") if not kwargs.get("downloader") else kwargs.get("downloader"),
+            'save_path': _default("save_path") if not kwargs.get("save_path") else kwargs.get("save_path"),
+            'filter_groups': _default("filter_groups") if not kwargs.get(
                 "filter_groups") else kwargs.get("filter_groups")
         }
 
@@ -1152,7 +1271,9 @@ class SubscribeChain(ChainBase):
         kwargs.update({"media_source": media_source, "media_id": media_id})
 
         # 添加订阅
-        kwargs.update(self.__get_default_kwargs(mediainfo.type, **kwargs))
+        kwargs.update(self.__get_default_kwargs(
+            mediainfo.type, category_rule=self.__get_category_rule(mediainfo, **kwargs),
+            media_name=mediainfo.title_year, **kwargs))
 
         # 使用订阅记录最终落库的海报，确保通知与订阅卡片使用同一张图片。
         subscribeoper = SubscribeOper()
@@ -1362,7 +1483,9 @@ class SubscribeChain(ChainBase):
         )
         kwargs.update({"media_source": media_source, "media_id": media_id})
         # 添加订阅，并使用最终落库记录中的海报。
-        kwargs.update(self.__get_default_kwargs(mediainfo.type, **kwargs))
+        kwargs.update(self.__get_default_kwargs(
+            mediainfo.type, category_rule=self.__get_category_rule(mediainfo, **kwargs),
+            media_name=mediainfo.title_year, **kwargs))
         subscribeoper = SubscribeOper()
         sid, err_msg = await subscribeoper.async_add(mediainfo=mediainfo, season=season, username=username, **kwargs)
         subscribe_poster = mediainfo.get_poster_image()
@@ -1857,6 +1980,26 @@ class SubscribeChain(ChainBase):
             # 正在洗版，更新资源优先级
             logger.info(f'{mediainfo.title_year} 正在洗版，更新资源优先级为 {priority}')
 
+    @staticmethod
+    def __backfill_subscribe_from_download(subscribe: Subscribe, download: Context) -> None:
+        """
+        电视剧订阅下载后，把资源的分辨率、质量、特效、制作组、站点回填到订阅的空字段，
+        使后续集数沿用同一版本资源。洗版订阅不回填，避免锁死升级范围。
+        """
+        fields = SystemConfigOper().get(SystemConfigKey.SubscribeDownloadBackfill)
+        update = build_subscribe_backfill(
+            subscribe=subscribe,
+            context=download,
+            fields=fields,
+            rss_sites=SystemConfigOper().get(SystemConfigKey.RssSites),
+        )
+        if not update:
+            return
+        SubscribeOper().update(subscribe.id, update)
+        for key, value in update.items():
+            setattr(subscribe, key, value)
+        logger.info(f"订阅 {subscribe.name} 已根据下载资源回填：{update}")
+
     def finish_subscribe_or_not(self, subscribe: Subscribe, meta: MetaBase, mediainfo: MediaInfo,
                                 downloads: List[Context] = None,
                                 lefts: Dict[Union[int | str], Dict[int, schemas.NotExistMediaInfo]] = None,
@@ -1877,6 +2020,8 @@ class SubscribeChain(ChainBase):
             return
         if downloads and meta.type == MediaType.TV:
             self.__record_subscribe_download_facts(subscribe=subscribe, mediainfo=mediainfo, downloads=downloads)
+            if not subscribe.best_version:
+                self.__backfill_subscribe_from_download(subscribe=subscribe, download=downloads[0])
         elif downloads:
             self.__update_subscribe_note(subscribe=subscribe, downloads=downloads)
         if downloads and meta.type == MediaType.MOVIE:

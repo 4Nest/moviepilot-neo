@@ -260,6 +260,10 @@ class SystemConfigKey(Enum):
     DefaultMovieSubscribeConfig = "DefaultMovieSubscribeConfig"
     # 默认电视剧订阅规则
     DefaultTvSubscribeConfig = "DefaultTvSubscribeConfig"
+    # 按二级分类覆盖的订阅规则（添加订阅时自动填充）
+    SubscribeCategoryRules = "SubscribeCategoryRules"
+    # 电视剧订阅首次下载后回填到订阅的字段
+    SubscribeDownloadBackfill = "SubscribeDownloadBackfill"
     # 用户站点认证参数
     UserSiteAuthParams = "UserSiteAuthParams"
     # Follow订阅分享者
