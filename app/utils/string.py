@@ -8,7 +8,6 @@ from typing import Union, Tuple, Optional, Any, List, Generator
 from urllib import parse
 
 import cn2an
-import dateparser
 import dateutil.parser
 
 from app.schemas.types import MediaType
@@ -409,6 +408,8 @@ class StringUtils:
             return datetime_str
 
         try:
+            # dateparser 导入约占 8MB 常驻内存且仅少数存储/站点用到，按需导入
+            import dateparser
             return dateparser.parse(datetime_str).strftime('%Y-%m-%d %H:%M:%S')
         except Exception as e:
             print(str(e))
@@ -440,6 +441,7 @@ class StringUtils:
         if not date_str:
             return 0
         try:
+            import dateparser
             return dateparser.parse(date_str).timestamp()
         except Exception as e:
             print(str(e))

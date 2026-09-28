@@ -1,21 +1,33 @@
-from typing import Optional, Tuple, Union, Any, List, Generator, Dict
+from __future__ import annotations
+
+from typing import Optional, Tuple, Union, Any, List, Generator, Dict, TYPE_CHECKING
 
 from app import schemas
 from app.core.context import MediaInfo
 from app.log import logger
 from app.modules import _ModuleBase, _MediaServerBase
-from app.modules.plex.plex import Plex
 from app.schemas.types import MediaType, ModuleType, MediaServerType
 
+if TYPE_CHECKING:
+    from app.modules.plex.plex import Plex
 
-class PlexModule(_ModuleBase, _MediaServerBase[Plex]):
+
+class PlexModule(_ModuleBase, _MediaServerBase["Plex"]):
 
     def init_module(self) -> None:
         """
         初始化模块
         """
-        super().init_service(service_name=Plex.__name__.lower(),
-                             service_type=lambda conf: Plex(**conf.config, sync_libraries=conf.sync_libraries))
+        super().init_service(service_name="plex", service_type=self._create_client)
+
+    @staticmethod
+    def _create_client(conf) -> Plex:
+        """
+        按配置创建 Plex 客户端。
+        plexapi 导入约占 3.5MB 常驻内存，未配置 Plex 时不会走到这里，因此在此按需导入。
+        """
+        from app.modules.plex.plex import Plex
+        return Plex(**conf.config, sync_libraries=conf.sync_libraries)
 
     @staticmethod
     def get_name() -> str:

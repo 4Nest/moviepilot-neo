@@ -1,13 +1,14 @@
+from __future__ import annotations
+
 import copy
 import json
 import re
-from typing import Dict, Optional, Union, List, Tuple, Any
+from typing import Dict, Optional, Union, List, Tuple, Any, TYPE_CHECKING
 
 from app.core.context import MediaInfo, Context
 from app.core.event import eventmanager
 from app.log import logger
 from app.modules import _ModuleBase, _MessageBase
-from app.modules.telegram.telegram import Telegram
 from app.schemas import (
     MessageChannel,
     CommingMessage,
@@ -19,8 +20,11 @@ from app.schemas import (
 from app.schemas.types import ModuleType, ChainEventType
 from app.utils.structures import DictUtils
 
+if TYPE_CHECKING:
+    from app.modules.telegram.telegram import Telegram
 
-class TelegramModule(_ModuleBase, _MessageBase[Telegram]):
+
+class TelegramModule(_ModuleBase, _MessageBase["Telegram"]):
     """
     Telegram 通知模块，负责模块生命周期、消息解析和通知发送。
     """
@@ -29,10 +33,17 @@ class TelegramModule(_ModuleBase, _MessageBase[Telegram]):
         """
         初始化模块
         """
-        super().init_service(
-            service_name=Telegram.__name__.lower(), service_type=Telegram
-        )
+        super().init_service(service_name="telegram", service_type=self._create_client)
         self._channel = MessageChannel.Telegram
+
+    @staticmethod
+    def _create_client(conf: NotificationConf) -> Telegram:
+        """
+        按配置创建 Telegram 客户端。
+        telebot 等依赖导入约占 5.5MB 常驻内存，未配置 Telegram 时不会走到这里，因此在此按需导入。
+        """
+        from app.modules.telegram.telegram import Telegram
+        return Telegram(name=conf.name, **conf.config)
 
     @staticmethod
     def get_name() -> str:

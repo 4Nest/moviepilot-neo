@@ -2,17 +2,43 @@ import asyncio
 import json
 import pickle
 import threading
-from typing import Any, Optional, Generator, Tuple, AsyncGenerator, Union
+from typing import Any, Optional, Generator, Tuple, AsyncGenerator, Union, TYPE_CHECKING
 from urllib.parse import quote, unquote
-
-import redis
-from redis.asyncio import BlockingConnectionPool as AsyncBlockingConnectionPool
-from redis.asyncio import Redis
 
 from app.core.config import settings
 from app.log import logger
 from app.utils.mixins import ConfigReloadMixin
 from app.utils.singleton import Singleton
+
+if TYPE_CHECKING:
+    from redis.asyncio import Redis
+
+
+def _load_redis_attr(name: str) -> Any:
+    """
+    按需导入 redis 客户端库，未启用 Redis 缓存时不加载（约省 5MB 常驻内存）。
+    导入结果写回模块全局，外部仍可通过 app.helper.redis.redis / Redis / AsyncBlockingConnectionPool 访问或替换。
+    """
+    if name == "redis":
+        import redis as value
+    elif name == "Redis":
+        from redis.asyncio import Redis as value
+    elif name == "AsyncBlockingConnectionPool":
+        from redis.asyncio import BlockingConnectionPool as value
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    globals()[name] = value
+    return value
+
+
+def __getattr__(name: str) -> Any:
+    """模块级延迟属性（PEP 562），首次访问 redis 相关属性时才导入。"""
+    return _load_redis_attr(name)
+
+
+def _lazy(name: str) -> Any:
+    """获取已加载（或已被替换）的 redis 属性，未加载时按需导入。"""
+    return globals().get(name) or _load_redis_attr(name)
 
 # 类型缓存集合，针对非容器简单类型
 _complex_serializable_types = set()
@@ -113,7 +139,7 @@ class RedisHelper(ConfigReloadMixin, metaclass=Singleton):
                 if self.client is not None:
                     return
                 self.redis_url = settings.CACHE_BACKEND_URL
-                connection_pool = redis.BlockingConnectionPool.from_url(
+                connection_pool = _lazy("redis").BlockingConnectionPool.from_url(
                     self.redis_url,
                     decode_responses=False,
                     socket_timeout=_socket_timeout,
@@ -122,7 +148,7 @@ class RedisHelper(ConfigReloadMixin, metaclass=Singleton):
                     max_connections=settings.CACHE_REDIS_MAX_CONNECTIONS,
                     timeout=settings.CACHE_REDIS_POOL_TIMEOUT,
                 )
-                client = redis.Redis(connection_pool=connection_pool)
+                client = _lazy("redis").Redis(connection_pool=connection_pool)
                 # 测试连接，确保Redis可用
                 client.ping()
                 self.client = client
@@ -363,7 +389,7 @@ class AsyncRedisHelper(ConfigReloadMixin, metaclass=Singleton):
         初始化异步Redis助手实例
         """
         self.redis_url = settings.CACHE_BACKEND_URL
-        self.client: Optional[Redis] = None
+        self.client: Optional["Redis"] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._connect_lock: Optional[asyncio.Lock] = None
         self._connect_lock_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -393,7 +419,7 @@ class AsyncRedisHelper(ConfigReloadMixin, metaclass=Singleton):
                 if self.client is not None:
                     return
                 self.redis_url = settings.CACHE_BACKEND_URL
-                connection_pool = AsyncBlockingConnectionPool.from_url(
+                connection_pool = _lazy("AsyncBlockingConnectionPool").from_url(
                     self.redis_url,
                     decode_responses=False,
                     socket_timeout=_socket_timeout,
@@ -402,7 +428,7 @@ class AsyncRedisHelper(ConfigReloadMixin, metaclass=Singleton):
                     max_connections=settings.CACHE_REDIS_MAX_CONNECTIONS,
                     timeout=settings.CACHE_REDIS_POOL_TIMEOUT,
                 )
-                client = Redis(connection_pool=connection_pool)
+                client = _lazy("Redis")(connection_pool=connection_pool)
                 self._loop = current_loop
                 # 测试连接，确保Redis可用
                 await client.ping()

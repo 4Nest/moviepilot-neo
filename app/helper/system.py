@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 
-import docker
 import psutil
 
 from app.core.config import settings
@@ -244,7 +243,8 @@ class SystemHelper(ConfigReloadMixin):
             if not container_id:
                 return False
 
-            # 创建 Docker 客户端
+            # 创建 Docker 客户端（仅重启时用到，按需导入以减少常驻内存）
+            import docker
             client = docker.DockerClient(base_url=settings.DOCKER_CLIENT_API)
             # 获取容器信息
             container = client.containers.get(container_id)
@@ -373,7 +373,8 @@ class SystemHelper(ConfigReloadMixin):
         使用Docker API重启容器，并尝试优雅停止
         """
         try:
-            # 创建 Docker 客户端
+            # 创建 Docker 客户端（仅重启时用到，按需导入以减少常驻内存）
+            import docker
             client = docker.DockerClient(base_url=settings.DOCKER_CLIENT_API)
             container_id = SystemHelper._get_container_id()
             if not container_id:
