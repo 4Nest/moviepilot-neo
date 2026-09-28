@@ -1450,6 +1450,50 @@ class SubscribeChain(ChainBase):
             return True
         return False
 
+    def __sleep_without_lock(self, seconds: int) -> bool:
+        """
+        释放订阅锁后休眠，醒来重新上锁。
+        订阅搜索的随机休眠用于规避站点风控，期间无需独占订阅数据；持锁休眠会让 RSS 匹配长时间排队甚至超时。
+        系统停止时提前结束休眠。
+
+        :param seconds: 休眠秒数
+        :return: 是否重新获得订阅锁；为 False 时调用方已不再持有锁，必须停止处理
+        """
+        self._rlock.release()
+        try:
+            for _ in range(seconds):
+                if global_vars.is_system_stopped:
+                    break
+                time.sleep(1)
+        finally:
+            reacquired = self._rlock.acquire(blocking=True, timeout=self._LOCK_TIMOUT)
+        return reacquired
+
+    def __reload_subscribe_after_sleep(self, subscribe: Subscribe, states: List[str],
+                                       force_search: bool) -> Optional[Subscribe]:
+        """
+        休眠释放锁期间订阅可能已被 RSS 匹配下载、完成删除或被用户修改，重新从数据库读取。
+
+        :param subscribe: 休眠前的订阅或版本视图
+        :param states: 本次搜索处理的订阅状态
+        :param force_search: 是否忽略媒体库已有内容
+        :return: 最新的订阅或版本视图；订阅已不存在、状态不在范围内或版本规则已删除时返回 None
+        """
+        parent = getattr(subscribe, "_version_parent", subscribe)
+        latest = SubscribeOper().get(parent.id)
+        if not latest or latest.state not in states:
+            return None
+        version_rule_id = getattr(subscribe, "_version_rule_id", None)
+        if version_rule_id:
+            rule = next((rule for rule in expand_subscribe_version_rules(latest)
+                         if str(rule.get("id")) == str(version_rule_id)), None)
+            if not rule:
+                return None
+            latest = build_subscribe_version_view(latest, rule)
+        if force_search:
+            latest.skip_library_check = 1
+        return latest
+
     def search(
             self,
             sid: Optional[int] = None,
@@ -1474,7 +1518,11 @@ class SubscribeChain(ChainBase):
             ):
                 logger.debug(f"search lock acquired at {datetime.now()}")
             else:
-                logger.warn("search上锁超时")
+                # 无锁继续会与 RSS 匹配并发处理同一订阅，导致重复下载
+                logger.warn("search上锁超时，跳过本次订阅搜索")
+                if progress_callback:
+                    progress_callback(value=100, text="订阅处理繁忙，跳过本次订阅搜索")
+                return
 
             subscribeoper = SubscribeOper()
             if sid:
@@ -1528,7 +1576,22 @@ class SubscribeChain(ChainBase):
                             progress_callback(
                                 text=f"订阅搜索随机休眠 {sleep_time} 秒后继续 ..."
                             )
-                        time.sleep(sleep_time)
+                        if not self.__sleep_without_lock(sleep_time):
+                            lock_acquired = False
+                            logger.warn("订阅搜索休眠后重新上锁超时，停止本次订阅搜索")
+                            break
+                        if global_vars.is_system_stopped:
+                            break
+                        subscribe = self.__reload_subscribe_after_sleep(
+                            subscribe=subscribe,
+                            states=self.get_states_for_search(state),
+                            force_search=force_search,
+                        )
+                        if not subscribe:
+                            logger.info("订阅在等待期间已完成、删除或状态变更，跳过搜索")
+                            continue
+                        mediakey = _subscribe_media_key(subscribe)
+                        custom_word_list = subscribe.custom_words.split("\n") if subscribe.custom_words else None
                     try:
                         search_attempted = True
                         logger.info(f'开始搜索订阅，标题：{subscribe.name} ...')
@@ -1976,7 +2039,11 @@ class SubscribeChain(ChainBase):
             ):
                 logger.debug(f"match lock acquired at {datetime.now()}")
             else:
-                logger.warn("match上锁超时")
+                # 无锁继续会与订阅搜索并发处理同一订阅，导致重复下载；种子缓存保留，下次刷新仍可匹配
+                logger.warn("match上锁超时，跳过本次订阅匹配")
+                if progress_callback:
+                    progress_callback(value=100, text="订阅处理繁忙，跳过本次订阅匹配")
+                return
 
             # 预识别所有未识别的种子
             processed_torrents: Dict[str, List[Context]] = {}

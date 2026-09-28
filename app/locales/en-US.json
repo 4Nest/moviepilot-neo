@@ -353,6 +353,8 @@
     "没有订阅需要刷新": "No subscriptions need refreshing",
     "订阅刷新完成": "Subscription refresh completed",
     "没有缓存资源，跳过订阅匹配": "No cached resources, skipping subscription matching",
+    "订阅处理繁忙，跳过本次订阅搜索": "Subscription processing is busy, skipping this subscription search",
+    "订阅处理繁忙，跳过本次订阅匹配": "Subscription processing is busy, skipping this subscription matching",
     "正在预处理订阅资源 ...": "Preprocessing subscription resources ...",
     "订阅资源匹配完成": "Subscription resource matching completed",
     "订阅元数据更新完成": "Subscription metadata update completed",
