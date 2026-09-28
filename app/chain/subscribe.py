@@ -1922,7 +1922,11 @@ class SubscribeChain(ChainBase):
         # 计算 user_sites 和 default_sites 的交集
         intersection_sites = [site for site in user_sites if site in default_sites]
         # 如果交集为空，返回默认站点
-        return intersection_sites if intersection_sites else default_sites
+        if not intersection_sites:
+            logger.warn(f"订阅 {subscribe.name} 选择的站点 {user_sites} 均不在全局订阅站点 {default_sites} 中，"
+                        f"已改用全局订阅站点，请在「设置-订阅-订阅站点」中勾选或重新编辑订阅站点")
+            return default_sites
+        return intersection_sites
 
     def get_subscribed_sites(self) -> Optional[List[int]]:
         """
@@ -2053,10 +2057,10 @@ class SubscribeChain(ChainBase):
                     except ValueError:
                         logger.error(f'订阅 {subscribe.name} 类型错误：{subscribe.type}')
                         continue
-                    # 订阅的站点域名列表
-                    domains = []
-                    if subscribe.sites:
-                        domains = SiteOper().get_domains_by_ids(subscribe.sites)
+                    # 订阅的有效站点（已与全局订阅站点求交集），域名与站点ID两级过滤必须同源，
+                    # 否则订阅站点不在全局订阅站点中时，两级过滤互斥导致永远匹配不到
+                    sub_sites = self.get_sub_sites(subscribe)
+                    domains = SiteOper().get_domains_by_ids(sub_sites) if sub_sites else []
                     # 识别媒体信息
                     mediainfo: MediaInfo = self.recognize_media(
                         meta=meta,
@@ -2107,7 +2111,6 @@ class SubscribeChain(ChainBase):
                             torrent_info = _context.torrent_info
 
                             # 不在订阅站点范围的不处理
-                            sub_sites = self.get_sub_sites(subscribe)
                             if sub_sites and torrent_info.site not in sub_sites:
                                 logger.debug(f"{torrent_info.site_name} - {torrent_info.title} 不符合订阅站点要求")
                                 continue
@@ -2289,7 +2292,10 @@ class SubscribeChain(ChainBase):
 
                             # 匹配成功
                             logger.info(f'{mediainfo.title_year} 匹配成功：{torrent_info.title}')
-                            # 自定义属性
+                            # 自定义属性：_context 是浅拷贝，media_info 与种子缓存共享，先复制再写，避免订阅属性污染缓存
+                            if subscribe.media_category or subscribe.episode_group:
+                                torrent_mediainfo = copy.copy(torrent_mediainfo)
+                                _context.media_info = torrent_mediainfo
                             if subscribe.media_category:
                                 torrent_mediainfo.category = subscribe.media_category
                             if subscribe.episode_group:
