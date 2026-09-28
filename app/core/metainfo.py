@@ -18,7 +18,7 @@ from app.core.meta.infopath import (
     clear_parsed_title_for_parent_merge,
     should_use_parent_title_for_file_stem,
 )
-from app.core.meta.metavideo import has_hash_episode
+from app.core.meta.metavideo import has_hash_episode, is_part_value
 from app.core.meta.words import WordsMatcher
 from app.log import logger
 from app.schemas.types import MediaType
@@ -385,7 +385,8 @@ def _meta_from_rust(parsed: dict) -> Optional[MetaBase]:
         "total_episode": parsed.get("total_episode") or 0,
         "begin_episode": parsed.get("begin_episode"),
         "end_episode": parsed.get("end_episode"),
-        "part": parsed.get("part"),
+        # Rust 扩展同样会把独立的 DVD 片源误识别为分段，这里统一纠正
+        "part": parsed.get("part") if is_part_value(parsed.get("part")) else None,
         "resource_type": parsed.get("resource_type"),
         "resource_effect": parsed.get("resource_effect"),
         "resource_pix": parsed.get("resource_pix"),

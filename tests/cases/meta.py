@@ -431,8 +431,7 @@ meta_cases = [{
         "cn_name": "",
         "en_name": "ガイキング Legend Of Daiku Maryu",
         "year": "",
-        # 已有行为：独立的 DVD 会被 _part_re 识别为分段
-        "part": "DVD",
+        "part": "",
         "season": "S01",
         "episode": "E09",
         "restype": "",
@@ -449,8 +448,7 @@ meta_cases = [{
         "cn_name": "",
         "en_name": "ガイキング Legend Of Daiku Maryu",
         "year": "",
-        # 已有行为：独立的 DVD 会被 _part_re 识别为分段
-        "part": "DVD",
+        "part": "",
         "season": "S01",
         "episode": "E10",
         "restype": "",

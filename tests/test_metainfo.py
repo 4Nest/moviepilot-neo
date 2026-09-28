@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from app.core.metainfo import MetaInfo, MetaInfoPath, find_metainfo
 from app.core.meta.metaanime import MetaAnime
+from app.core.meta.metavideo import MetaVideo
 from app.helper.torrent import TorrentHelper
 from app.schemas.types import MediaType
 from tests.cases.meta import meta_cases
@@ -691,3 +692,20 @@ def test_hash_episode_requires_standalone_marker():
     assert not has_hash_episode("C#10 Tutorial 1080p")
     assert not has_hash_episode("Title #10a 1080p")
     assert normalize_hash_episode("Title #10 (BD)") == "Title E10 (BD)"
+
+
+def test_standalone_dvd_is_not_part():
+    """独立的 DVD 是片源而非分段；带编号的 DVD1 / DVD 2 / CD1 / Disc2 仍识别为分段。"""
+    cases = {
+        "Some Show S01E05 DVD x264 AC3.mkv": None,
+        "Some.Movie.2003.DVD.720p.x264.mkv": None,
+        "[AYN&AI-Raws] ガイキング LEGEND OF DAIKU-MARYU #10 (DVD HEVC 1304x720 AC3).mkv": None,
+        "Some.Movie.2003.DVD1.avi": "DVD1",
+        "Some Movie 2003 DVD 2 720p.avi": "DVD2",
+        "Some.Movie.2003.CD1.avi": "CD1",
+        "Some.Movie.2003.Disc2.1080p.mkv": "Disc2",
+    }
+    for title, expected in cases.items():
+        # MetaInfo 走 Rust 扩展（可用时），MetaVideo 直接走 Python 解析器，两条路径结果须一致
+        assert MetaInfo(title).part == expected, title
+        assert MetaVideo(title, isfile=True).part == expected, title

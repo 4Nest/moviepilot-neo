@@ -38,6 +38,14 @@ def has_hash_episode(title: Optional[str]) -> bool:
     return bool(title and HASH_EPISODE_RE.search(title))
 
 
+def is_part_value(part: Optional[str]) -> bool:
+    """
+    分段识别结果是否有效。
+    不带编号的独立 DVD 是片源（如 "(DVD HEVC 720p)"），不是分段；分段写法为 DVD1 / DVD 2。
+    """
+    return bool(part) and part.upper() != "DVD"
+
+
 def normalize_hash_episode(title: str) -> str:
     """
     将 #数字 集号规整为 E数字。
@@ -395,12 +403,15 @@ class MetaVideo(MetaBase):
             return
         re_res = self._part_pattern.search(token)
         if re_res:
+            nextv = tokens.cur()
+            has_index = nextv \
+                and ((nextv.isdigit() and (len(nextv) == 1 or len(nextv) == 2 and nextv.startswith('0')))
+                     or nextv.upper() in ['A', 'B', 'C', 'I', 'II', 'III'])
+            if not has_index and not is_part_value(re_res.group(1)):
+                return
             if not self.part:
                 self.part = re_res.group(1)
-            nextv = tokens.cur()
-            if nextv \
-                    and ((nextv.isdigit() and (len(nextv) == 1 or len(nextv) == 2 and nextv.startswith('0')))
-                         or nextv.upper() in ['A', 'B', 'C', 'I', 'II', 'III']):
+            if has_index:
                 self.part = "%s%s" % (self.part, nextv)
                 tokens.get_next()
             self._last_token_type = "part"
