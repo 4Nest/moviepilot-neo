@@ -18,6 +18,7 @@ from app.core.meta.infopath import (
     clear_parsed_title_for_parent_merge,
     should_use_parent_title_for_file_stem,
 )
+from app.core.meta.metavideo import has_hash_episode
 from app.core.meta.words import WordsMatcher
 from app.log import logger
 from app.schemas.types import MediaType
@@ -430,14 +431,14 @@ def _requires_python_metainfo(
     判断标题或临时识别词是否需要使用 Python 解析器。
 
     Rust 扩展尚未支持扩展数据源 ID，也可能把动漫集数修正版
-    （如 [01v2]、S03E01v2）误判为普通影视。
+    （如 [01v2]、S03E01v2）误判为普通影视，且不识别 #10 形式的集号。
 
     :param title: 原始标题
     :param custom_words: 临时识别词
     :return: 是否必须使用 Python 解析器
     """
     candidates = [title or "", *(custom_words or [])]
-    if has_versioned_anime_episode(title):
+    if has_versioned_anime_episode(title) or has_hash_episode(title):
         return True
     contains_extended_id = any(
         _EXTENDED_MEDIA_ID_TAG_RE.search(candidate) for candidate in candidates

@@ -424,6 +424,42 @@ meta_cases = [{
         "fps": None
     }
 }, {
+    "title": "[AYN&AI-Raws] ガイキング LEGEND OF DAIKU-MARYU #09 (DVD HEVC 1304x720 AC3).mkv",
+    "subtitle": "",
+    "target": {
+        "type": "电视剧",
+        "cn_name": "",
+        "en_name": "ガイキング Legend Of Daiku Maryu",
+        "year": "",
+        # 已有行为：独立的 DVD 会被 _part_re 识别为分段
+        "part": "DVD",
+        "season": "S01",
+        "episode": "E09",
+        "restype": "",
+        "pix": "720p",
+        "video_codec": "HEVC",
+        "audio_codec": "AC3",
+        "fps": None
+    }
+}, {
+    "title": "[AYN&AI-Raws] ガイキング LEGEND OF DAIKU-MARYU #10 (DVD HEVC 1304x720 AC3).mkv",
+    "subtitle": "",
+    "target": {
+        "type": "电视剧",
+        "cn_name": "",
+        "en_name": "ガイキング Legend Of Daiku Maryu",
+        "year": "",
+        # 已有行为：独立的 DVD 会被 _part_re 识别为分段
+        "part": "DVD",
+        "season": "S01",
+        "episode": "E10",
+        "restype": "",
+        "pix": "720p",
+        "video_codec": "HEVC",
+        "audio_codec": "AC3",
+        "fps": None
+    }
+}, {
     "title": "Mr. Robot - S02E06 - eps2.4_m4ster-s1ave.aes SDTV.mp4",
     "subtitle": "",
     "target": {

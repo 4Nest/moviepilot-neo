@@ -28,6 +28,26 @@ DIY_TITLE_RE = re.compile(r'-DIY@', re.IGNORECASE)
 DESCRIPTION_SPLIT_RE = re.compile(r'[\s/|]+')
 SPACE_RE = re.compile(r'\s+')
 SEASON_SUFFIX_RE = re.compile(r"SEASON$", re.IGNORECASE)
+# 独立的 #数字 是 Raws 类发布常见的集号写法，例如 [AI-Raws] 标题 #10 (BD ...)
+# 要求左侧为空白或开头，避免误伤 C# 之类的名称
+HASH_EPISODE_RE = re.compile(r'(?<!\S)#(\d{1,4})(?=[\s.\[(]|$)')
+
+
+def has_hash_episode(title: Optional[str]) -> bool:
+    """标题是否包含以 #数字 表示的集号。"""
+    return bool(title and HASH_EPISODE_RE.search(title))
+
+
+def normalize_hash_episode(title: str) -> str:
+    """
+    将 #数字 集号规整为 E数字。
+
+    分词时 # 会被当作分隔符丢弃，集号退化为裸数字；紧跟英文标题时，
+    3 位以内的裸数字会被当作标题的一部分（如 Maryu 10），导致标题污染、集号丢失。
+    """
+    if not title:
+        return title
+    return HASH_EPISODE_RE.sub(r'E\1', title)
 
 
 class MetaVideo(MetaBase):
@@ -133,6 +153,8 @@ class MetaVideo(MetaBase):
         title = FILE_SIZE_RE.sub("", title)
         # 把年月日去掉
         title = DATE_RE.sub("", title)
+        # 把 #数字 集号换成 E数字，避免分词后被拼进标题
+        title = normalize_hash_episode(title)
         media_exts = settings.RMT_MEDIAEXT + settings.RMT_SUBEXT + settings.RMT_AUDIOEXT
         # 拆分tokens
         tokens = Tokens(title)

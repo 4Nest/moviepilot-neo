@@ -666,3 +666,28 @@ def test_metainfopath_movie_collection_parent_does_not_override_file_title():
         meta = MetaInfoPath(Path(f"{collection}/{file_name}"))
         assert meta.name == expected_name
         assert meta.year == expected_year
+
+
+def test_hash_episode_number_not_merged_into_english_title():
+    """#10 形式的集号紧跟英文标题时应识别为集，而不是拼进标题。"""
+    title = "[AYN&AI-Raws] ガイキング LEGEND OF DAIKU-MARYU #{} (DVD HEVC 1304x720 AC3).mkv"
+    for episode in (9, 10, 26, 100):
+        meta = MetaInfo(title.format(f"{episode:02d}"))
+        assert meta.name == "ガイキング Legend Of Daiku Maryu"
+        assert meta.begin_episode == episode
+        assert meta.type == MediaType.TV
+
+    meta = MetaInfoPath(Path("/media/ガイキング/" + title.format("12")))
+    assert meta.name == "ガイキング Legend Of Daiku Maryu"
+    assert meta.begin_episode == 12
+
+
+def test_hash_episode_requires_standalone_marker():
+    """只有独立的 #数字 才视为集号，名称中的 C# 等写法不受影响。"""
+    from app.core.meta.metavideo import has_hash_episode, normalize_hash_episode
+
+    assert has_hash_episode("Title #10 (BD 1080p)")
+    assert has_hash_episode("Title #10.mkv")
+    assert not has_hash_episode("C#10 Tutorial 1080p")
+    assert not has_hash_episode("Title #10a 1080p")
+    assert normalize_hash_episode("Title #10 (BD)") == "Title E10 (BD)"
