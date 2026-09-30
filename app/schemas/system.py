@@ -30,7 +30,7 @@ class MediaServerConf(BaseModel):
 
     # 名称
     name: Optional[str] = None
-    # 类型 emby/zspace/jellyfin/plex/trimemedia/ugreen/mediavault
+    # 类型 emby/zspace/jellyfin/plex/trimemedia/ugreen/mediavault（Vyo）
     type: Optional[str] = None
     # 配置
     config: Optional[dict] = Field(default_factory=dict)

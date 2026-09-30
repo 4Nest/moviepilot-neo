@@ -4,27 +4,29 @@ from app import schemas
 from app.core.context import MediaInfo
 from app.log import logger
 from app.modules import _MediaServerBase, _ModuleBase
-from app.modules.mediavault.mediavault import MediaVault
+from app.modules.vyo.vyo import Vyo
 from app.schemas.types import MediaServerType, MediaType, ModuleType
 
 
-class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
-    """MediaVault 自建媒体库模块。"""
+class VyoModule(_ModuleBase, _MediaServerBase[Vyo]):
+    """Vyo 媒体服务模块。"""
 
     def init_module(self) -> None:
         """
         初始化模块
         """
         super().init_service(
-            service_name=MediaVault.__name__.lower(),
-            service_type=lambda conf: MediaVault(
+            # 配置类型值保持 mediavault，兼容已有媒体服务器配置
+            service_name="mediavault",
+            service_type=lambda conf: Vyo(
                 **conf.config, sync_libraries=conf.sync_libraries
             ),
         )
 
     @staticmethod
     def get_name() -> str:
-        return "MediaVault"
+        """获取模块名称"""
+        return "Vyo"
 
     @staticmethod
     def get_type() -> ModuleType:
@@ -38,7 +40,7 @@ class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
         """
         获取模块子类型
         """
-        return MediaServerType.MediaVault
+        return MediaServerType.Vyo
 
     @staticmethod
     def get_priority() -> int:
@@ -57,7 +59,7 @@ class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
         # 定时重连
         for name, server in self.get_instances().items():
             if server.is_configured() and server.is_inactive():
-                logger.info(f"MediaVault {name} 连接断开，尝试重连 ...")
+                logger.info(f"Vyo {name} 连接断开，尝试重连 ...")
                 server.reconnect()
 
     def stop(self) -> None:
@@ -66,7 +68,7 @@ class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
             try:
                 server.disconnect()
             except Exception as err:
-                logger.error(f"停止 MediaVault 模块实例失败：{err}")
+                logger.error(f"停止 Vyo 模块实例失败：{err}")
 
     def test(self) -> Optional[Tuple[bool, str]]:
         """
@@ -76,9 +78,9 @@ class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
             return None
         for name, server in self.get_instances().items():
             if not server.is_configured():
-                return False, f"MediaVault 配置不完整：{name}"
+                return False, f"Vyo 配置不完整：{name}"
             if server.is_inactive() and not server.reconnect():
-                return False, f"无法连接 MediaVault：{name}"
+                return False, f"无法连接 Vyo：{name}"
         return True, ""
 
 
@@ -161,7 +163,7 @@ class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
         媒体数量统计
         """
         if server:
-            server_obj: Optional[MediaVault] = self.get_instance(server)
+            server_obj: Optional[Vyo] = self.get_instance(server)
             servers = [server_obj] if server_obj else []
         else:
             servers = list(self.get_instances().values())
@@ -180,7 +182,7 @@ class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
         """
         媒体库列表
         """
-        server_obj: Optional[MediaVault] = self.get_instance(server)
+        server_obj: Optional[Vyo] = self.get_instance(server)
         if server_obj:
             return server_obj.get_librarys(hidden=hidden)
         return None
@@ -200,7 +202,7 @@ class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
         :param start_index: 起始索引
         :param limit: 每次请求的最大项目数，None 或 -1 表示一次性获取所有数据
         """
-        server_obj: Optional[MediaVault] = self.get_instance(server)
+        server_obj: Optional[Vyo] = self.get_instance(server)
         if server_obj:
             return server_obj.get_items(library_id, start_index, limit)
         return None
@@ -211,7 +213,7 @@ class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
         """
         获取指定媒体库可同步的媒体条目总数
         """
-        server_obj: Optional[MediaVault] = self.get_instance(server)
+        server_obj: Optional[Vyo] = self.get_instance(server)
         if server_obj:
             return server_obj.get_items_count(library_id)
         return None
@@ -222,7 +224,7 @@ class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
         """
         媒体库项目详情
         """
-        server_obj: Optional[MediaVault] = self.get_instance(server)
+        server_obj: Optional[Vyo] = self.get_instance(server)
         if server_obj:
             return server_obj.get_iteminfo(str(item_id))
         return None
@@ -233,7 +235,7 @@ class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
         """
         获取剧集信息
         """
-        server_obj: Optional[MediaVault] = self.get_instance(server)
+        server_obj: Optional[Vyo] = self.get_instance(server)
         if not server_obj:
             return None
         _, seasoninfo = server_obj.get_tv_episodes(item_id=str(item_id))
@@ -250,12 +252,12 @@ class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
         """
         获取指定季的集号到条目 ID 映射
 
-        :param server: MediaVault 媒体服务器名称
-        :param item_id: 剧集在 MediaVault 中的条目 ID
+        :param server: Vyo 媒体服务器名称
+        :param item_id: 剧集在 Vyo 中的条目 ID
         :param season: 季号
         :return: 集号到条目 ID 的映射，服务器不可用或无数据时返回 None
         """
-        server_obj: Optional[MediaVault] = self.get_instance(server)
+        server_obj: Optional[Vyo] = self.get_instance(server)
         if not server_obj:
             return None
         return server_obj.get_season_episode_ids(str(item_id), season)
@@ -266,7 +268,7 @@ class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
         """
         获取媒体服务器正在播放信息
         """
-        server_obj: Optional[MediaVault] = self.get_instance(server)
+        server_obj: Optional[Vyo] = self.get_instance(server)
         if not server_obj:
             return None
         return server_obj.get_resume(num=count)
@@ -277,7 +279,7 @@ class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
         """
         获取媒体库播放地址
         """
-        server_obj: Optional[MediaVault] = self.get_instance(server)
+        server_obj: Optional[Vyo] = self.get_instance(server)
         if not server_obj:
             return None
         return server_obj.get_play_url(str(item_id))
@@ -288,7 +290,7 @@ class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
         """
         获取媒体服务器最新入库条目
         """
-        server_obj: Optional[MediaVault] = self.get_instance(server)
+        server_obj: Optional[Vyo] = self.get_instance(server)
         if not server_obj:
             return None
         return server_obj.get_latest(num=count)
@@ -307,7 +309,7 @@ class MediaVaultModule(_ModuleBase, _MediaServerBase[MediaVault]):
         :param count: 获取数量
         :param remote: True为外网链接，False为内网链接
         """
-        server_obj: Optional[MediaVault] = self.get_instance(server)
+        server_obj: Optional[Vyo] = self.get_instance(server)
         if not server_obj:
             return []
         return server_obj.get_latest_backdrops(num=count, remote=remote) or []
