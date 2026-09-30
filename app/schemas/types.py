@@ -376,8 +376,8 @@ class MediaServerType(Enum):
     TrimeMedia = "TrimeMedia"
     # 绿联影视
     Ugreen = "Ugreen"
-    # MediaVault 自建媒体库
-    MediaVault = "MediaVault"
+    # Vyo 媒体服务
+    Vyo = "Vyo"
 
 
 # 识别器类型

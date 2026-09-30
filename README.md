@@ -52,6 +52,12 @@ source venv/bin/activate
 docker pull ghcr.io/4nest/moviepilot-neo:latest
 ```
 
+## Vyo 媒体服务
+
+MediaVault 媒体服务已更名为 Vyo（Muvyo 内置媒体服务）。连接地址填写 Muvyo 管理面板地址（默认端口 `7811`），API Key 从管理面板的系统配置中生成，不要填写 Vyo 的播放端口。
+
+已保存的媒体服务器配置及媒体库类型值仍为 `mediavault`，无需迁移；模块入口为 `app.modules.vyo:VyoModule`。
+
 ## 项目入口
 
 | 内容 | 链接 |
