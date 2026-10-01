@@ -241,6 +241,30 @@ def _find_metainfo_python(title: str) -> Tuple[str, dict]:
     return title, metainfo
 
 
+def _apply_words_to_subtitle(
+        subtitle: Optional[str],
+        custom_words: List[str] = None,
+) -> Tuple[Optional[str], List[str]]:
+    """
+    使用自定义识别词预处理副标题，避免副标题中的描述性季集信息（如整季集数范围）干扰识别。
+    """
+    if not subtitle:
+        return subtitle, []
+    return WordsMatcher().prepare(subtitle, custom_words=custom_words)
+
+
+def _merge_apply_words(*word_groups: List[str]) -> List[str]:
+    """
+    合并标题与副标题的识别词应用记录，保持原有顺序并去重。
+    """
+    merged: List[str] = []
+    for words in word_groups:
+        for word in words or []:
+            if word not in merged:
+                merged.append(word)
+    return merged
+
+
 def _build_meta_info(
         title: str,
         subtitle: Optional[str] = None,
@@ -455,14 +479,20 @@ def MetaInfo(title: str, subtitle: Optional[str] = None, custom_words: List[str]
     :param custom_words: 自定义识别词列表
     :return: MetaAnime、MetaVideo
     """
+    # 识别词同时作用于副标题，避免副标题中的描述性集数（如整季跨度）被合并为本次识别的集数范围
+    subtitle, subtitle_apply_words = _apply_words_to_subtitle(subtitle, custom_words)
     rust_meta = None
     if not _requires_python_metainfo(title, custom_words):
         rust_meta = _meta_from_rust(
             rust_accel.parse_metainfo(title, subtitle, _rust_parse_options(custom_words))
         )
     if rust_meta:
+        if subtitle_apply_words:
+            rust_meta.apply_words = _merge_apply_words(rust_meta.apply_words, subtitle_apply_words)
         return rust_meta
     meta = _build_meta_info(title=title, subtitle=subtitle, custom_words=custom_words)
+    if subtitle_apply_words:
+        meta.apply_words = _merge_apply_words(meta.apply_words, subtitle_apply_words)
     if meta.apply_words:
         original_meta = _build_meta_info(title=title, subtitle=subtitle)
         meta.original_name = original_meta.name or meta.name

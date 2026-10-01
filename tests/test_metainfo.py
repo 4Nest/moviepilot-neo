@@ -267,6 +267,32 @@ def test_custom_words_replace_then_episode_offset():
     assert meta.apply_words == custom_words
 
 
+def test_custom_words_apply_to_subtitle_episode_range():
+    """识别词应同时清理副标题中的描述性集数范围，避免其被合并为结束集。"""
+    custom_words = [
+        r"Fox.Spirit.Matchmaker.S13(?=.*ADWeb) => Fox.Spirit.Matchmaker.{[tmdbid=75787;type=tv]}S01 && S01 <> 2026 >> EP+167",
+        "狐妖小红娘 第168-183集 => 狐妖小红娘",
+    ]
+    title = "Fox Spirit Matchmaker S13E10 2026 2160p TX WEB-DL H265 DDP2.0-ADWeb"
+    subtitle = (
+        "[国创连载] 狐妖小红娘 第十三季 第10集 | 类型： 剧情 喜剧 动作 爱情 动画 奇幻 | "
+        "主演： 杨天翔 刘校妤 | 狐妖小红娘13 黄风岭篇 / 狐妖小红娘 第168-183集 / 狐妖小红娘之黄风岭篇"
+    )
+
+    def assert_single_episode(meta):
+        assert meta.tmdbid == 75787
+        assert meta.begin_season == 1
+        assert meta.begin_episode == 177
+        assert meta.end_episode is None
+        assert meta.episode == "E177"
+        assert meta.apply_words == custom_words
+
+    assert_single_episode(MetaInfo(title=title, subtitle=subtitle, custom_words=custom_words))
+
+    with patch("app.core.metainfo.rust_accel.parse_metainfo", return_value=None):
+        assert_single_episode(MetaInfo(title=title, subtitle=subtitle, custom_words=custom_words))
+
+
 def test_custom_words_episode_offset_supports_multiplication_expression():
     """测试集数偏移表达式支持乘法和连续运算。"""
     custom_words = [
