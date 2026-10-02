@@ -1,15 +1,13 @@
 name: Site Adapter Collector
 
 on:
+  # 仅手动触发；发版不再自动构建与挂载采集器资产
   workflow_dispatch:
     inputs:
       release_tag:
         description: Existing release tag to receive collector assets; leave empty for artifacts only
         required: false
         type: string
-  release:
-    types:
-      - published
 
 permissions:
   contents: read
