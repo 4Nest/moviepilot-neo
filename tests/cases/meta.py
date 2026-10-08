@@ -956,7 +956,7 @@ meta_cases = [{
     "target": {
         "type": "电视剧",
         "cn_name": "传颂之物",
-        "en_name": "うたわれるもの",
+        "en_name": "Utawarerumono",
         "year": "",
         "part": "",
         "season": "S01",

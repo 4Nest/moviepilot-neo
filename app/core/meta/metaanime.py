@@ -1,5 +1,6 @@
 import re
 import traceback
+from typing import Optional
 
 import anitopy
 from app.core.meta.customization import CustomizationMatcher
@@ -12,6 +13,8 @@ from app.schemas.types import MediaType
 
 
 BRACKET_TITLE_RE = re.compile(r'\[(.+?)]')
+ANIME_ALIAS_SPLIT_RE = re.compile(r'\s*/\s*(?![^\[\]【】]*[\]】])')
+LATIN_LETTER_RE = re.compile(r'[A-Za-z]')
 RESOURCE_PIX_X_RE = re.compile(r'x', re.IGNORECASE)
 RESOURCE_PIX_SPLIT_RE = re.compile(r'[Xx]')
 ANIME_MARK_RE = re.compile(r"新番|月?番|[日美国][漫剧]")
@@ -91,6 +94,31 @@ def extract_anime_video_encode(title: str):
 
 
 ANIME_CN_NAME_NOISE_RE = re.compile(r"^第[一二三四五六七八九十\d]*[季集话話期]$")
+
+
+def extract_multilingual_anime_names(title: str) -> tuple[Optional[str], Optional[str]]:
+    """分别解析中日英别名，避免重复季号将后续英文名吞入集标题。"""
+    if not title or title.count('/') < 2 or not StringUtils.is_japanese(title):
+        return None, None
+    aliases = ANIME_ALIAS_SPLIT_RE.split(title)
+    if len(aliases) < 3:
+        return None, None
+
+    cn_name = en_name = None
+    for alias in aliases:
+        name = (anitopy.parse(alias) or {}).get("anime_title")
+        if not name or StringUtils.is_japanese(name) or StringUtils.is_korean(name):
+            continue
+        _, name, _, _, _, _ = StringUtils.get_keyword(name)
+        if not name:
+            continue
+        if StringUtils.is_chinese(name):
+            if not LATIN_LETTER_RE.search(name) and not cn_name:
+                cn_name = name.strip()
+        elif LATIN_LETTER_RE.search(name) and not en_name:
+            en_name = name.strip().title()
+    # 只覆盖能完整确认中英文名的多语言标题，字幕标签中的斜杠不参与别名拆分。
+    return (cn_name, en_name) if cn_name and en_name else (None, None)
 
 
 def extract_anime_cn_name(anime_title: str, current_name: str = None):
@@ -194,6 +222,10 @@ class MetaAnime(MetaBase):
                             else:
                                 self.en_name = "%s %s" % (self.en_name or "", word)
                                 lastword_type = "en"
+                alias_cn_name, alias_en_name = extract_multilingual_anime_names(original_title)
+                if alias_cn_name and alias_en_name:
+                    self.cn_name = alias_cn_name
+                    self.en_name = alias_en_name
                 # 预处理仅保留末段别名(如 "中文名 English / Romaji" 只剩 Romaji),
                 # 从原始标题被丢弃的前置别名中抢救中文名
                 if not self.cn_name:

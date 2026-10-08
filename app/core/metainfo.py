@@ -12,6 +12,7 @@ from app.core.meta.metaanime import (
     extract_anime_cn_name,
     extract_anime_resource_type,
     extract_anime_video_encode,
+    extract_multilingual_anime_names,
     has_versioned_anime_episode,
 )
 from app.core.meta.infopath import (
@@ -434,6 +435,11 @@ def _meta_from_rust(parsed: dict) -> Optional[MetaBase]:
     if meta.resource_type and meta.resource_type.upper() == "WEBRIP":
         meta.resource_type = "WebRip"
     if parsed.get("kind") == "anime":
+        alias_cn_name, alias_en_name = extract_multilingual_anime_names(meta.org_string or meta.title)
+        if alias_cn_name and alias_en_name:
+            meta.cn_name = alias_cn_name
+            meta.en_name = alias_en_name
+            meta.original_name = MetaAnime(meta.title).name if meta.apply_words else meta.name
         if not meta.resource_type:
             meta.resource_type = extract_anime_resource_type(meta.org_string or meta.title)
         if not meta.video_encode:
