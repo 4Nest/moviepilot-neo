@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import pytest
+
 from app.modules.indexer.parser.nexus_audiences import NexusAudiencesSiteUserInfo
 from app.utils.string import StringUtils
 
@@ -644,3 +646,127 @@ def test_audiences_unknown_unread_count_resets_when_no_links():
 
     assert parser.message_unread == 0
     assert parser.message_unread_contents == []
+
+
+@pytest.mark.parametrize("comments, expected", [
+    ('<div class="torrent-comment-shell" id="22431"><span class="torrent-comment-head__time">'
+     '2026-10-09 08:58:44</span><div class="torrent-comment-head__meta">'
+     '<a href="userdetails.php?id=33590">shaob8</a></div>'
+     '<div class="torrent-comment-body__content"><fieldset><legend>引用: mzy1996</legend>'
+     '<fieldset>历史回复</fieldset>原始的IMAX流媒体就没有DV层好吧</fieldset><br>iTunes版的dv层</div></div>'
+     '<div class="torrent-comment-shell" id="22432"><span class="torrent-comment-head__time">'
+     '2026-10-09 09:00:00</span></div>', "https://audiences.me/details.php?id=729762#22431"),
+    ('<div class="torrent-comment-shell" id="22432"><span class="torrent-comment-head__time">'
+     '2026-10-09 09:00:00</span></div>', "https://audiences.me/details.php?id=729762"),
+    ('<div class="torrent-comment-shell" id="22431"><span class="torrent-comment-head__time">'
+     '2026-10-09 08:58:44</span></div>'
+     '<div class="torrent-comment-shell" id="22432"><span class="torrent-comment-head__time">'
+     '2026-10-09 08:58:44</span></div>', "https://audiences.me/details.php?id=729762"),
+    ("<html></html>", "https://audiences.me/details.php?id=729762"),
+])
+def test_audiences_comment_notification_includes_matching_body(monkeypatch, comments, expected):
+    """新评论通知补充对应正文和链接，重复或缺失匹配时保留原通知。"""
+    parser = NexusAudiencesSiteUserInfo(
+        site_name="Audiences", url="https://audiences.me/", site_cookie="", apikey=None, token=None,
+    )
+    parser.message_unread = 1
+    list_html = '<tr><td><img alt="Unread"></td><td><a href="messages.php?action=viewmessage&amp;id=1">新评论</a></td></tr>'
+    message_html = '''<h1 class="pm-hero__title">新评论</h1>
+        <div class="pm-view__meta"><span class="pm-view__label">日期</span>
+        <span class="pm-view__value">2026-10-09 08:58:44</span></div>
+        <div class="pm-view__body">你发布的种子收到了新评论 <a href="/details.php?id=729762">Spider-Man</a>.</div>'''
+    requests = []
+
+    def fake_get_page_content(url, **_kwargs):
+        """用离线 HTML 模拟收件箱、短消息和种子详情页。"""
+        requests.append(url)
+        if "viewmailbox" in url:
+            return list_html
+        if "viewmessage" in url:
+            return message_html
+        assert url == "https://audiences.me/details.php?id=729762"
+        return comments
+
+    monkeypatch.setattr(parser, "_get_page_content", fake_get_page_content)
+    parser._pase_unread_msgs()
+
+    expected_content = "你发布的种子收到了新评论 Spider-Man."
+    if expected.endswith("#22431"):
+        expected_content += "\n\n评论者：shaob8\n评论内容：\niTunes版的dv层"
+    assert parser.message_unread_contents == [(
+        "新评论", "2026-10-09 08:58:44", expected_content, None, expected,
+    )]
+    parser._resolve_comment_message(message_html, *parser._parse_message_content(message_html))
+    assert requests.count("https://audiences.me/details.php?id=729762") == 1
+
+
+@pytest.mark.parametrize("href", [
+    "https://other.example/details.php?id=729762", "//other.example/details.php?id=729762",
+    "/details.php?id=invalid", "/details.php?id=1&amp;id=2", "/comment.php?action=delete&amp;cid=22431",
+])
+def test_audiences_comment_link_ignores_untrusted_targets(monkeypatch, href):
+    """评论链接解析只访问当前站点的有效种子详情地址。"""
+    parser = NexusAudiencesSiteUserInfo(
+        site_name="Audiences", url="https://audiences.me/", site_cookie="", apikey=None, token=None,
+    )
+
+    def unexpected_request(*_args, **_kwargs):
+        """禁止针对无效链接发起请求。"""
+        pytest.fail("不应请求无效评论链接")
+
+    monkeypatch.setattr(parser, "_get_page_content", unexpected_request)
+    assert parser._resolve_comment_message(
+        f'<div class="pm-view__body"><a href="{href}">种子</a></div>',
+        "新评论", "2026-10-09 08:58:44", "你发布的种子收到了新评论 种子.",
+    ) == ("你发布的种子收到了新评论 种子.", None)
+
+
+def test_audiences_comment_request_failure_keeps_torrent_link(monkeypatch):
+    """评论页请求异常时仍能发送原通知并跳转种子页。"""
+    parser = NexusAudiencesSiteUserInfo(
+        site_name="Audiences", url="https://audiences.me/", site_cookie="", apikey=None, token=None,
+    )
+
+    def failed_request(*_args, **_kwargs):
+        """模拟站点请求超时。"""
+        raise TimeoutError("测试超时")
+
+    monkeypatch.setattr(parser, "_get_page_content", failed_request)
+    assert parser._resolve_comment_message(
+        '<div class="pm-view__body"><a href="/details.php?id=729762">种子</a></div>',
+        "新评论", "2026-10-09 08:58:44", "你发布的种子收到了新评论 种子.",
+    ) == ("你发布的种子收到了新评论 种子.", "https://audiences.me/details.php?id=729762")
+
+
+def test_audiences_anonymous_comment_does_not_reveal_admin_identity():
+    """匿名评论保留匿名身份，正文过滤引用并保留表情与特殊字符。"""
+    parser = NexusAudiencesSiteUserInfo(
+        site_name="Audiences", url="https://audiences.me/", site_cookie="", apikey=None, token=None,
+    )
+    comment = parser._match_torrent_comment('''
+        <div class="torrent-comment-shell" id="22431">
+          <span class="torrent-comment-head__time">2026-10-09 08:58:44</span>
+          <div class="torrent-comment-head__meta"><i class="anon-name">匿名</i>
+            <span class="anon-admin-reveal"><a href="userdetails.php?id=1">真实用户名</a></span>
+          </div>
+          <div class="torrent-comment-body__content"><blockquote>历史评论</blockquote>
+            A &amp; B &lt;test&gt;<br><img alt="[微笑]" src="smile.gif"> 谢谢
+          </div>
+        </div>''', "2026-10-09 08:58:44")
+    assert comment == ("22431", "匿名", "A & B <test> [微笑] 谢谢")
+
+
+def test_audiences_comment_without_body_keeps_exact_link(monkeypatch):
+    """正文节点缺失时保留原通知和已匹配的评论直达链接。"""
+    parser = NexusAudiencesSiteUserInfo(
+        site_name="Audiences", url="https://audiences.me/", site_cookie="", apikey=None, token=None,
+    )
+    monkeypatch.setattr(parser, "_get_page_content", lambda *_args: '''
+        <div class="torrent-comment-shell" id="22431">
+          <span class="torrent-comment-head__time">2026-10-09 08:58:44</span>
+        </div>''')
+    content = "你发布的种子收到了新评论 种子."
+    assert parser._resolve_comment_message(
+        '<div class="pm-view__body"><a href="/details.php?id=729762">种子</a></div>',
+        "新评论", "2026-10-09 08:58:44", content,
+    ) == (content, "https://audiences.me/details.php?id=729762#22431")

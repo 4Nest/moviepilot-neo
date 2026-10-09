@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
 import re
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 from lxml import etree
 
@@ -25,6 +25,7 @@ class NexusAudiencesSiteUserInfo(NexusPhpSiteUserInfo):
         self.__next_mail_page = 1
         self.__seen_unread_message_links = set()
         self.__message_list_previews = {}
+        self._comment_page_cache = {}
 
     def _parse_message_unread(self, html_text):
         """
@@ -104,6 +105,90 @@ class NexusAudiencesSiteUserInfo(NexusPhpSiteUserInfo):
 
         return super()._parse_message_content(html_text)
 
+    def _resolve_comment_message(self, html_text: str, head, date, content):
+        """
+        按通知时间匹配种子评论，补充评论者、正文和永久链接。
+        """
+        if head != "新评论" or not date or not content or "你发布的种子收到了新评论" not in content:
+            return content, None
+        html = etree.HTML(html_text)
+        if not StringUtils.is_valid_html_element(html):
+            return content, None
+        links = html.xpath(
+            '//*[contains(concat(" ", normalize-space(@class), " "), " pm-view__body ")]//a/@href'
+        )
+        for link in links:
+            detail_url = urljoin(self._base_url, link)
+            detail_parts = urlsplit(detail_url)
+            base_parts = urlsplit(self._base_url)
+            if (detail_parts.scheme, detail_parts.netloc) != (base_parts.scheme, base_parts.netloc) \
+                    or detail_parts.path != "/details.php":
+                continue
+            torrent_ids = parse_qs(detail_parts.query).get("id", [])
+            if len(torrent_ids) != 1 or not re.fullmatch(r"\d+", torrent_ids[0]):
+                continue
+            detail_url = urljoin(self._base_url, f"details.php?id={torrent_ids[0]}")
+            try:
+                if detail_url not in self._comment_page_cache:
+                    self._comment_page_cache[detail_url] = self._get_page_content(detail_url)
+                comment = self._match_torrent_comment(self._comment_page_cache[detail_url], date)
+            except Exception as err:
+                logger.warning(f"{self._site_name} 读取新评论失败，保留原通知：{err}")
+                return content, detail_url
+            if comment:
+                comment_id, author, body = comment
+                if body:
+                    content = f"{content}\n\n评论者：{author}\n评论内容：\n{body}"
+                return content, f"{detail_url}#{comment_id}"
+            return content, detail_url
+        return content, None
+
+    def _match_torrent_comment(self, html_text: str, date: str):
+        """
+        仅在时间精确匹配且评论唯一时返回评论信息，避免混入其他评论。
+        """
+        html = etree.HTML(html_text)
+        if not StringUtils.is_valid_html_element(html):
+            return None
+        comments = html.xpath(
+            '//*[contains(concat(" ", normalize-space(@class), " "), " torrent-comment-shell ")]'
+        )
+        matches = [comment for comment in comments if self.__extract_first_text(
+            comment,
+            './/*[contains(concat(" ", normalize-space(@class), " "), " torrent-comment-head__time ")]'
+        ) == date]
+        if len(matches) != 1:
+            return None
+        comment = matches[0]
+        comment_id = comment.get("id") or ""
+        if not re.fullmatch(r"\d+", comment_id):
+            return None
+        author_nodes = comment.xpath(
+            './/*[contains(concat(" ", normalize-space(@class), " "), " torrent-comment-head__meta ")]'
+        )
+        author = "未知用户"
+        if author_nodes:
+            if author_nodes[0].xpath(
+                './/*[contains(concat(" ", normalize-space(@class), " "), " anon-name ")]'
+            ):
+                author = "匿名"
+            else:
+                author = self.__extract_first_text(
+                    author_nodes[0], './/a[contains(@href, "userdetails.php")]'
+                ) or author
+        body_nodes = comment.xpath(
+            './/*[contains(concat(" ", normalize-space(@class), " "), " torrent-comment-body__content ")]'
+        )
+        body = None
+        if body_nodes:
+            # 引用中的历史回复不属于本次评论，保留引用后的正文和表情替代文本。
+            text_parts = body_nodes[0].xpath(
+                './/text()[not(ancestor::fieldset or ancestor::blockquote)]'
+                '|.//img[not(ancestor::fieldset or ancestor::blockquote)]/@alt'
+            )
+            body = self.__normalize_text(" ".join(text_parts))
+        return comment_id, author, body
+
     def _pase_unread_msgs(self):
         """
         解析 Audiences 未读消息，避免异常分页重复通知和空详情通知。
@@ -126,19 +211,22 @@ class NexusAudiencesSiteUserInfo(NexusPhpSiteUserInfo):
             self.message_unread = len(unread_msg_links)
         for msg_link in unread_msg_links:
             logger.debug(f"{self._site_name} 信息链接 {msg_link}")
-            head, date, content = self._parse_message_content(
-                self._get_page_content(
-                    urljoin(self._base_url, msg_link),
-                    params=self._mail_content_params,
-                    headers=self._mail_content_headers
-                )
+            html_text = self._get_page_content(
+                urljoin(self._base_url, msg_link),
+                params=self._mail_content_params,
+                headers=self._mail_content_headers
             )
+            head, date, content = self._parse_message_content(html_text)
             head, date, content = self.__fill_empty_message_content_from_list(msg_link, head, date, content)
             logger.debug(f"{self._site_name} 标题 {head} 时间 {date} 内容 {content}")
             if self.__is_empty_message_content(head, date, content):
                 logger.warn(f"{self._site_name} 信息链接 {msg_link} 解析结果为空，跳过消息通知")
                 continue
-            self.message_unread_contents.append((head, date, content))
+            content, comment_link = self._resolve_comment_message(html_text, head, date, content)
+            if comment_link:
+                self.message_unread_contents.append((head, date, content, None, comment_link))
+            else:
+                self.message_unread_contents.append((head, date, content))
 
     def __parse_unread_message_list_page(self, link: str, unread_msg_links: list):
         """
@@ -162,6 +250,7 @@ class NexusAudiencesSiteUserInfo(NexusPhpSiteUserInfo):
         self.__next_mail_page = 1
         self.__seen_unread_message_links.clear()
         self.__message_list_previews.clear()
+        self._comment_page_cache.clear()
 
     def __filter_new_message_links(self, message_links: list) -> list:
         """

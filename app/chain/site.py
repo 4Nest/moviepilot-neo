@@ -109,6 +109,7 @@ class SiteChain(ChainBase):
         for message in userdata.message_unread_contents:
             head, date, content, *metadata = message
             message_source = metadata[0] if metadata else None
+            message_link = metadata[1] if len(metadata) > 1 else None
             if message_source and self.messageoper.exists_by_source(message_source):
                 continue
             msg_title = f"【站点 {site.get('name')} 消息】"
@@ -118,7 +119,7 @@ class SiteChain(ChainBase):
                 mtype=NotificationType.SiteMessage,
                 title=msg_title,
                 text=msg_text,
-                link=site.get("url")
+                link=message_link or site.get("url")
             ))
 
     def refresh_userdatas(

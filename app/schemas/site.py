@@ -100,7 +100,7 @@ class SiteUserData(BaseModel):
     seeding_info: Optional[list] = Field(default_factory=list)
     # 未读消息
     message_unread: Optional[int] = 0
-    # 未读消息内容
+    # 未读消息内容：(标题, 时间, 正文[, 来源标识[, 跳转链接]])
     message_unread_contents: Optional[list] = Field(default_factory=list)
     # 错误信息
     err_msg: Optional[str] = None
