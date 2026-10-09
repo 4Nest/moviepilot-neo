@@ -1,6 +1,6 @@
 from typing import Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from app.workflow.actions import BaseAction
 from app.chain.download import DownloadChain
@@ -19,6 +19,14 @@ class AddDownloadParams(ActionParams):
     save_path: Optional[str] = Field(default=None, description="保存路径, 支持<storage>:<path>, 如rclone:/MP, smb:/server/share/Movies等")
     labels: Optional[str] = Field(default=None, description="标签（,分隔）")
     only_lack: Optional[bool] = Field(default=False, description="仅下载缺失的资源")
+
+    @field_validator("save_path", mode="before")
+    @classmethod
+    def normalize_save_path(cls, value: Optional[str]) -> Optional[str]:
+        """工作流表单留空表示自动选择目录，不作为显式空路径传给下载链。"""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 class AddDownloadAction(BaseAction):

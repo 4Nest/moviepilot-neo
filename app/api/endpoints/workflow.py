@@ -34,11 +34,15 @@ WORKFLOW_TRIGGER_MANUAL = "manual"
 async def list_workflows(
     db: AsyncSession = Depends(get_async_db),
     _: User = Depends(get_current_admin_async),
+    summary: bool = False,
 ) -> Any:
     """
     获取工作流列表
     """
-    return await WorkflowOper(db).async_list()
+    workflow_oper = WorkflowOper(db)
+    if summary:
+        return await workflow_oper.async_list_summaries()
+    return await workflow_oper.async_list()
 
 
 @router.post("/", summary="创建工作流", response_model=schemas.Response)
@@ -50,7 +54,7 @@ async def create_workflow(
     """
     创建工作流
     """
-    if workflow.name and await WorkflowOper(db).async_get_by_name(workflow.name):
+    if workflow.name and await WorkflowOper(db).async_name_exists(workflow.name):
         return schemas.Response(success=False, message="已存在相同名称的工作流")
     if not workflow.add_time:
         workflow.add_time = datetime.strftime(datetime.now(), "%Y-%m-%d %H:%M:%S")
@@ -60,7 +64,8 @@ async def create_workflow(
         workflow.trigger_type = "timer"
     workflow_obj = Workflow(**workflow.model_dump())
     await workflow_obj.async_create(db)
-    return schemas.Response(success=True, message="创建工作流成功")
+    await db.refresh(workflow_obj, attribute_names=["id"])
+    return schemas.Response(success=True, message="创建工作流成功", data={"id": workflow_obj.id})
 
 
 @router.get("/plugin/actions", summary="查询插件动作", response_model=List[dict])
@@ -177,7 +182,7 @@ async def workflow_fork(
 
     # 检查名称是否重复
     workflow_oper = WorkflowOper(db)
-    if await workflow_oper.async_get_by_name(workflow_dict["name"]):
+    if await workflow_oper.async_name_exists(workflow_dict["name"]):
         return schemas.Response(success=False, message="已存在相同名称的工作流")
 
     # 创建新工作流
@@ -358,7 +363,7 @@ def delete_workflow(
     """
     删除工作流
     """
-    workflow = WorkflowOper(db).get(workflow_id)
+    workflow = WorkflowOper(db).get_trigger_config(workflow_id)
     if not workflow:
         return schemas.Response(success=False, message="工作流不存在")
     if not workflow.trigger_type or workflow.trigger_type == WORKFLOW_TRIGGER_TIMER:

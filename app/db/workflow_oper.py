@@ -43,6 +43,18 @@ class WorkflowOper(DbOper):
         """
         return await Workflow.async_list(self._db)
 
+    async def async_list_summaries(self) -> List[dict]:
+        """异步获取工作流卡片摘要，不读取执行上下文或节点输出。"""
+        return await Workflow.async_list_summaries(self._db)
+
+    def get_trigger_config(self, wid: int) -> Optional[Workflow]:
+        """查询工作流触发配置，用于删除时清理任务注册。"""
+        return Workflow.get_trigger_config(self._db, wid)
+
+    async def async_name_exists(self, name: str) -> bool:
+        """异步检查工作流名称是否已存在。"""
+        return await Workflow.async_name_exists(self._db, name)
+
     def list_enabled(self) -> List[Workflow]:
         """
         获取启用的工作流列表

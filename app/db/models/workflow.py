@@ -4,6 +4,7 @@ from typing import Optional
 
 from sqlalchemy import Column, Integer, JSON, String, Index, and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session, load_only
 
 from app.db import Base, db_query, get_id_column, db_update, async_db_query, async_db_update
 
@@ -63,6 +64,52 @@ class Workflow(Base):
     async def async_list(cls, db: AsyncSession):
         result = await db.execute(select(cls))
         return result.scalars().all()
+
+    @classmethod
+    @async_db_query
+    async def async_list_summaries(cls, db: AsyncSession) -> builtin_list[dict]:
+        """获取卡片摘要，在数据库中排除执行上下文和节点输出，避免加载大对象。"""
+        columns = (
+            cls.id, cls.name, cls.description, cls.timer, cls.trigger_type,
+            cls.event_type, cls.state, cls.current_action, cls.result,
+            cls.run_count, cls.actions, cls.add_time, cls.last_time,
+            cls.execution_state["nodes"].label("nodes"),
+            cls.execution_state["runtime"]["finished_actions"].label("finished_actions"),
+        )
+        result = await db.execute(select(*columns))
+        summaries = []
+        for row in result.mappings():
+            summary = dict(row)
+            nodes = summary.pop("nodes")
+            finished_actions = summary.pop("finished_actions")
+            summary["actions"] = [
+                {key: action.get(key) for key in ("id", "name", "type")}
+                for action in (summary["actions"] or [])
+            ]
+            summary["execution_state"] = {
+                "nodes": {
+                    action_id: {"state": metadata.get("state")}
+                    for action_id, metadata in (nodes or {}).items()
+                },
+                "runtime": {"finished_actions": finished_actions} if finished_actions is not None else {},
+            }
+            summaries.append(summary)
+        return summaries
+
+    @classmethod
+    @db_query
+    def get_trigger_config(cls, db: Session, wid: int) -> Optional["Workflow"]:
+        """获取删除所需的触发配置，禁止隐式加载动作和运行数据。"""
+        return db.query(cls).options(load_only(
+            cls.id, cls.name, cls.trigger_type, cls.event_type, raiseload=True
+        )).filter(cls.id == wid).first()
+
+    @classmethod
+    @async_db_query
+    async def async_name_exists(cls, db: AsyncSession, name: str) -> bool:
+        """检查工作流名称是否已存在，只查询标识。"""
+        result = await db.execute(select(cls.id).where(cls.name == name).limit(1))
+        return result.scalar() is not None
 
     @classmethod
     @db_query

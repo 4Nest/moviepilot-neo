@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from app.schemas import ActionContext, DownloadTask, FileItem
 from app.schemas.workflow import ActionResult
 from app.workflow.actions import BaseAction
@@ -11,6 +13,41 @@ from app.workflow.actions.fetch_torrents import FetchTorrentsAction
 from app.workflow.actions.scrape_file import ScrapeFileAction
 from app.workflow.actions.fetch_rss import FetchRssAction
 from app.workflow import WorkFlowManager
+from app.workflow.actions import add_download as add_download_module
+from app.workflow.actions.add_download import AddDownloadAction, AddDownloadParams
+
+
+@pytest.mark.parametrize("save_path", [None, "", "   ", "\t\n"])
+def test_add_download_blank_path_uses_automatic_directory(monkeypatch, save_path):
+    """工作流留空目录应传 None 给下载链，恢复留空自动选择目录的语义。"""
+    paths = []
+
+    class FakeDownloadChain:
+        """记录参数，不连接真实下载器。"""
+
+        def download_single(self, **kwargs):
+            """返回模拟下载任务标识。"""
+            paths.append(kwargs["save_path"])
+            return "test-hash"
+
+    monkeypatch.setattr(add_download_module, "DownloadChain", FakeDownloadChain)
+    monkeypatch.setattr(add_download_module.global_vars, "is_workflow_stopped", lambda _: False)
+    monkeypatch.setattr(AddDownloadAction, "check_cache", lambda *_: False)
+    monkeypatch.setattr(AddDownloadAction, "save_cache", lambda *_: None)
+    monkeypatch.setattr(AddDownloadAction, "job_done", lambda *_: None)
+    context = ActionContext.model_construct(torrents=[SimpleNamespace(
+        torrent_info=SimpleNamespace(site="CHD", title="测试种子"),
+        meta_info=SimpleNamespace(), media_info=SimpleNamespace(),
+    )], downloads=[])
+    result = AddDownloadAction("download").execute(1, {"save_path": save_path}, context)
+    assert paths == [None]
+    assert result.downloads[0].download_id == "test-hash"
+
+
+@pytest.mark.parametrize("save_path", ["/downloads", "local:/downloads", "local:", "smb:/server/share"])
+def test_add_download_preserves_explicit_save_path(save_path):
+    """显式路径继续交给下载链校验，不能放宽全局路径安全规则。"""
+    assert AddDownloadParams(save_path=save_path).save_path == save_path
 
 
 def test_fetch_downloads_updates_context_downloads(monkeypatch):
