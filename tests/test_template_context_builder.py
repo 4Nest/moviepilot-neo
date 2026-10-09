@@ -10,6 +10,9 @@ TemplateContextBuilder 的并发安全单元测试。
 """
 import threading
 
+import pytest
+from jinja2 import Template
+
 from app.core.context import MediaInfo
 from app.core.metainfo import MetaInfo
 from app.helper.message import TemplateContextBuilder
@@ -19,6 +22,56 @@ from app.schemas.tmdb import TmdbEpisode
 
 THREAD_COUNT = 8
 ITERATIONS_PER_THREAD = 200
+
+
+@pytest.mark.parametrize("prefix, resource_team, expected", [
+    ("[三明治摆烂组&LoliHouse]", "三明治摆烂组@LoliHouse", "三明治摆烂组&LoliHouse"),
+    ("[LoliHouse&三明治摆烂组]", "LoliHouse@三明治摆烂组", "LoliHouse&三明治摆烂组"),
+    ("[三明治摆烂组 & LoliHouse]", "三明治摆烂组@LoliHouse", "三明治摆烂组 & LoliHouse"),
+    ("【三明治摆烂组&LoliHouse】", "三明治摆烂组@LoliHouse", "三明治摆烂组&LoliHouse"),
+    ("[DMG&VCB-Studio&LoliHouse]", "DMG@VCB-Studio@LoliHouse", "DMG&VCB-Studio&LoliHouse"),
+    ("[A+B&组(1)]", "A+B@组(1)", "A+B&组(1)"),
+    ("[三明治摆烂组@LoliHouse]", "三明治摆烂组@LoliHouse", "三明治摆烂组@LoliHouse"),
+    ("[三明治摆烂组][LoliHouse]", "三明治摆烂组@LoliHouse", "三明治摆烂组@LoliHouse"),
+    ("[LoliHouse]", "LoliHouse", "LoliHouse"),
+    ("", "三明治摆烂组@LoliHouse", "三明治摆烂组@LoliHouse"),
+    ("[不相关组&LoliHouse]", "三明治摆烂组@LoliHouse", "三明治摆烂组@LoliHouse"),
+    ("[三明治摆烂组&LoliHouse&未知组]", "三明治摆烂组@LoliHouse", "三明治摆烂组&LoliHouse&未知组"),
+    ("[未知字幕组&LoliHouse]", "LoliHouse", "未知字幕组&LoliHouse"),
+    ("[CHS&CHT]", "LoliHouse", "LoliHouse"),
+    ("[../未知组&LoliHouse]", "LoliHouse", "LoliHouse"),
+])
+def test_rename_template_preserves_original_joint_group(prefix, resource_team, expected):
+    """实际渲染的文件名保留原联合组分隔符，订阅使用的内部组名保持不变。"""
+    meta = _build_fake_meta()
+    meta.title = f"{prefix} Anime S01E01 [1080p].mkv"
+    meta.resource_team = resource_team
+    context = TemplateContextBuilder().build(meta=meta, file_extension=".mkv")
+
+    renamed = Template("Anime - S01E01 - {{releaseGroup}}{{fileExt}}").render(context)
+
+    assert renamed == f"Anime - S01E01 - {expected}.mkv"
+    assert meta.resource_team == resource_team
+    assert context["original_name"] == meta.title
+
+
+@pytest.mark.parametrize("rust_enabled", [False, True])
+def test_rename_template_preserves_joint_group_from_real_metadata(monkeypatch, rust_enabled):
+    """从真实动漫解析到模板渲染的流程应保留 &，无需调整重命名模板。"""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "RUST_ACCEL", rust_enabled)
+    meta = MetaInfo(
+        "[三明治摆烂组&LoliHouse] Kyouran Reijou Nia Liston - 01 "
+        "[WebRip 1080p HEVC-10bit AAC][简繁日内封字幕].mkv"
+    )
+    context = TemplateContextBuilder().build(meta=meta, file_extension=".mkv")
+    renamed = Template("{{name}} - {{season_episode}} - {{releaseGroup}}{{fileExt}}").render(context)
+
+    assert context["releaseGroup"] == "三明治摆烂组&LoliHouse"
+    assert renamed.endswith(" - 三明治摆烂组&LoliHouse.mkv")
+    assert "LoliHouse" in meta.resource_team
+    assert "&" not in meta.resource_team
 
 
 def _build_fake_meta():

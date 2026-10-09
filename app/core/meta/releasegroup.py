@@ -1,3 +1,5 @@
+from typing import Optional
+
 import regex as re
 
 from app.helper.words import WordsHelper
@@ -127,3 +129,21 @@ class ReleaseGroupsMatcher(metaclass=Singleton):
                 unique_groups.append(item_str)
 
         return "@".join(unique_groups)
+
+    @staticmethod
+    def original_joint_group(title: Optional[str], resource_team: Optional[str]) -> Optional[str]:
+        """
+        用已识别组名验证原始联合组标签，供重命名和订阅补足未知组名。
+        """
+        if not title or not resource_team:
+            return None
+        groups = {group.strip().casefold() for group in re.split(r"[@&]", resource_team) if group.strip()}
+        if not groups:
+            return None
+        for match in re.finditer(r"\[([^\[\]]+&[^\[\]]+)\]|【([^【】]+&[^【】]+)】", title):
+            original_group = (match.group(1) or match.group(2)).strip()
+            members = [member.strip().casefold() for member in original_group.split("&")]
+            # 标签必须包含全部已识别组名，避免从字幕或技术标签中补出制作组。
+            if all(members) and groups.issubset(members) and not re.search(r'[/\\:*?"<>|]', original_group):
+                return original_group
+        return None

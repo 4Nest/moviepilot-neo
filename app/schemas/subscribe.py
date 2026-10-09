@@ -97,7 +97,9 @@ class SubscribeVersionRule(BaseModel):
     id: str
     name: str
     enabled: bool = True
-    release_group: Optional[str] = None
+    release_group: Optional[str] = Field(
+        None, description="制作组规则：A&B 或 A@B 要求成员全部参与且顺序不限，其余表达式按正则匹配"
+    )
     settings: SubscribeVersionSettings
 
     model_config = ConfigDict(extra="forbid")

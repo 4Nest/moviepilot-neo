@@ -17,6 +17,7 @@ from app.core.cache import TTLCache
 from app.core.config import global_vars
 from app.core.context import MediaInfo, TorrentInfo
 from app.core.meta import MetaBase
+from app.core.meta.releasegroup import ReleaseGroupsMatcher
 from app.db.systemconfig_oper import SystemConfigOper
 from app.log import logger
 from app.schemas.message import Notification
@@ -223,7 +224,7 @@ class TemplateContextBuilder:
             # 质量
             "resource_term": meta.resource_term,
             # 制作组/字幕组
-            "releaseGroup": meta.resource_team,
+            "releaseGroup": cls._format_release_group(meta.title, meta.resource_team),
             # 视频编码
             "videoCodec": meta.video_encode,
             # 视频位深
@@ -234,6 +235,15 @@ class TemplateContextBuilder:
             "webSource": meta.web_source,
         }
         context.update({**meta_info, **tech_metadata, **episode_data})
+
+    @staticmethod
+    def _format_release_group(title: Optional[str], resource_team: Optional[str]) -> Optional[str]:
+        """
+        模板输出保留原始方括号中联合组的 & 分隔符，内部制作组字段保持不变。
+        """
+        if not title or not resource_team:
+            return resource_team
+        return ReleaseGroupsMatcher.original_joint_group(title, resource_team) or resource_team
 
     @staticmethod
     def _add_torrent_info(context: Dict[str, Any], torrentinfo: Optional[TorrentInfo]) -> None:

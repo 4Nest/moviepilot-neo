@@ -19,6 +19,7 @@ from app.core.config import settings, global_vars
 from app.core.context import TorrentInfo, Context, MediaInfo
 from app.core.event import eventmanager, Event
 from app.core.meta import MetaBase
+from app.core.meta.releasegroup import ReleaseGroupsMatcher
 from app.core.meta.words import WordsMatcher
 from app.core.metainfo import MetaInfo
 from app.db.downloadhistory_oper import DownloadHistoryOper
@@ -134,15 +135,33 @@ def merge_subscribe_version_settings(subscribe: Subscribe, rule: dict) -> dict:
 
 
 def match_version_rule(context: Context, rule: dict) -> bool:
-    """匹配版本制作组；缺失制作组证据时不满足显式约束。"""
+    """联合组字面规则要求成员全部参与且顺序不限，其余规则保留正则匹配。"""
     release_group = rule.get("release_group") if isinstance(rule, dict) else None
     if not release_group:
         return True
     resource_team = getattr(getattr(context, "meta_info", None), "resource_team", None)
     if not resource_team:
         resource_team = getattr(getattr(context, "torrent_info", None), "resource_team", None)
+    if not resource_team:
+        return False
     try:
-        return bool(resource_team and re.search(release_group, str(resource_team)))
+        if re.fullmatch(r"[\w -]+(?:[@&][\w -]+)+", release_group):
+            required_groups = {group.strip().casefold() for group in re.split(r"[@&]", release_group)}
+            if "" in required_groups:
+                return False
+            members = {group.strip().casefold() for group in re.split(r"[@&]", str(resource_team))}
+            if required_groups.issubset(members):
+                return True
+            for source in (getattr(context, "meta_info", None), getattr(context, "torrent_info", None)):
+                original_group = ReleaseGroupsMatcher.original_joint_group(
+                    getattr(source, "title", None), str(resource_team)
+                )
+                if original_group:
+                    original_members = {group.strip().casefold() for group in original_group.split("&")}
+                    if required_groups.issubset(original_members):
+                        return True
+            return False
+        return bool(re.search(release_group, str(resource_team)))
     except re.error:
         logger.warning("跳过非法版本制作组正则: %s", release_group)
         return False
