@@ -4,7 +4,8 @@ import pytest
 
 from app.chain.subscribe import match_version_rule
 from app.core.config import settings
-from app.core.metainfo import MetaInfo
+from app.core.metainfo import MetaInfo, clear_rust_parse_options_cache
+from app.core.meta.releasegroup import ReleaseGroupsMatcher
 from app.helper.message import TemplateContextBuilder
 
 
@@ -74,4 +75,56 @@ def test_real_anime_subscription_and_rename_agree(monkeypatch, rust_enabled, pre
     context = SimpleNamespace(meta_info=meta, torrent_info=None)
 
     assert match_version_rule(context, {"release_group": "三明治摆烂组&LoliHouse"})
+    assert meta.resource_team == prefix[1:-1]
     assert TemplateContextBuilder().build(meta=meta)["releaseGroup"] == prefix[1:-1]
+
+
+@pytest.mark.parametrize("rust_enabled", [False, True])
+@pytest.mark.parametrize("known_alias", [False, True])
+@pytest.mark.parametrize("prefix, expected", [
+    ("[smzase&LoliHouse]", "三明治摆烂组&LoliHouse"),
+    ("[smzase & LoliHouse]", "三明治摆烂组 & LoliHouse"),
+    ("【smzase&LoliHouse】", "三明治摆烂组&LoliHouse"),
+])
+def test_joint_group_alias_replacement_reaches_subscription_and_rename(
+    monkeypatch, rust_enabled, known_alias, prefix, expected,
+):
+    """识别词转换制作组别名后，订阅和重命名应使用转换后的联合组标签。"""
+    groups = ReleaseGroupsMatcher().get_release_groups()
+    if known_alias:
+        groups += "|三明治摆烂组"
+    monkeypatch.setattr(ReleaseGroupsMatcher, "get_release_groups", lambda _self: groups)
+    monkeypatch.setattr(settings, "RUST_ACCEL", rust_enabled)
+    clear_rust_parse_options_cache()
+    try:
+        title = f"{prefix} Kyouran Reijou Nia Liston - 01 [WebRip 1080p HEVC-10bit AAC ASSx2].mkv"
+        meta = MetaInfo(title, custom_words=["smzase => 三明治摆烂组"])
+        context = SimpleNamespace(meta_info=meta, torrent_info=None)
+
+        assert meta.title == title
+        assert expected in meta.org_string
+        assert meta.resource_team == expected
+        resource_team = meta.resource_team
+        assert match_version_rule(context, {"release_group": "三明治摆烂组&LoliHouse"})
+        assert TemplateContextBuilder().build(meta=meta)["releaseGroup"] == expected
+        assert meta.resource_team == resource_team
+    finally:
+        clear_rust_parse_options_cache()
+
+
+@pytest.mark.parametrize("rust_enabled", [False, True])
+@pytest.mark.parametrize("title, expected", [
+    ("[SweetSub&LoliHouse] Anime - 01 [ANi]", "SweetSub&LoliHouse@ANi"),
+    ("Anime.S01E01.1080p-SweetSub&LoliHouse", "SweetSub&LoliHouse"),
+    ("[SweetSub@LoliHouse] Anime - 01", "SweetSub@LoliHouse"),
+])
+def test_metadata_preserves_group_separators_across_parsers(monkeypatch, rust_enabled, title, expected):
+    """方括号标签、文件名尾缀及独立参与组在两个解析入口中保持相同分隔符。"""
+    monkeypatch.setattr(settings, "RUST_ACCEL", rust_enabled)
+    meta = MetaInfo(title, custom_words=["#"])
+
+    assert meta.resource_team == expected
+    assert TemplateContextBuilder().build(meta=meta)["releaseGroup"] == expected
+    assert match_version_rule(SimpleNamespace(meta_info=meta, torrent_info=None), {
+        "release_group": "SweetSub&LoliHouse",
+    })

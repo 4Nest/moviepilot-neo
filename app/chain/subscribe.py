@@ -153,13 +153,14 @@ def match_version_rule(context: Context, rule: dict) -> bool:
             if required_groups.issubset(members):
                 return True
             for source in (getattr(context, "meta_info", None), getattr(context, "torrent_info", None)):
-                original_group = ReleaseGroupsMatcher.original_joint_group(
-                    getattr(source, "title", None), str(resource_team)
-                )
-                if original_group:
-                    original_members = {group.strip().casefold() for group in original_group.split("&")}
-                    if required_groups.issubset(original_members):
-                        return True
+                for candidate in (getattr(source, "org_string", None), getattr(source, "title", None)):
+                    original_group = ReleaseGroupsMatcher.original_joint_group(candidate, str(resource_team))
+                    if original_group:
+                        original_members = {
+                            group.strip().casefold() for group in re.split(r"[@&]", original_group)
+                        }
+                        if required_groups.issubset(original_members):
+                            return True
             return False
         return bool(re.search(release_group, str(resource_team)))
     except re.error:

@@ -615,7 +615,7 @@ def test_title_number_range_not_misread_as_episode_range():
     assert "17" in meta.en_name and "26" in meta.en_name
     assert meta.resource_type == "WebRip"
     assert meta.video_encode == "x265 10bit"
-    assert meta.resource_team == "SweetSub@LoliHouse"
+    assert meta.resource_team == "SweetSub&LoliHouse"
 
 
 def test_streaming_platform_word_kept_in_movie_title():

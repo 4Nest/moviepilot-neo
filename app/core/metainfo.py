@@ -20,6 +20,7 @@ from app.core.meta.infopath import (
     should_use_parent_title_for_file_stem,
 )
 from app.core.meta.metavideo import has_hash_episode, is_part_value
+from app.core.meta.releasegroup import ReleaseGroupsMatcher
 from app.core.meta.words import WordsMatcher
 from app.log import logger
 from app.schemas.types import MediaType
@@ -431,6 +432,15 @@ def _meta_from_rust(parsed: dict) -> Optional[MetaBase]:
     }
     for key, value in fields.items():
         setattr(meta, key, value)
+    # Rust 扩展仍统一输出 @，只用其已识别成员重新定位原始分隔符。
+    prepared_title = meta.org_string or meta.title
+    if meta.resource_team and "&" in prepared_title:
+        members = {group.strip().casefold() for group in re.split(r"[@&]", meta.resource_team) if group.strip()}
+        groups = "|".join(re.escape(group) for group in members)
+        original_group = ReleaseGroupsMatcher().match(prepared_title, groups=groups)
+        original_members = {group.strip().casefold() for group in re.split(r"[@&]", original_group)}
+        if members.issubset(original_members):
+            meta.resource_team = original_group
     # 统一资源类型写法,Rust 大写形式与 Python/动漫回退保持一致
     if meta.resource_type and meta.resource_type.upper() == "WEBRIP":
         meta.resource_type = "WebRip"

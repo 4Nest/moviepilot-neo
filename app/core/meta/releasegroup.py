@@ -110,7 +110,7 @@ class ReleaseGroupsMatcher(metaclass=Singleton):
             self.__groups_re_cache[groups] = groups_re
         return groups_re
 
-    def match(self, title: str = None, groups: str = None):
+    def match(self, title: Optional[str] = None, groups: Optional[str] = None) -> str:
         """
         :param title: 资源标题或文件名
         :param groups: 制作组/字幕组
@@ -123,27 +123,46 @@ class ReleaseGroupsMatcher(metaclass=Singleton):
         title = f"{title} "
         groups_re = self.__get_groups_re(groups)
         unique_groups = []
-        for item in groups_re.findall(title):
-            item_str = item[0] if isinstance(item, tuple) else item
-            if item_str not in unique_groups:
-                unique_groups.append(item_str)
+        resource_team = ""
+        previous_end = None
+        for match in groups_re.finditer(title):
+            item_str = match.group()
+            if item_str in unique_groups:
+                continue
+            if resource_team:
+                between_groups = title[previous_end:match.start()]
+                # 只有直接相连的组名沿用分隔符，独立标签仍按原有方式合并。
+                resource_team += between_groups if between_groups.strip() in ("&", "@") else "@"
+            resource_team += item_str
+            previous_end = match.end()
+            unique_groups.append(item_str)
 
-        return "@".join(unique_groups)
+        return self.original_joint_group(title, resource_team) or resource_team
 
     @staticmethod
     def original_joint_group(title: Optional[str], resource_team: Optional[str]) -> Optional[str]:
         """
-        用已识别组名验证原始联合组标签，供重命名和订阅补足未知组名。
+        验证原标题中的联合组标签或连续组名，保留 & 并补足标签中的未知成员。
         """
-        if not title or not resource_team:
+        if not title or not resource_team or "&" not in title:
             return None
         groups = {group.strip().casefold() for group in re.split(r"[@&]", resource_team) if group.strip()}
         if not groups:
             return None
         for match in re.finditer(r"\[([^\[\]]+&[^\[\]]+)\]|【([^【】]+&[^【】]+)】", title):
             original_group = (match.group(1) or match.group(2)).strip()
-            members = [member.strip().casefold() for member in original_group.split("&")]
+            members = [member.strip().casefold() for member in re.split(r"[@&]", original_group)]
             # 标签必须包含全部已识别组名，避免从字幕或技术标签中补出制作组。
             if all(members) and groups.issubset(members) and not re.search(r'[/\\:*?"<>|]', original_group):
                 return original_group
+        if len(groups) > 1:
+            # 文件名末尾的 A&B 没有括号，也须从连续组名中恢复真实分隔符。
+            member_pattern = "(?:" + "|".join(re.escape(group) for group in groups) + ")"
+            for match in re.finditer(
+                rf"(?<!\w){member_pattern}(?:\s*[@&]\s*{member_pattern})+(?![\w-])", title, re.I,
+            ):
+                original_group = match.group()
+                members = {member.strip().casefold() for member in re.split(r"[@&]", original_group)}
+                if "&" in original_group and groups.issubset(members):
+                    return original_group
         return None

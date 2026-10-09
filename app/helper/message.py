@@ -224,7 +224,9 @@ class TemplateContextBuilder:
             # 质量
             "resource_term": meta.resource_term,
             # 制作组/字幕组
-            "releaseGroup": cls._format_release_group(meta.title, meta.resource_team),
+            "releaseGroup": cls._format_release_group(
+                meta.title, meta.resource_team, getattr(meta, "org_string", None)
+            ),
             # 视频编码
             "videoCodec": meta.video_encode,
             # 视频位深
@@ -237,13 +239,18 @@ class TemplateContextBuilder:
         context.update({**meta_info, **tech_metadata, **episode_data})
 
     @staticmethod
-    def _format_release_group(title: Optional[str], resource_team: Optional[str]) -> Optional[str]:
+    def _format_release_group(
+        title: Optional[str], resource_team: Optional[str], org_string: Optional[str] = None,
+    ) -> Optional[str]:
         """
-        模板输出保留原始方括号中联合组的 & 分隔符，内部制作组字段保持不变。
+        模板优先使用识别词处理后的联合组标签，保留 & 和替换后的组名。
         """
-        if not title or not resource_team:
-            return resource_team
-        return ReleaseGroupsMatcher.original_joint_group(title, resource_team) or resource_team
+        # 组名别名被识别词替换后，原文件名的标签已无法验证完整成员。
+        for candidate in (org_string, title):
+            original_group = ReleaseGroupsMatcher.original_joint_group(candidate, resource_team)
+            if original_group:
+                return original_group
+        return resource_team
 
     @staticmethod
     def _add_torrent_info(context: Dict[str, Any], torrentinfo: Optional[TorrentInfo]) -> None:

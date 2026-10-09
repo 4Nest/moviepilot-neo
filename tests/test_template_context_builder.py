@@ -71,7 +71,7 @@ def test_rename_template_preserves_joint_group_from_real_metadata(monkeypatch, r
     assert context["releaseGroup"] == "三明治摆烂组&LoliHouse"
     assert renamed.endswith(" - 三明治摆烂组&LoliHouse.mkv")
     assert "LoliHouse" in meta.resource_team
-    assert "&" not in meta.resource_team
+    assert meta.resource_team == "三明治摆烂组&LoliHouse"
 
 
 def _build_fake_meta():
