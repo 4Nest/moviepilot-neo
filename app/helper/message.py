@@ -10,8 +10,10 @@ import time
 from datetime import datetime
 from typing import Any, Literal, Optional, List, Dict, Union
 from typing import Callable
+from urllib.parse import urlsplit
 
 from jinja2 import Template
+from lxml import etree
 
 from app.core.cache import TTLCache
 from app.core.config import global_vars
@@ -33,7 +35,7 @@ class TemplateContextBuilder:
     """
     模板上下文构建器。
 
-    无状态实现：所有 ``_add_*`` 方法均为静态方法，接受并就地修改调用方提供的
+    无状态实现：所有 ``_add_*`` 方法均不持有实例状态，接受并就地修改调用方提供的
     ``context`` 字典。``build`` 每次调用都基于一份新的本地字典装填后返回，
     实例自身不持有任何中间状态——可以被多线程共享调用而不会产生互相串味的
     ``rename_dict``，配合 ``settings.TRANSFER_THREADS > 1`` 的并发整理场景安全。
@@ -41,6 +43,12 @@ class TemplateContextBuilder:
     保留为类（而非自由函数）是为了向后兼容现有调用方式
     （``TemplateHelper().builder.build(...)``）。
     """
+
+    BT_DESCRIPTION_SUMMARY_HOSTS = {
+        "anibt.net", "dmhy.org", "share.dmhy.org", "bangumi.moe",
+        "comicat.org", "kisssub.org", "miobt.com",
+    }
+    MAX_BT_DESCRIPTION_LENGTH = 200
 
     def build(
             self,
@@ -253,14 +261,35 @@ class TemplateContextBuilder:
                 return original_group
         return resource_team
 
-    @staticmethod
-    def _add_torrent_info(context: Dict[str, Any], torrentinfo: Optional[TorrentInfo]) -> None:
-        """
-        将种子信息写入 ``context``，描述字段会去除 HTML 标签。
+    @classmethod
+    def _get_bt_description_summary(cls, description: str) -> str:
+        """提取 BT 发布正文的首行有效文字，控制通知长度并跳过图片及宣传正文。"""
+        # 先保留段落和换行边界，避免去标签后标题与后续正文连成一行。
+        description = re.sub(
+            r"<(?:br|hr)\b[^>]*>|</(?:p|div|h[1-6]|li|blockquote|tr|pre)\s*>",
+            "\n", description, flags=re.IGNORECASE,
+        )
+        root = etree.HTML(description, parser=etree.HTMLParser(no_network=True))
+        if root is None:
+            return ""
+        etree.strip_elements(root, "script", "style", with_tail=False)
+        for line in "".join(root.itertext()).splitlines():
+            summary = " ".join(line.split())
+            if not any(char.isalnum() for char in summary):
+                continue
+            if re.fullmatch(r"!\[[^\]]*\](?:\([^)]*\)|\[[^\]]*\])", summary):
+                continue
+            if len(summary) > cls.MAX_BT_DESCRIPTION_LENGTH:
+                return summary[:cls.MAX_BT_DESCRIPTION_LENGTH].rstrip() + "…"
+            return summary
+        return ""
 
-        副作用提醒：当 ``torrentinfo.description`` 包含 HTML 时，会就地清洗
-        原对象的 description 字段——保留原始行为，避免破坏现有调用方对清洗后
-        描述的依赖。
+    @classmethod
+    def _add_torrent_info(cls, context: Dict[str, Any], torrentinfo: Optional[TorrentInfo]) -> None:
+        """
+        将种子信息写入 ``context``；已确认携带发布正文的 BT 站点显示简短摘要。
+
+        只清洗模板中的描述，原始种子描述保留供识别、过滤和下载记录使用。
         """
         if not torrentinfo:
             return
@@ -272,10 +301,16 @@ class TemplateContextBuilder:
         else:
             size = 0
 
-        if torrentinfo.description:
-            html_re = re.compile(r'<[^>]+>', re.S)
-            description = html_re.sub('', torrentinfo.description)
-            torrentinfo.description = re.sub(r'<[^>]+>', '', description)
+        description = torrentinfo.description
+        if description:
+            try:
+                hostname = (urlsplit(torrentinfo.page_url or "").hostname or "").removeprefix("www.")
+            except ValueError:
+                hostname = ""
+            if hostname in cls.BT_DESCRIPTION_SUMMARY_HOSTS:
+                description = cls._get_bt_description_summary(description)
+            else:
+                description = re.sub(r'<[^>]+>', '', description, flags=re.S)
 
         torrent_info = {
             # 种子标题
@@ -293,7 +328,7 @@ class TemplateContextBuilder:
             # 种子标签
             "labels": ' '.join(torrentinfo.labels),
             # 描述
-            "description": torrentinfo.description,
+            "description": description,
             # 站点名称
             "site_name": torrentinfo.site_name,
             # 种子大小

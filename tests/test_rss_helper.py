@@ -11,7 +11,7 @@ from app.utils.http import RequestUtils
 @pytest.fixture(params=["python", "rust"])
 def parse_rss(monkeypatch, request):
     """模拟 RSS 响应，分别验证 Python 和 Rust 解析后的统一处理。"""
-    def _parse(title, description="", query="ismalldescr=1"):
+    def _parse(title, description="", query="ismalldescr=1", feed_url="https://example.com/torrentrss.php"):
         xml = (
             f"<rss><channel><item><title>{escape(title)}</title>"
             f"<description>{escape(description)}</description>"
@@ -27,8 +27,27 @@ def parse_rss(monkeypatch, request):
               "enclosure": "https://example.com/download.php?id=1", "pubdate": ""}]
             if request.param == "rust" else None
         ))
-        return RssHelper().parse(f"https://example.com/torrentrss.php?{query}")[0]
+        return RssHelper().parse(f"{feed_url}?{query}")[0]
     return _parse
+
+
+@pytest.mark.parametrize("feed_url", [
+    "https://anibt.net/rss/magnets.xml",
+    "https://share.dmhy.org/topics/rss/rss.xml",
+    "https://bangumi.moe/rss/latest",
+    "https://www.comicat.org/rss.xml",
+    "https://www.kisssub.org/rss.xml",
+    "https://www.miobt.com/rss.xml",
+])
+def test_bt_rss_preserves_release_body_for_recognition(parse_rss, feed_url):
+    """通知摘要不能通过截断 RSS 原文实现，否则会影响字幕等条件的识别和过滤。"""
+    title = "[三明治摆烂组&LoliHouse] Example S02 - 02 [WebRip 1080p][简繁日内封字幕]"
+    description = '<p>资源摘要</p><hr/><p>字幕：简繁日内封</p><p>发布说明和播放器推荐</p>'
+    item = parse_rss(title, description, query="", feed_url=feed_url)
+    assert item["title"] == title
+    assert item["description"] == description
+    assert item["size"] == 1024
+    assert item["enclosure"] == "https://example.com/download.php?id=1"
 
 
 def test_rss_splits_nexus_subtitle_with_nested_brackets(parse_rss):

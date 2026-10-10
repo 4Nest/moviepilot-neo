@@ -13,7 +13,7 @@ import threading
 import pytest
 from jinja2 import Template
 
-from app.core.context import MediaInfo
+from app.core.context import MediaInfo, TorrentInfo
 from app.core.metainfo import MetaInfo
 from app.helper.message import TemplateContextBuilder
 from app.schemas.types import MediaType
@@ -23,6 +23,84 @@ from app.utils.system import SystemUtils
 
 THREAD_COUNT = 8
 ITERATIONS_PER_THREAD = 200
+
+
+@pytest.mark.parametrize("page_url", [
+    "https://anibt.net/release/example",
+    "https://www.anibt.net/release/example",
+    "https://share.dmhy.org/topics/view/example.html",
+    "https://dmhy.org/topics/view/example.html",
+    "https://bangumi.moe/torrent/example",
+    "https://www.comicat.org/show-example.html",
+    "https://www.kisssub.org/show-example.html",
+    "https://www.miobt.com/show-example.html",
+])
+def test_bt_notification_shows_summary_without_changing_original_description(page_url):
+    """长正文只在通知中显示摘要，原始描述、标题和下载地址保持不变。"""
+    title = "[三明治摆烂组&LoliHouse] Example S02 - 02 [WebRip 1080p][简繁日内封字幕]"
+    description = (
+        "<p><strong>转生就是剑 第二季 / Reincarnated as a Sword Season 2</strong> · 2 · v1</p>"
+        '<hr/>来源: https://nyaa.si/view/2172191<br/>'
+        "<strong>字幕：三明治摆烂组</strong><br/>"
+        "<strong>为了顺利观看，推荐使用播放器</strong>"
+        '<hr/><p>🏷️ LoliHouse · 📺 1080p · 💾 722.81 MB</p>'
+        '<p>⬇️ <a href="https://anibt.net/api/torrent/example.torrent">下载种子</a></p>'
+    )
+    torrent_info = TorrentInfo(title=title, description=description, page_url=page_url, enclosure="magnet:example")
+    context = TemplateContextBuilder().build(torrentinfo=torrent_info)
+    rendered = Template("📝 描述：{{ description }}").render(context)
+
+    assert rendered == "📝 描述：转生就是剑 第二季 / Reincarnated as a Sword Season 2 · 2 · v1"
+    assert context["torrent_title"] == title
+    assert torrent_info.description == description
+    assert torrent_info.enclosure == "magnet:example"
+
+
+@pytest.mark.parametrize("description, expected", [
+    ('<p><img src="https://example.com/poster.jpg"/></p><p><strong><br/>动画标题<br/>'
+     '字幕：简繁内封<br/>脚本：发布者</strong></p><hr/><p>播放器推荐</p>', "动画标题"),
+    ('<p><img src="https://example.com/poster.jpg"/></p><hr/><p><h3><strong><em>Vertex Force</em>'
+     '</strong> - EP 02</h3><a href="https://example.com">AniList</a></p><hr/><p>Information:</p>',
+     "Vertex Force - EP 02"),
+    ("<br/><p><span>影片日亞自載，粵語聲軌載自官網</span></p><br/><p>宣传正文</p>",
+     "影片日亞自載，粵語聲軌載自官網"),
+    ("<p><strong>A &amp; B</strong> / <em>Example</em> · 02 · v2</p><hr/><p>正文</p>",
+     "A & B / Example · 02 · v2"),
+    ("<script>tracker()</script><style>body{color:red}</style><img src='poster.jpg'/><p>有效摘要</p>",
+     "有效摘要"),
+    ("![][0]\n⦁\n动画标题\n发布说明", "动画标题"),
+    ("<p>" + "长" * 240 + "</p><p>播放器推荐</p>", "长" * 200 + "…"),
+    ('<p><img src="poster.jpg"/></p>', ""),
+    ("纯文本简短描述", "纯文本简短描述"),
+])
+def test_bt_notification_handles_release_body_layouts(description, expected):
+    """兼容图片开头、换行、无效段落嵌套和长段落，正文不再填满通知。"""
+    torrent_info = TorrentInfo(title="Example", description=description, page_url="https://bangumi.moe/torrent/example")
+    context = TemplateContextBuilder().build(torrentinfo=torrent_info)
+
+    assert context["description"] == expected
+    assert torrent_info.description == description
+
+
+@pytest.mark.parametrize("page_url", [
+    "https://mikanani.me/Home/Episode/example",
+    "https://mikanani.tv/Home/Episode/example",
+    "https://nyaa.si/view/123",
+    "https://acg.rip/t/123",
+    "https://example.com/details.php?id=123",
+    "https://bangumi.moe.example.com/torrent/example",
+    "https://example.com/?url=https://bangumi.moe/torrent/example",
+    "http://[invalid",
+    None,
+])
+def test_other_notification_descriptions_are_not_summarized(page_url):
+    """未发现长正文问题的站点及 PT 副标题不截断，伪装域名不能命中 BT 摘要规则。"""
+    description = "<p>中文副标题</p>\n<p>内封字幕与制作说明</p>\n" + "重要说明" * 80
+    torrent_info = TorrentInfo(title="Example", description=description, page_url=page_url)
+    context = TemplateContextBuilder().build(torrentinfo=torrent_info)
+
+    assert context["description"] == "中文副标题\n内封字幕与制作说明\n" + "重要说明" * 80
+    assert torrent_info.description == description
 
 
 def test_rename_preserves_chinese_and_english_title_punctuation(monkeypatch, tmp_path):
