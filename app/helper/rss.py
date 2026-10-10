@@ -1,7 +1,7 @@
 import re
 import traceback
 from typing import List, Tuple, Union, Optional
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 from lxml import etree
 
@@ -243,6 +243,67 @@ class RssHelper:
             logger.warning(f"RSS条目过多: 超过{self.MAX_RSS_ITEMS}，仅处理前{self.MAX_RSS_ITEMS}个")
         return rust_items[:self.MAX_RSS_ITEMS]
 
+    @staticmethod
+    def _split_trailing_bracket(title: str) -> Optional[tuple[str, str, str]]:
+        """读取末尾完整方括号，保留副标题内部的嵌套括号。"""
+        title = title.rstrip()
+        if not title.endswith("]"):
+            return None
+        depth = 0
+        for index in range(len(title) - 1, -1, -1):
+            if title[index] == "]":
+                depth += 1
+            elif title[index] == "[":
+                depth -= 1
+                if depth == 0:
+                    return title[:index], title[index + 1:-1].strip(), title[index:]
+        return None
+
+    def _normalize_items(self, items: list[dict], url: str) -> list[dict]:
+        """按 RSS 副标题开关拆分名称和描述，普通订阅保留原始字段。"""
+        params = parse_qs(urlsplit(url).query)
+        include_description = any(
+            params.get(key) == ["1"] for key in ("ismalldescr", "itemsmalldescr")
+        )
+        suffix_fields = ("iuplder", "isize") if include_description else ()
+        for item in items:
+            title = item.get("title") or ""
+            description = item.get("description") or ""
+            suffix = ""
+            # NexusPHP 可在副标题之后追加大小和发布者，不能把这些字段当成副标题。
+            for key in suffix_fields:
+                if params.get(key) != ["1"]:
+                    continue
+                group = self._split_trailing_bracket(title)
+                if not group:
+                    break
+                title, _, bracket = group
+                suffix = bracket + suffix
+            else:
+                group = self._split_trailing_bracket(title)
+                if not group:
+                    continue
+                name, subtitle, _ = group
+                if not name.strip() or not subtitle:
+                    continue
+                if not include_description and subtitle != description.strip():
+                    continue
+                # 没有副标题的条目末尾可能仍是制作组或编码标签，重复描述也不能删除这些标签。
+                if (
+                    re.fullmatch(r"[A-Za-z0-9_&@.+-]+", subtitle)
+                    or re.fullmatch(r"[\w.+-]+(?:\s*[&@]\s*[\w.+-]+)+", subtitle)
+                    or re.fullmatch(
+                        r"(?:(?:\d{3,4}[pi]|\d{1,2}bit|HEVC|AVC|[xh]26[45]|AAC|FLAC|CHS|CHT)\s*)+",
+                        subtitle, re.IGNORECASE,
+                    )
+                    or subtitle.endswith(("字幕组", "压制组", "制作组"))
+                ):
+                    continue
+                item["title"] = name.rstrip() + suffix
+                if include_description:
+                    item["description"] = subtitle
+        return items
+
     def parse(self, url, proxy: bool = False,
               timeout: Optional[int] = 15, headers: dict = None, ua: str = None) -> Union[List[dict], None, bool]:
         """
@@ -292,7 +353,7 @@ class RssHelper:
                     )
                     rust_items = self.__parse_with_rust(ret_xml)
                     if rust_items is not None:
-                        return rust_items
+                        return self._normalize_items(rust_items, url)
                 if not ret_xml:
                     ret_xml = ret.text
 
@@ -309,7 +370,7 @@ class RssHelper:
 
                 rust_items = self.__parse_with_rust(ret_xml)
                 if rust_items is not None:
-                    return rust_items
+                    return self._normalize_items(rust_items, url)
 
                 # 使用lxml.etree解析XML
                 parser = None
@@ -448,7 +509,7 @@ class RssHelper:
                 if ret_xml is not None:
                     del ret_xml
 
-        return ret_array
+        return self._normalize_items(ret_array, url)
 
     def get_rss_link(self, url: str, cookie: str, ua: str, proxy: bool = False, timeout: int = None) -> Tuple[str, str]:
         """

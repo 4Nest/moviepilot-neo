@@ -95,6 +95,7 @@ class FetchRssAction(BaseAction):
                 continue
             torrentinfo = TorrentInfo(
                 title=item.get("title"),
+                description=item.get("description"),
                 enclosure=item.get("enclosure"),
                 page_url=item.get("link"),
                 size=item.get("size"),
