@@ -362,6 +362,7 @@
     "订阅日历预缓存完成": "Subscription calendar precache completed",
     "内容不能为空": "Content cannot be empty",
     "通知渠道配置必须是列表": "Notification channel configuration must be a list",
+    "词表同步源必须为列表": "Word list sync sources must be a list",
     "通知渠道名称不能重复": "Notification channel names must be unique",
     "通知场景不能重复": "Notification scenarios must be unique",
     "测试通知发送成功": "Test notification sent successfully"

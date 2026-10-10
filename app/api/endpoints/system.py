@@ -1153,9 +1153,16 @@ async def set_setting(
         saved_value = SystemConfigOper().get(key)
         value = _restore_notification_secrets(value, saved_value)
     value = _validate_setting_value(key, value)
-    if isinstance(value, list):
-        value = list(filter(None, value)) or None
-    success = await SystemConfigOper().async_set(key, value)
+    if key == SystemConfigKey.WordsSyncSources.value:
+        from app.chain.words import WordsSyncChain
+        if value is not None and not isinstance(value, list):
+            raise HTTPException(status_code=422, detail="词表同步源必须为列表")
+        value = await anyio.to_thread.run_sync(WordsSyncChain.save_sources, value or [])
+        success = True
+    else:
+        if isinstance(value, list):
+            value = list(filter(None, value)) or None
+        success = await SystemConfigOper().async_set(key, value)
     if success:
         await eventmanager.async_send_event(
             etype=EventType.ConfigChanged,

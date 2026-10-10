@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.chain import ChainBase
 from app.db.systemconfig_oper import SystemConfigOper
+from app.helper.words import WordsHelper
 from app.log import logger
 from app.schemas.types import SystemConfigKey
 from app.utils.http import RequestUtils
@@ -118,17 +119,20 @@ class WordsSyncChain(ChainBase):
 
     @classmethod
     def save_sources(cls, sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """保存源列表,返回规范化后的内容。"""
+        """保存源列表并清理已删除来源的远程词表，保留本地编辑内容。"""
         normalized = [cls._normalize_source(item) for item in sources if isinstance(item, dict)]
-        SystemConfigOper().set(SystemConfigKey.WordsSyncSources, normalized)
+        oper = SystemConfigOper()
+        oper.set(SystemConfigKey.WordsSyncSources, normalized)
+        oper.set(SystemConfigKey.SyncedWords, WordsHelper.get_synced_words())
         return normalized
 
     # ---------- 远程词表(追加部分) ----------
 
     @classmethod
     def get_synced_words(cls) -> Dict[str, Dict[str, List[str]]]:
-        """远程词表:{ 源url: { 词表键值: [行...] } }"""
-        return SystemConfigOper().get(SystemConfigKey.SyncedWords) or {}
+        """返回已配置来源的远程词表，读取前兼容迁移旧的同步设置。"""
+        cls.get_sources()
+        return WordsHelper.get_synced_words()
 
     @classmethod
     def get_synced_lines(cls, config_key: SystemConfigKey) -> List[Tuple[str, List[str]]]:
@@ -262,14 +266,6 @@ class WordsSyncChain(ChainBase):
             overall_ok = overall_ok and result.get("success", False)
             messages.append(f"{source['url']}: {result.get('message')}")
         cls.save_sources(sources)
-        if source_url is None:
-            # 全量同步时清理已从配置中删除的源残留,避免UI重复显示旧词表
-            synced_words = cls.get_synced_words()
-            stale_urls = [u for u in synced_words if u not in {s["url"] for s in sources}]
-            if stale_urls:
-                for u in stale_urls:
-                    synced_words.pop(u, None)
-                SystemConfigOper().set(SystemConfigKey.SyncedWords, synced_words)
         return {
             "success": overall_ok,
             "message": ";".join(messages),
