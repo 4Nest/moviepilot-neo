@@ -18,10 +18,77 @@ from app.core.metainfo import MetaInfo
 from app.helper.message import TemplateContextBuilder
 from app.schemas.types import MediaType
 from app.schemas.tmdb import TmdbEpisode
+from app.utils.system import SystemUtils
 
 
 THREAD_COUNT = 8
 ITERATIONS_PER_THREAD = 200
+
+
+def test_rename_preserves_chinese_and_english_title_punctuation(monkeypatch, tmp_path):
+    """重命名保留中英文标题原有冒号及空格，生成的文件名可以实际写入。"""
+    monkeypatch.setattr(SystemUtils, "is_windows", lambda: False)
+    mediainfo = MediaInfo(
+        title="蜘蛛侠：崭新之日",
+        en_title="Spider-Man: Brand New Day",
+        original_title="Spider-Man: Brand New Day",
+        year="2026",
+        type=MediaType.MOVIE,
+    )
+    context = TemplateContextBuilder().build(mediainfo=mediainfo, file_extension=".mkv")
+
+    renamed = Template("{{title}}.{{en_title}}.{{year}}{{fileExt}}").render(context)
+    expected = "蜘蛛侠：崭新之日.Spider-Man: Brand New Day.2026.mkv"
+    destination = tmp_path / renamed
+    destination.touch()
+
+    assert renamed == expected
+    assert context["original_title"] == mediainfo.original_title
+    assert destination.is_file()
+    assert destination.name == expected
+
+
+@pytest.mark.parametrize("is_windows", [False, True])
+@pytest.mark.parametrize("title, windows_title", [
+    ("Spider-Man: Brand New Day", "Spider-Man： Brand New Day"),
+    ('Who? "Me" <You> *Them* | Us', 'Who？ ＂Me＂ ＜You＞ ＊Them＊ ｜ Us'),
+    ("蜘蛛侠：崭新之日", "蜘蛛侠：崭新之日"),
+    ("A&B @ C + D - E (F) [G]", "A&B @ C + D - E (F) [G]"),
+])
+def test_template_title_punctuation_respects_platform(monkeypatch, is_windows, title, windows_title):
+    """所有标题字段仅替换当前平台不支持的标点，Windows 仍可正常命名。"""
+    monkeypatch.setattr(SystemUtils, "is_windows", lambda: is_windows)
+    meta = _build_fake_meta()
+    meta.begin_episode = 1
+    mediainfo = MediaInfo(
+        title=title,
+        en_title=title,
+        original_title=title,
+        type=MediaType.TV,
+    )
+    context = TemplateContextBuilder().build(
+        meta=meta,
+        mediainfo=mediainfo,
+        episodes_info=[TmdbEpisode(episode_number=1, name=title)],
+    )
+    expected = windows_title if is_windows else title
+
+    for field in ("title", "en_title", "original_title", "episode_title"):
+        assert context[field] == expected
+    assert mediainfo.title == title
+
+
+@pytest.mark.parametrize("is_windows", [False, True])
+def test_template_title_separators_do_not_create_directories(monkeypatch, is_windows, tmp_path):
+    """标题中的路径分隔符不能让重命名意外生成额外目录。"""
+    monkeypatch.setattr(SystemUtils, "is_windows", lambda: is_windows)
+    mediainfo = MediaInfo(title=r"../Movie/Part\Title", type=MediaType.MOVIE)
+    context = TemplateContextBuilder().build(mediainfo=mediainfo, file_extension=".mkv")
+    renamed = Template("{{title}}{{fileExt}}").render(context)
+    destination = tmp_path / renamed
+
+    assert renamed == "..／Movie／Part＼Title.mkv"
+    assert destination.parent == tmp_path
 
 
 @pytest.mark.parametrize("prefix, resource_team, expected", [

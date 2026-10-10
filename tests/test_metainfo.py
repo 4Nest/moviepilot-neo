@@ -3,10 +3,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from app.core.metainfo import MetaInfo, MetaInfoPath, find_metainfo
 from app.core.meta.metaanime import MetaAnime
 from app.core.meta.metavideo import MetaVideo
 from app.helper.torrent import TorrentHelper
+from app.helper.message import TemplateContextBuilder
 from app.schemas.types import MediaType
 from tests.cases.meta import meta_cases
 
@@ -624,6 +627,39 @@ def test_streaming_platform_word_kept_in_movie_title():
         meta = MetaInfo(title="Amazon Forever 2004 1080p WEB-DL")
     assert meta.name == "Amazon Forever"
     assert meta.year == "2004"
+
+
+@pytest.mark.parametrize("platform", ["CORE", "core", "BCORE", "Bravia.Core"])
+@pytest.mark.parametrize("python_fallback", [False, True])
+def test_bravia_core_alias_in_spiderman_release(platform, python_fallback):
+    """CORE 与 BCORE 使用同一平台名称，普通解析和 Python 兜底均保留片名及发布信息。"""
+    title = (
+        f"Spider-Man.Brand.New.Day.2026.IMAX.2160p.{platform}.WEB-DL."
+        "HDR.H265.DDP5.1.Atmos-BiVerse@ADWeb.mkv"
+    )
+    if python_fallback:
+        with patch("app.core.metainfo.rust_accel.parse_metainfo", return_value=None):
+            meta = MetaInfo(title, custom_words=["#"])
+    else:
+        meta = MetaInfo(title, custom_words=["#"])
+
+    assert meta.web_source == "Bravia Core"
+    assert meta.en_name.replace("-", " ") == "Spider Man Brand New Day"
+    assert meta.year == "2026"
+    assert meta.resource_type == "WEB-DL"
+    assert meta.resource_pix == "2160p"
+    assert meta.resource_team == "ADWeb"
+    naming = TemplateContextBuilder().build(meta=meta)
+    assert naming["webSource"] == "Bravia Core"
+
+
+def test_core_in_movie_title_is_not_a_streaming_platform():
+    """平台别名不应吞掉年份之前的电影片名。"""
+    for title in ("The Core 2003 1080p WEB-DL", "Hardcore 2015 1080p WEB-DL"):
+        with patch("app.core.metainfo.rust_accel.parse_metainfo", return_value=None):
+            meta = MetaInfo(title, custom_words=["#"])
+        assert meta.en_name == title.split(" 20")[0]
+        assert meta.web_source is None
 
 
 def test_emby_tmdbid_overrides_braced_metainfo_tmdbid():

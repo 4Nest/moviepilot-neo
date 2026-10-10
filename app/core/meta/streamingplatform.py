@@ -21,6 +21,7 @@ class StreamingPlatforms(metaclass=Singleton):
         ("HULU", "Hulu Networks"),
         ("MA", "Movies Anywhere"),
         ("BCORE", "Bravia Core"),
+        ("CORE", "Bravia Core"),
         ("MS", "Microsoft Store"),
         ("SHO", "Showtime"),
         ("STAN", "Stan"),

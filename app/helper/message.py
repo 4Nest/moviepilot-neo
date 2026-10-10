@@ -26,6 +26,7 @@ from app.schemas.transfer import TransferInfo
 from app.schemas.types import SystemConfigKey
 from app.utils.singleton import Singleton, SingletonClass
 from app.utils.string import StringUtils
+from app.utils.system import SystemUtils
 
 
 class TemplateContextBuilder:
@@ -359,11 +360,12 @@ class TemplateContextBuilder:
     @staticmethod
     def __convert_invalid_characters(filename: str):
         """
-        将不支持的字符转换为全角字符
+        保留标题原有标点，仅将路径分隔符及当前平台非法字符转换为全角。
         """
         if not filename:
             return filename
-        invalid_characters = r'\/:*?"<>|'
+        # 标题不能引入额外目录；Linux/NAS 支持的冒号等标点无需替换。
+        invalid_characters = r'\/:*?"<>|' if SystemUtils.is_windows() else r'\/'
         # 创建半角到全角字符的转换表
         halfwidth_chars = "".join([chr(i) for i in range(33, 127)])
         fullwidth_chars = "".join([chr(i + 0xFEE0) for i in range(33, 127)])
