@@ -8,7 +8,7 @@ from app.chain.media import MediaChain
 from app.core.config import global_vars
 from app.core.metainfo import MetaInfo
 from app.log import logger
-from app.schemas import ActionParams, ActionContext, DownloadTask, MediaType
+from app.schemas import ActionParams, ActionContext, DownloadTask, ExistMediaInfo, MediaType
 
 
 class AddDownloadParams(ActionParams):
@@ -91,6 +91,10 @@ class AddDownloadAction(BaseAction):
                 continue
             if params.only_lack:
                 exists_info = DownloadChain().media_exists(t.media_info)
+                if isinstance(exists_info, ExistMediaInfo) and exists_info.query_failed:
+                    self._has_error = True
+                    logger.warning(f"{t.torrent_info.title} 媒体库查询失败，无法确认缺失，跳过本次下载")
+                    continue
                 if exists_info:
                     if t.media_info.type == MediaType.MOVIE:
                         # 电影

@@ -1732,6 +1732,9 @@ class DownloadChain(ChainBase):
                                              season=mediainfo.season)
             # 媒体库已存在的剧集
             exists_tvs: Optional[ExistMediaInfo] = self.media_exists(mediainfo=mediainfo, itemid=itemid)
+            if isinstance(exists_tvs, ExistMediaInfo) and exists_tvs.query_failed:
+                logger.warning(f"媒体库季集查询失败，暂不更新缺集信息：{mediainfo.title_year}")
+                return False, {}
             if not exists_tvs:
                 # 所有季集均缺失
                 for season, episodes in mediainfo.seasons.items():

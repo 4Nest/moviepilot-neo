@@ -1,8 +1,31 @@
-from typing import Optional, List, Dict, Any, ClassVar
+from typing import Optional, List, Dict, Any, ClassVar, Union
 
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 from app.schemas.types import MediaType
+
+
+def compute_subscribe_version_total_episode(
+        subscribe: "Subscribe", rule: Union[dict, "SubscribeVersionRule"],
+) -> int:
+    """单版本同剧集组继承最新父范围，独立版本使用自己的已解析总数。"""
+    settings = rule.get("settings", {}) if isinstance(rule, dict) else rule.settings
+    if not isinstance(settings, dict):
+        settings = settings.model_dump(exclude_unset=True)
+    parent_total = subscribe.total_episode or 0
+    configured_total = settings.get("total_episode") or parent_total
+    if settings.get("manual_total_episode", getattr(subscribe, "manual_total_episode", 0)):
+        return configured_total
+    episode_group = settings.get("episode_group", subscribe.episode_group) or None
+    if len(subscribe.version_rules or []) == 1 and episode_group == (subscribe.episode_group or None):
+        return parent_total or configured_total
+    rule_id = rule.get("id") if isinstance(rule, dict) else rule.id
+    progress = (subscribe.version_progress or {}).get(str(rule_id))
+    if not isinstance(progress, dict) and progress is not None:
+        progress = progress.model_dump(exclude_unset=True)
+    if progress and "episode_group" in progress and (progress["episode_group"] or None) == episode_group:
+        return progress.get("total_episode") or configured_total
+    return configured_total
 
 
 def compute_subscribe_completed_episode(subscribe: "Subscribe") -> Optional[int]:
@@ -19,23 +42,35 @@ def compute_subscribe_completed_episode(subscribe: "Subscribe") -> Optional[int]
     start_episode = subscribe.start_episode or 1
     version_rules = getattr(subscribe, "version_rules", None) or []
     if version_rules:
-        # 多版本订阅:父行 lack_episode 不承载事实(停留在初始值),下载事实在各版本
-        # version_progress.note。已完成集数取启用版本 note 与目标范围的并集大小。
+        # 父行 lack_episode 不承载版本进度。单版本普通订阅使用查库确认的明确集号，
+        # 多版本、洗版和跳过查库的订阅仍只统计各自的下载事实。
         target = set(range(start_episode, total_episode + 1))
         downloaded: set = set()
         progress = subscribe.version_progress or {}
         for rule in version_rules:
-            if isinstance(rule, dict) and not rule.get("enabled", True):
+            if not (rule.get("enabled", True) if isinstance(rule, dict) else rule.enabled):
                 continue
             rule_id = rule.get("id") if isinstance(rule, dict) else getattr(rule, "id", None)
             entry = progress.get(str(rule_id))
+            known = []
+            version_target = target
+            if len(version_rules) == 1 and not subscribe.skip_library_check:
+                settings = rule.get("settings", {}) if isinstance(rule, dict) else rule.settings
+                if not isinstance(settings, dict):
+                    settings = settings.model_dump(exclude_unset=True)
+                if not settings.get("best_version", subscribe.best_version):
+                    known = entry.get("known_episodes") if isinstance(entry, dict) \
+                        else getattr(entry, "known_episodes", None)
+                    version_total = compute_subscribe_version_total_episode(subscribe, rule)
+                    version_start = settings.get("start_episode", start_episode) or 1
+                    version_target = target.intersection(range(version_start, version_total + 1))
             note = entry.get("note") if isinstance(entry, dict) else getattr(entry, "note", None)
-            for episode in note or []:
+            for episode in list(note or []) + list(known or []):
                 try:
                     episode_number = int(episode)
                 except (TypeError, ValueError):
                     continue
-                if episode_number in target:
+                if episode_number in version_target:
                     downloaded.add(episode_number)
         return len(downloaded)
     if not subscribe.best_version:
@@ -130,6 +165,11 @@ class SubscribeVersionProgress(BaseModel):
     state: Optional[str] = None
     last_update: Optional[str] = None
     lack_episode: Optional[int] = None
+    # 运行范围与剧集组同存，不能用兄弟版本的总数重算完成状态。
+    total_episode: Optional[int] = None
+    episode_group: Optional[str] = None
+    # 与 note 分离；旧快照没有明确集号时不能用可能已经变化的目标范围反推。
+    known_episodes: Optional[List[int]] = None
     note: Any = None
     current_priority: Optional[int] = None
     episode_priority: Dict[str, int] = Field(default_factory=dict)
@@ -143,6 +183,7 @@ class Subscribe(BaseModel):
         "version_progress", "version_mode", "legacy_version_id", "decision_summary",
         "id", "poster", "backdrop", "vote", "description", "lack_episode", "completed_episode",
         "note", "state", "last_update", "username", "current_priority", "episode_priority", "date",
+        "manual_total_episode",
     })
 
     id: Optional[int] = None
@@ -190,6 +231,8 @@ class Subscribe(BaseModel):
     effect: Optional[str] = None
     # 总集数
     total_episode: Optional[int] = 0
+    # 是否手动固定总集数；由服务端根据订阅编辑维护。
+    manual_total_episode: Optional[int] = 0
     # 开始集数
     start_episode: Optional[int] = 0
     # 缺失集数

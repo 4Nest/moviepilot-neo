@@ -143,6 +143,11 @@ def not_exists(
     exist_flag, no_exists = DownloadChain().get_no_exists_info(
         meta=meta, mediainfo=mediainfo
     )
+    if mediainfo.type == MediaType.TV and not exist_flag and not no_exists:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="媒体服务器请求失败",
+        )
     media_source, media_id = resolve_media_identity(media=mediainfo)
     mediakey = build_media_key(media_source, media_id)
     if mediainfo.type == MediaType.MOVIE:

@@ -226,6 +226,8 @@ class ChainBase(metaclass=ABCMeta):
         """
         判断结果是否为空
         """
+        if isinstance(ret, ExistMediaInfo):
+            return ret.query_failed
         if isinstance(ret, tuple):
             return all(value is None for value in ret)
         else:
@@ -301,6 +303,7 @@ class ChainBase(metaclass=ABCMeta):
         """
         执行插件模块
         """
+        query_failure = result if isinstance(result, ExistMediaInfo) and result.query_failed else None
         for plugin, module_dict in self.pluginmanager.get_plugin_modules().items():
             plugin_id, plugin_name = plugin
             if method in module_dict:
@@ -326,7 +329,9 @@ class ChainBase(metaclass=ABCMeta):
                         self.__handle_plugin_error(
                             err, plugin_id, plugin_name, method, **kwargs
                         )
-        return result
+                    if isinstance(result, ExistMediaInfo) and result.query_failed:
+                        query_failure = result
+        return query_failure if query_failure is not None else result
 
     async def __async_execute_plugin_modules(
             self, method: str, result: Any, *args, **kwargs
@@ -334,6 +339,7 @@ class ChainBase(metaclass=ABCMeta):
         """
         异步执行插件模块
         """
+        query_failure = result if isinstance(result, ExistMediaInfo) and result.query_failed else None
         for plugin, module_dict in self.pluginmanager.get_plugin_modules().items():
             plugin_id, plugin_name = plugin
             if method in module_dict:
@@ -367,7 +373,9 @@ class ChainBase(metaclass=ABCMeta):
                         self.__handle_plugin_error(
                             err, plugin_id, plugin_name, method, **kwargs
                         )
-        return result
+                    if isinstance(result, ExistMediaInfo) and result.query_failed:
+                        query_failure = result
+        return query_failure if query_failure is not None else result
 
     def __execute_system_modules(
             self, method: str, result: Any, *args, **kwargs
@@ -375,6 +383,8 @@ class ChainBase(metaclass=ABCMeta):
         """
         执行系统模块
         """
+        # 已失败的服务器仍可能持有后续服务器没有的集数，不能用部分结果推断缺集。
+        query_failure = result if isinstance(result, ExistMediaInfo) and result.query_failed else None
         logger.debug(f"请求系统模块执行：{method} ...")
         for module in sorted(
                 self.modulemanager.get_running_modules(method),
@@ -411,7 +421,9 @@ class ChainBase(metaclass=ABCMeta):
                 self.__handle_system_error(
                     err, module_id, module_name, method, **kwargs
                 )
-        return result
+            if isinstance(result, ExistMediaInfo) and result.query_failed:
+                query_failure = result
+        return query_failure if query_failure is not None else result
 
     async def __async_execute_system_modules(
             self, method: str, result: Any, *args, **kwargs
@@ -419,6 +431,7 @@ class ChainBase(metaclass=ABCMeta):
         """
         异步执行系统模块
         """
+        query_failure = result if isinstance(result, ExistMediaInfo) and result.query_failed else None
         logger.debug(f"请求系统模块执行：{method} ...")
         for module in sorted(
                 self.modulemanager.get_running_modules(method),
@@ -465,7 +478,9 @@ class ChainBase(metaclass=ABCMeta):
                 self.__handle_system_error(
                     err, module_id, module_name, method, **kwargs
                 )
-        return result
+            if isinstance(result, ExistMediaInfo) and result.query_failed:
+                query_failure = result
+        return query_failure if query_failure is not None else result
 
     def run_module(
             self,
@@ -1591,7 +1606,7 @@ class ChainBase(metaclass=ABCMeta):
         :param mediainfo:  识别的媒体信息
         :param itemid:  媒体服务器ItemID
         :param server:  媒体服务器
-        :return: 如不存在返回None，存在时返回信息，包括每季已存在所有集{type: movie/tv, seasons: {season: [episodes]}}
+        :return: 不存在返回 None；查询失败返回 query_failed=True 的信息；存在时返回已有季集
         """
         return self.run_module(
             "media_exists", mediainfo=mediainfo, itemid=itemid, server=server

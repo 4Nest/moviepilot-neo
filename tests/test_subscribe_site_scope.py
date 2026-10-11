@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from app import schemas
 from app.schemas.types import MediaType
 import tests.test_subscribe_chain as subscribe_chain_test
 
@@ -69,7 +70,11 @@ def _run_match(subscribe, torrents):
 
     chain = SubscribeChain()
     chain.recognize_media = lambda **kwargs: mediainfo
-    chain.check_and_handle_existing_media = lambda **kwargs: (False, {})
+    chain.check_and_handle_existing_media = lambda **kwargs: (False, {
+        subscribe.mediaid: {subscribe.season: schemas.NotExistMediaInfo(
+            season=subscribe.season, episodes=[1], total_episode=subscribe.total_episode,
+        )},
+    })
     chain.get_params = lambda *_args, **_kwargs: {}
     chain.filter_torrents = lambda **kwargs: kwargs["torrent_list"]
     chain.finish_subscribe_or_not = lambda **_kwargs: None

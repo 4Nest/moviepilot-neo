@@ -2,6 +2,7 @@ from typing import List, Any, Annotated, Optional
 
 import cn2an
 from fastapi import APIRouter, Request, BackgroundTasks, Depends, HTTPException, Header
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -311,8 +312,13 @@ async def recompute_subscribe_progress(
     subscribe = await Subscribe.async_get(db, subid)
     if not subscribe:
         return schemas.Response(success=False, message="订阅不存在")
-    summary = SubscribeChain().refresh_subscribe_progress(subscribe, scene="manual_recompute")
-    return schemas.Response(success=summary.get("reason") != "resolve_missing_failed", data=summary)
+    summary = await run_in_threadpool(
+        SubscribeChain().refresh_subscribe_progress, subscribe, scene="manual_recompute",
+    )
+    return schemas.Response(
+        success=summary.get("reason") in ("updated", "no_enabled_versions", "unsupported_subscribe_type"),
+        data=summary,
+    )
 
 
 @router.post("/{subid}/force-search", summary="强制搜索一次", response_model=schemas.Response)

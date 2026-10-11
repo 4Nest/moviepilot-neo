@@ -357,13 +357,15 @@ class Emby:
         }
         try:
             res = RequestUtils().get_res(url, params)
-            if res:
-                res_items = res.json().get("Items")
-                if res_items:
-                    for res_item in res_items:
-                        if res_item.get('Name') == name and (
-                                not year or str(res_item.get('ProductionYear')) == str(year)):
-                            return res_item.get('Id')
+            if not res:
+                return None
+            res_items = res.json().get("Items")
+            if not isinstance(res_items, list):
+                return None
+            for res_item in res_items:
+                if res_item.get('Name') == name and (
+                        not year or str(res_item.get('ProductionYear')) == str(year)):
+                    return res_item.get('Id')
         except Exception as e:
             logger.error(f"连接Items出错：" + str(e))
             return None
@@ -428,7 +430,7 @@ class Emby:
         :param year: 年份
         :param tmdb_id: TMDBID
         :param season: 季
-        :return: 每一季的已有集数
+        :return: 每一季的已有集数；未找到返回空字典，查询失败返回 None
         """
         if not self._host or not self._apikey:
             return None, None
@@ -452,7 +454,8 @@ class Emby:
                 return None, {}
             item_info = self.get_iteminfo(item_id)
         if not item_info:
-            return None, {}
+            # 无法读取条目详情时，不能确认该媒体已经从库中删除。
+            return None, None
         if item_info:
             if tmdb_id and item_info.tmdbid:
                 if str(tmdb_id) != str(item_info.tmdbid):
@@ -489,7 +492,7 @@ class Emby:
         except Exception as e:
             logger.error(f"连接Shows/Id/Episodes出错：" + str(e))
             return None, None
-        return None, {}
+        return None, None
 
     def get_season_episode_ids(self, item_id: str, season: int) -> Dict[int, str]:
         """

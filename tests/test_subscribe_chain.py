@@ -8,6 +8,7 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from app import schemas
+from app.core.meta.releasegroup import ReleaseGroupsMatcher
 from app.schemas.types import MediaType
 from app.testing import stub_modules
 
@@ -106,6 +107,8 @@ def _load_subscribe_chain_class():
 
     meta_module = ensure_module("app.core.meta", types.ModuleType("app.core.meta"))
     meta_module.MetaBase = SimpleNamespace
+    releasegroup_module = ensure_module("app.core.meta.releasegroup", types.ModuleType("app.core.meta.releasegroup"))
+    releasegroup_module.ReleaseGroupsMatcher = ReleaseGroupsMatcher
 
     metainfo_module = ensure_module("app.core.metainfo", types.ModuleType("app.core.metainfo"))
 
@@ -515,7 +518,11 @@ class SubscribeChainTest(TestCase):
 
         chain = SubscribeChain()
         chain.recognize_media = lambda **kwargs: mediainfo
-        chain.check_and_handle_existing_media = lambda **kwargs: (False, {})
+        chain.check_and_handle_existing_media = lambda **kwargs: (False, {
+            subscribe.mediaid: {subscribe.season: schemas.NotExistMediaInfo(
+                season=subscribe.season, episodes=[1], total_episode=subscribe.total_episode,
+            )},
+        })
 
         with patch.object(SUBSCRIBE_CHAIN_MODULE, "SubscribeOper", _SubscribeOper), patch.object(
             SUBSCRIBE_CHAIN_MODULE,
@@ -597,7 +604,11 @@ class SubscribeChainTest(TestCase):
 
         chain = SubscribeChain()
         chain.recognize_media = lambda **kwargs: mediainfo
-        chain.check_and_handle_existing_media = lambda **kwargs: (False, {})
+        chain.check_and_handle_existing_media = lambda **kwargs: (False, {
+            subscribe.mediaid: {subscribe.season: schemas.NotExistMediaInfo(
+                season=subscribe.season, episodes=[1], total_episode=subscribe.total_episode,
+            )},
+        })
         chain.get_sub_sites = lambda *_args, **_kwargs: []
         chain.get_params = lambda *_args, **_kwargs: {}
         chain.filter_torrents = lambda **_kwargs: [context.torrent_info]
@@ -2475,6 +2486,9 @@ class SubscribeProgressEntrypointTest(TestCase):
         updates = []
 
         class _SubscribeOper:
+            def get(self, subscribe_id):
+                return subscribe
+
             def update(self, subscribe_id, payload):
                 updates.append(payload)
 
@@ -2508,6 +2522,9 @@ class SubscribeProgressEntrypointTest(TestCase):
         )
 
         class _SubscribeOper:
+            def get(self, subscribe_id):
+                return subscribe
+
             def update(self, subscribe_id, payload):
                 raise AssertionError("resolve failure must not write progress")
 
@@ -2524,6 +2541,9 @@ class SubscribeProgressEntrypointTest(TestCase):
         subscribe = self._build_subscribe(best_version=0, lack_episode=5)
 
         class _SubscribeOper:
+            def get(self, subscribe_id):
+                return subscribe
+
             def update(self, subscribe_id, payload):
                 raise AssertionError("recognition failure must not write progress")
 

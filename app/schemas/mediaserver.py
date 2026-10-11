@@ -20,6 +20,12 @@ class ExistMediaInfo(BaseModel):
     server: Optional[str] = None
     # 媒体ID
     itemid: Optional[Union[str, int]] = None
+    # 查询失败不能当作确认缺失，也不能被旧调用方当作已入库。
+    query_failed: bool = False
+
+    def __bool__(self) -> bool:
+        """仅成功的存在结果可用于确认媒体已入库。"""
+        return not self.query_failed
 
 
 class NotExistMediaInfo(BaseModel):
