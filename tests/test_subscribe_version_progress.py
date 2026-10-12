@@ -293,6 +293,8 @@ def test_search_and_rss_persist_library_progress(
     oper.list.side_effect = lambda _states: [parent]
     media = _media_info()
     media.clear = Mock()
+    media.get_message_image = Mock(return_value=None)
+    media.to_dict = Mock(return_value={})
     monkeypatch.setattr(chain, "recognize_media", Mock(return_value=media))
     monkeypatch.setattr(chain, "get_sub_sites", Mock(return_value=[]))
     monkeypatch.setattr(subscribe_module, "global_vars", SimpleNamespace(is_system_stopped=False))
@@ -307,6 +309,9 @@ def test_search_and_rss_persist_library_progress(
     monkeypatch.setattr(subscribe_module, "SearchChain", lambda: search)
     monkeypatch.setattr(subscribe_module, "TorrentHelper", Mock())
     monkeypatch.setattr(subscribe_module, "WordsMatcher", Mock())
+    monkeypatch.setattr(chain, "post_message", Mock())
+    monkeypatch.setattr(subscribe_module.eventmanager, "send_event", Mock(return_value=None))
+    monkeypatch.setattr(subscribe_module.MoviePilotServerHelper, "sub_done_async", Mock())
 
     if entrypoint == "search":
         chain.search(sid=parent.id)

@@ -11,6 +11,7 @@ from app import schemas
 from app.chain import subscribe as module
 from app.chain.subscribe import SubscribeChain, build_subscribe_meta, build_subscribe_version_view
 from app.schemas.subscribe import compute_subscribe_version_total_episode
+from app.schemas.types import ChainEventType, EventType, MediaType
 from tests.test_library_query_failure import _emby_client, _emby_module, _chain, _media_info as _library_media_info
 from tests.test_subscribe_version_progress import _build_subscribe, _media_info, _missing, progress_chain
 
@@ -250,3 +251,120 @@ def test_manual_recompute_updates_each_versions_resolved_range(progress_chain, m
     assert parent.version_progress['short']['total_episode'] == 12
     assert parent.version_progress['short']['lack_episode'] == 1
     assert parent.total_episode == 12
+
+
+@pytest.mark.parametrize('entrypoint', ['search', 'rss'])
+@pytest.mark.parametrize('mode, archived', [
+    ('library', True),
+    ('skip_library', True),
+    ('movie', True),
+    ('best_version', True),
+    ('multiple_complete', True),
+    ('multiple_newly_complete', True),
+    ('disabled_sibling', True),
+    ('multiple_incomplete', False),
+    ('new', True),
+    ('pending', False),
+    ('veto', False),
+    ('library_failure', False),
+])
+def test_completed_version_precheck_archives_parent_once(monkeypatch, entrypoint, mode, archived):
+    """预检查已完成的版本也须归档父订阅，保留多版本、待定和插件完成守卫。"""
+    parent = _build_subscribe(manual_total_episode=1)
+    if mode == 'skip_library':
+        parent.skip_library_check = 1
+        parent.version_progress['adweb']['note'] = list(range(1, 38))
+    elif mode == 'movie':
+        parent.type = MediaType.MOVIE.value
+        parent.total_episode = 1
+        parent.version_progress['adweb']['note'] = [1]
+    elif mode == 'best_version':
+        parent.version_rules[0]['settings']['best_version'] = 1
+        parent.version_progress['adweb'].update(
+            note=list(range(1, 38)), current_priority=100,
+            episode_priority={str(episode): 100 for episode in range(1, 38)},
+        )
+    elif mode in ('multiple_complete', 'multiple_newly_complete', 'multiple_incomplete', 'disabled_sibling'):
+        parent.version_rules.append({
+            'id': 'other', 'name': '其他版本', 'enabled': mode != 'disabled_sibling',
+            'settings': {'best_version': 0},
+        })
+        parent.version_progress['adweb'].update(
+            note=list(range(1, 38)), completed=mode != 'multiple_newly_complete',
+        )
+        parent.version_progress['other'] = {
+            'note': list(range(1, 38)) if mode in ('multiple_complete', 'multiple_newly_complete') else [26],
+            'completed': mode == 'multiple_complete',
+        }
+    elif mode == 'new':
+        parent.state = 'N'
+    elif mode == 'pending':
+        parent.state = 'P'
+
+    chain = object.__new__(SubscribeChain)
+    chain._rlock = RLock()
+    oper = Mock()
+    oper.get.return_value = parent
+    oper.list.side_effect = lambda *_args: [parent]
+    monkeypatch.setattr(module, 'SubscribeOper', lambda: oper)
+    media = _media_info()
+    media.type = MediaType(parent.type)
+    media.clear = Mock()
+    media.get_message_image = Mock(return_value=None)
+    media.to_dict = Mock(return_value={})
+    monkeypatch.setattr(chain, 'recognize_media', Mock(return_value=media))
+    monkeypatch.setattr(chain, 'get_sub_sites', Mock(return_value=[]))
+    monkeypatch.setattr(chain, 'post_message', Mock())
+    monkeypatch.setattr(module, 'global_vars', SimpleNamespace(is_system_stopped=False))
+    monkeypatch.setattr(module, 'SystemConfigOper', lambda: Mock(get=Mock(return_value=None)))
+    downloader = Mock()
+    downloader.get_no_exists_info.return_value = (False, {}) if mode == 'library_failure' else (True, {})
+    monkeypatch.setattr(module, 'DownloadChain', lambda: downloader)
+    search = Mock(process=Mock(return_value=[]))
+    monkeypatch.setattr(module, 'SearchChain', lambda: search)
+    monkeypatch.setattr(module, 'TorrentHelper', Mock())
+    monkeypatch.setattr(module, 'WordsMatcher', Mock())
+    statistics = Mock()
+    monkeypatch.setattr(module.MoviePilotServerHelper, 'sub_done_async', statistics)
+
+    def event_result(event_type, _data):
+        if mode == 'veto' and event_type == ChainEventType.SubscribeCompletionCheck:
+            return SimpleNamespace(event_data=SimpleNamespace(cancel=True, source='完结策略', reason='尚未完结'))
+        return None
+
+    events = Mock(side_effect=event_result)
+    monkeypatch.setattr(module.eventmanager, 'send_event', events)
+
+    if entrypoint == 'search':
+        chain.search(sid=parent.id)
+    else:
+        chain.match({'example.test': []})
+
+    if archived:
+        oper.add_history.assert_called_once()
+        oper.delete.assert_called_once_with(parent.id)
+        history = oper.add_history.call_args.kwargs
+        assert history['version_progress']['adweb']['completed'] is True
+        chain.post_message.assert_called_once()
+        statistics.assert_called_once()
+        completion_events = [call for call in events.call_args_list if call.args[0] == EventType.SubscribeComplete]
+        assert len(completion_events) == 1
+        if mode == 'multiple_newly_complete':
+            assert history['version_progress']['other']['completed'] is True
+            assert chain.recognize_media.call_count == 2
+        elif mode == 'multiple_complete':
+            assert chain.recognize_media.call_count == 1
+        elif mode == 'new':
+            assert not any(call.args[1].get('state') == 'R' for call in oper.update.call_args_list)
+    else:
+        oper.add_history.assert_not_called()
+        oper.delete.assert_not_called()
+        chain.post_message.assert_not_called()
+        statistics.assert_not_called()
+    if mode == 'multiple_incomplete':
+        assert parent.version_progress['adweb']['completed'] is True
+        assert parent.version_progress['other']['completed'] is False
+    elif mode == 'library_failure':
+        assert parent.version_progress['adweb']['lack_episode'] == 36
+    else:
+        assert parent.version_progress['adweb']['completed'] is True

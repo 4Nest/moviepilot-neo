@@ -1711,6 +1711,7 @@ class SubscribeChain(ChainBase):
             else:
                 subscribes = subscribeoper.list(self.get_states_for_search(state))
             subscribes = expand_subscribe_runtime_views(subscribes)
+            archived_subscribe_ids = set()
             if force_search:
                 for subscribe in subscribes:
                     subscribe.skip_library_check = 1
@@ -1729,6 +1730,8 @@ class SubscribeChain(ChainBase):
                 for index, subscribe in enumerate(subscribes, start=1):
                     if global_vars.is_system_stopped:
                         break
+                    if subscribe.id in archived_subscribe_ids:
+                        continue
                     if progress_callback:
                         progress_callback(
                             value=(index - 1) / total_num * 100 if total_num else 100,
@@ -1812,6 +1815,8 @@ class SubscribeChain(ChainBase):
                                 self.__persist_version_progress(
                                     parent_subscribe, version_rule_id, subscribe, completed=True, no_exists=no_exists,
                                 )
+                                if self.__finish_subscribe(parent_subscribe, mediainfo, meta):
+                                    archived_subscribe_ids.add(parent_subscribe.id)
                             else:
                                 subscribeoper.update(subscribe.id, {"decision_summary": subscribe.decision_summary})
                             continue
@@ -1988,13 +1993,15 @@ class SubscribeChain(ChainBase):
                             self.__record_version_download_facts(
                                 parent_subscribe, mediainfo, downloads, no_exists=lefts, runtime_view=subscribe,
                             )
-                            self.__finish_subscribe(parent_subscribe, mediainfo, meta)
+                            if self.__finish_subscribe(parent_subscribe, mediainfo, meta):
+                                archived_subscribe_ids.add(parent_subscribe.id)
                         elif subscribe:
                             self.finish_subscribe_or_not(subscribe=subscribe, meta=meta, mediainfo=mediainfo,
                                                          downloads=downloads, lefts=lefts)
                     finally:
                         parent = getattr(subscribe, "_version_parent", subscribe)
-                        if search_attempted and parent and parent.state == 'N':
+                        if search_attempted and parent and parent.state == 'N' \
+                                and parent.id not in archived_subscribe_ids:
                             subscribeoper.update(parent.id, {'state': 'R'})
                             parent.state = 'R'
                         if progress_callback:
@@ -2307,6 +2314,7 @@ class SubscribeChain(ChainBase):
             # 所有订阅
             subscribes = SubscribeOper().list(self.get_states_for_search('R'))
             subscribes = expand_subscribe_runtime_views(subscribes)
+            archived_subscribe_ids = set()
             total_num = len(subscribes)
             if progress_callback:
                 progress_callback(
@@ -2318,6 +2326,8 @@ class SubscribeChain(ChainBase):
                 for index, subscribe in enumerate(subscribes, start=1):
                     if global_vars.is_system_stopped:
                         break
+                    if subscribe.id in archived_subscribe_ids:
+                        continue
                     if progress_callback:
                         progress_callback(
                             value=20 + (
@@ -2364,13 +2374,15 @@ class SubscribeChain(ChainBase):
                     if meta.type == MediaType.TV and not exist_flag and not no_exists:
                         logger.warning(f'订阅 {subscribe.name} 缺集查询失败，保留原进度')
                         continue
-                    if _version_uses_library(subscribe):
-                        if exist_flag:
-                            self.__persist_version_progress(
-                                getattr(subscribe, "_version_parent"),
-                                getattr(subscribe, "_version_rule_id"), subscribe, no_exists=no_exists,
-                            )
                     if exist_flag:
+                        version_rule_id = getattr(subscribe, "_version_rule_id", None)
+                        if version_rule_id:
+                            parent_subscribe = getattr(subscribe, "_version_parent")
+                            self.__persist_version_progress(
+                                parent_subscribe, version_rule_id, subscribe, completed=True, no_exists=no_exists,
+                            )
+                            if self.__finish_subscribe(parent_subscribe, mediainfo, meta):
+                                archived_subscribe_ids.add(parent_subscribe.id)
                         continue
 
                     # 清理多余信息
@@ -2638,7 +2650,8 @@ class SubscribeChain(ChainBase):
                         self.__record_version_download_facts(
                             parent_subscribe, mediainfo, downloads, no_exists=lefts, runtime_view=subscribe,
                         )
-                        self.__finish_subscribe(parent_subscribe, mediainfo, meta)
+                        if self.__finish_subscribe(parent_subscribe, mediainfo, meta):
+                            archived_subscribe_ids.add(parent_subscribe.id)
                     else:
                         subscribe = SubscribeOper().get(subscribe.id)
                         if subscribe:
@@ -3538,20 +3551,20 @@ class SubscribeChain(ChainBase):
                 subscribe, rule_id, view, completed=completed, no_exists=version_missing,
             )
 
-    def __finish_subscribe(self, subscribe: Subscribe, mediainfo: MediaInfo, meta: MetaBase):
-        """完成订阅；多版本仅在所有启用版本完成时归档。"""
+    def __finish_subscribe(self, subscribe: Subscribe, mediainfo: MediaInfo, meta: MetaBase) -> bool:
+        """完成订阅并返回是否归档；多版本仅在所有启用版本完成时归档。"""
         rules = expand_subscribe_version_rules(subscribe)
         if subscribe.version_rules:
             progress = subscribe.version_progress or {}
             if not rules:
                 logger.info("订阅 %s 没有启用版本，不自动归档", subscribe.id)
-                return
+                return False
             if not all(bool(progress.get(rule.get("id"), {}).get("completed")) for rule in rules):
                 logger.info("订阅 %s 仍有启用版本未完成，不归档", subscribe.id)
-                return
+                return False
         # 如果订阅状态为待定（P），说明订阅信息尚未完全更新，无法完成订阅
         if subscribe.state == "P":
-            return
+            return False
         # 发送订阅完成判定事件，在写入 DB 前，允许外部据完结策略否决本次自动完成
         completion_event = eventmanager.send_event(
             ChainEventType.SubscribeCompletionCheck,
@@ -3560,7 +3573,7 @@ class SubscribeChain(ChainBase):
             completion_data: SubscribeCompletionCheckEventData = completion_event.event_data
             if completion_data.cancel:
                 logger.info(f'{mediainfo.title_year} 完成被 [{completion_data.source}] 否决：{completion_data.reason}')
-                return
+                return False
         # 完成订阅
         msgstr = "订阅" if not subscribe.best_version else "洗版"
         logger.info(f'{mediainfo.title_year} 完成{msgstr}')
@@ -3604,6 +3617,7 @@ class SubscribeChain(ChainBase):
             "media_id": subscribe.media_id,
             "season": subscribe.season,
         })
+        return True
 
     def remote_list(
             self,
