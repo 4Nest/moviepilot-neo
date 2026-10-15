@@ -215,6 +215,11 @@ def find_metainfo(title: str) -> Optional[dict]:
         return None
 
 
+def supports_anime_episode_revision() -> bool:
+    """按扩展能力标记启用动漫修订版解析，兼容未更新的安装包。"""
+    return is_enabled() and getattr(_moviepilot_rust, "ANIME_EPISODE_REVISION", 0) == 1
+
+
 @lru_cache(maxsize=1)
 def supports_extended_media_ids() -> bool:
     """

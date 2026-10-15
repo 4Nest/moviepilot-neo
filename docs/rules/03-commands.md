@@ -52,6 +52,10 @@ pytest -v tests/test_xxx.py
 
 # Run a specific test function
 pytest tests/test_xxx.py::test_function_name
+
+# 在临时配置中复放一万条固定识别语料；从后端项目根目录运行
+python -m scripts.benchmark_recognition_10k --output /tmp/recognition-rust.json
+python -m scripts.benchmark_recognition_10k --python-only --output /tmp/recognition-python.json
 ```
 
 **Rules:**

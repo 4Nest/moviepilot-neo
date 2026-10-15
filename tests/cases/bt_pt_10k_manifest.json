@@ -1,0 +1,35 @@
+{
+  "records": 10000,
+  "unique_inputs": 10000,
+  "sha256_uncompressed": "54998a82a28c768b1664d14504e8149682ce173c624d8c1072bcf04279ee8aff",
+  "origin": {
+    "real": 1447,
+    "derived": 8553
+  },
+  "source": {
+    "mikan": 799,
+    "dmhy": 1178,
+    "anibt": 369,
+    "nyaa": 7219,
+    "user-report": 18,
+    "audiences": 417
+  },
+  "entrypoint": {
+    "title": 9629,
+    "path": 371
+  },
+  "transformations": {
+    "original": 1447,
+    "outer-whitespace": 1116,
+    "resolution": 1094,
+    "subtitle-label": 1886,
+    "brackets": 670,
+    "extension": 381,
+    "leading-label": 1673,
+    "path": 371,
+    "release-group": 1007,
+    "episode-revision": 355
+  },
+  "seed_names": 326,
+  "annotation": "原始期望来自独立标注；派生输入只作列明的语义保持变换，不调用被测解析器。"
+}

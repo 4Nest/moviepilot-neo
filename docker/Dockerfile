@@ -88,8 +88,9 @@ RUN python3 -m venv ${VENV_PATH} \
     && ln -sf /usr/local/bin/uv-pip-compat ${VENV_PATH}/bin/pip3.12 \
     && ln -sf /usr/local/bin/uv-pip-compat ${VENV_PATH}/bin/pip-compile \
     && ln -sf /usr/local/bin/uv-pip-compat ${VENV_PATH}/bin/pip-sync \
-    && pip-compile requirements.in -o requirements.txt \
-    && pip install -r requirements.txt
+    && pip-compile --emit-find-links requirements.in -o requirements.txt \
+    && pip install -r requirements.txt \
+    && python -c 'import moviepilot_rust as m; assert m.BT_PT_RECOGNITION_REVISION >= 3, "missing Neo recognition fixes"'
 
 # 下载准备代码
 FROM prepare_package AS prepare_code

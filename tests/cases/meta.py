@@ -290,6 +290,8 @@ meta_cases = [{
 }, {
     "title": "【爪爪字幕组】★7月新番[即使如此依旧步步进逼/Soredemo Ayumu wa Yosetekuru][09][1080p][HEVC][GB][MP4][招募翻译校对]",
     "subtitle": "",
+    # 新 Rust 保留标题别名和片源；旧扩展/Python 继续按原 target 验证。
+    "rust_target": {'cn_name': '即使如此依旧步步进逼'},
     "target": {
         "type": "电视剧",
         "cn_name": "",
@@ -324,6 +326,8 @@ meta_cases = [{
 }, {
     "title": "[GM-Team][国漫][寻剑 第1季][Sword Quest Season 1][2002][02][AVC][GB][1080P]",
     "subtitle": "",
+    # 新 Rust 保留标题别名和片源；旧扩展/Python 继续按原 target 验证。
+    "rust_target": {'cn_name': '寻剑'},
     "target": {
         "type": "电视剧",
         "cn_name": "",
@@ -341,6 +345,8 @@ meta_cases = [{
 }, {
     "title": " [猎户不鸽发布组] 组长女儿与照料专员 / 组长女儿与保姆 Kumichou Musume to Sewagakari [09] [1080p+] [简中内嵌] [2022年7月番]",
     "subtitle": "",
+    # 新 Rust 保留标题别名和片源；旧扩展/Python 继续按原 target 验证。
+    "rust_target": {'cn_name': '组长女儿与照料专员'},
     "target": {
         "type": "电视剧",
         "cn_name": "组长女儿与保姆",
@@ -392,6 +398,8 @@ meta_cases = [{
 }, {
     "title": "[Gal to Kyouryuu][02][BDRIP][1080P][H264_FLAC].mkv",
     "subtitle": "",
+    # 新 Rust 保留标题别名和片源；旧扩展/Python 继续按原 target 验证。
+    "rust_target": {'restype': 'BDRIP'},
     "target": {
         "type": "电视剧",
         "cn_name": "",
@@ -562,6 +570,8 @@ meta_cases = [{
 }, {
     "title": "[GM-Team][国漫][斗破苍穹 第5季][Fights Break Sphere V][2022][05][HEVC][GB][4K]",
     "subtitle": "",
+    # 新 Rust 保留标题别名和片源；旧扩展/Python 继续按原 target 验证。
+    "rust_target": {'cn_name': '斗破苍穹'},
     "target": {
         "type": "电视剧",
         "cn_name": "",
@@ -715,6 +725,8 @@ meta_cases = [{
 }, {
     "title": "教父3.The.Godfather.Part.III.1990.1080p.NF.WEBRip.H264.DDP5.1-PTerWEB.mkv",
     "subtitle": "",
+    # 关闭 Rust 时保留原 Python 片源输出，用于兼容验证。
+    "python_target": {"restype": "WEBRip"},
     "target": {
         "type": "未知",
         "cn_name": "教父3",
@@ -783,6 +795,8 @@ meta_cases = [{
 }, {
     "title": "【喵萌奶茶屋】★04月新番★[夏日重現/Summer Time Rendering][15][720p][繁日雙語][招募翻譯片源]",
     "subtitle": "",
+    # 新 Rust 保留标题别名和片源；旧扩展/Python 继续按原 target 验证。
+    "rust_target": {'cn_name': '夏日重現'},
     "target": {
         "type": "电视剧",
         "cn_name": "",
@@ -953,6 +967,8 @@ meta_cases = [{
 }, {
     "title": "[xyx98]传颂之物/Utawarerumono/うたわれるもの[BDrip][1920x1080][TV 01-26 Fin][hevc-yuv420p10 flac_ac3][ENG PGS]",
     "subtitle": "",
+    # 新 Rust 保留标题别名和片源；旧扩展/Python 继续按原 target 验证。
+    "rust_target": {'restype': 'BDRIP'},
     "target": {
         "type": "电视剧",
         "cn_name": "传颂之物",
@@ -1004,6 +1020,8 @@ meta_cases = [{
 }, {
     "title": "Rick and Morty.S06E06.JuRicksic.Mort.1080p.HMAX.WEBRip.DD5.1.X264-NTb[rartv]",
     "subtitle": "",
+    # 关闭 Rust 时保留原 Python 片源输出，用于兼容验证。
+    "python_target": {"restype": "WEBRip"},
     "target": {
         "type": "电视剧",
         "cn_name": "",
@@ -1021,6 +1039,8 @@ meta_cases = [{
 }, {
     "title": "rick and Morty.S06E05.JuRicksic.Mort.1080p.HMAX.WEBRip.DD5.1.X264-NTb[rartv]",
     "subtitle": "",
+    # 关闭 Rust 时保留原 Python 片源输出，用于兼容验证。
+    "python_target": {"restype": "WEBRip"},
     "target": {
         "type": "电视剧",
         "cn_name": "",
@@ -1272,6 +1292,8 @@ meta_cases = [{
     # 第一个括号包含完整发布名称（含年份+分辨率），应提取标题而非丢弃
     "title": "[Caligula.The.Ultimate.Cut.2023.2160p.UHD.Blu-ray.HEVC.DTS-HD.MA.5.1-BHYS@OurBits][DIY中字原盘] [罗马帝国艳情史：最终剪辑版][澳大利亚版UHD原盘 DIY 简体简英字幕][91.86GB].iso",
     "subtitle": "",
+    # 关闭 Rust 时保留原 Python 片源输出，用于兼容验证。
+    "python_target": {"restype": "UHD"},
     "target": {
         "type": "未知",
         "cn_name": "",

@@ -1,0 +1,382 @@
+{
+  "collected_on": "2026-10-15",
+  "samples": [
+    {
+      "source": "mikan",
+      "title": "[Nix-Raws] 兽王武神丹帝拜恩 / 兽王武神丹帝拜恩 / 獣王武神ダンデヴァイン / Juuou Mujin Dandivine S01E02 [CR WEB-DL 1080p AVC AAC][简繁内封]",
+      "url": "https://mikanani.me/Home/Episode/14fb6ee50f0d47c14c7d3a7af65f8d36200e27c0",
+      "kind": "title",
+      "id": "mikan-000",
+      "expected": {
+        "cn_name": "兽王武神丹帝拜恩",
+        "en_name": "Juuou Mujin Dandivine",
+        "begin_season": 1,
+        "begin_episode": 2
+      }
+    },
+    {
+      "source": "mikan",
+      "title": "[LoliHouse] 侦探已经，死了。 第二季 / Tantei wa Mou, Shindeiru. S2 - 02 [WebRip 1080p HEVC-10bit AAC][简繁内封字幕]",
+      "url": "https://mikanani.me/Home/Episode/b3da35b4ffd334351a84d084398eb1dd26d1c958",
+      "kind": "title",
+      "id": "mikan-001",
+      "expected": {
+        "cn_name": "侦探已经，死了。",
+        "en_name": "Tantei Wa Mou, Shindeiru.",
+        "begin_season": 2,
+        "begin_episode": 2
+      }
+    },
+    {
+      "source": "mikan",
+      "title": "【喵萌奶茶屋】★10月新番★[某暗部的少女共栖 / とある暗部の少女共栖 / Toaru Anbu no Item][01][1080p][繁日双语]",
+      "url": "https://mikanani.me/Home/Episode/19eeaff11ab9ad82e1dcdfb92393d546be913f71",
+      "kind": "title",
+      "id": "mikan-006",
+      "expected": {
+        "cn_name": "某暗部的少女共栖",
+        "en_name": "Toaru Anbu No Item",
+        "begin_season": null,
+        "begin_episode": 1
+      }
+    },
+    {
+      "source": "mikan",
+      "title": "[Nix-Raws] 新网球王子 U-17 世界杯 决赛成员选拔赛 / The Prince of Tennis II S03E03 [CR WEB-DL 1080p AVC AAC][简繁内封]",
+      "url": "https://mikanani.me/Home/Episode/07385cca798ae6d4806202984c3878f1c93c2628",
+      "kind": "title",
+      "id": "mikan-021",
+      "expected": {
+        "cn_name": "新网球王子 U-17 世界杯 决赛成员选拔赛",
+        "en_name": "The Prince Of Tennis Ii",
+        "begin_season": 3,
+        "begin_episode": 3
+      }
+    },
+    {
+      "source": "mikan",
+      "title": "[喵萌奶茶屋&LoliHouse] 被放逐的作弊赋予魔法师享受随心所欲的第二人生。~不只是武器，我还能赋予万物「强化点数」，且能照我的意思随时解除，其他人没问题吗？~ / Chii Fuyo - 02 [WebRip 1080p HEVC-10bit AAC][简繁日内封字幕]",
+      "url": "https://mikanani.me/Home/Episode/2d29c8b779eed1f3f110c0d0a661c54fca4cc0ba",
+      "kind": "title",
+      "id": "mikan-036",
+      "expected": {
+        "cn_name": "被放逐的作弊赋予魔法师享受随心所欲的第二人生。~不只是武器，我还能赋予万物「强化点数」，且能照我的意思随时解除，其他人没问题吗？~",
+        "en_name": "Chii Fuyo",
+        "begin_season": null,
+        "begin_episode": 2
+      }
+    },
+    {
+      "source": "mikan",
+      "title": "【悠哈璃羽字幕社】[JOJO的奇妙冒险 飙马野郎/JoJo's Bizarre Adventure: Steel Ball Run][04][1080p HEVC][CHS_JP][简日内嵌]",
+      "url": "https://mikanani.me/Home/Episode/a77104132457eace245d0f5e7a4bb76561becb63",
+      "kind": "title",
+      "id": "mikan-039",
+      "expected": {
+        "cn_name": "JOJO的奇妙冒险 飙马野郎",
+        "en_name": "Jojo'S Bizarre Adventure: Steel Ball Run",
+        "begin_season": null,
+        "begin_episode": 4
+      }
+    },
+    {
+      "source": "mikan",
+      "title": "[桜都字幕组] 因为鼠标光标似乎可以操控现实，所以我要疯狂点击女孩子 / Mouse Cursor de Genjitsu o Sousa Dekiru You ni Natta no de, Onnanoko o Ippai Click Shima~su [01v2][1080P][简繁内封]",
+      "url": "https://mikanani.me/Home/Episode/af675cb14b3d6bf2dd5b28efdb8384dcf43a00bb",
+      "kind": "title",
+      "id": "mikan-041",
+      "expected": {
+        "cn_name": "因为鼠标光标似乎可以操控现实，所以我要疯狂点击女孩子",
+        "en_name": "Mouse Cursor De Genjitsu O Sousa Dekiru You Ni Natta No De, Onnanoko O Ippai Click Shima~Su",
+        "begin_season": null,
+        "begin_episode": 1
+      }
+    },
+    {
+      "source": "mikan",
+      "title": "[喵萌奶茶屋&LoliHouse] 药师少女的独语 / 药屋少女的呢喃 / Kusuriya no Hitorigoto - 50 [WebRip 1080p HEVC-10bit AAC][简繁日内封字幕]",
+      "url": "https://mikanani.me/Home/Episode/9471b996dc493ae76c3011deed17cdbc438c82db",
+      "kind": "title",
+      "id": "mikan-058",
+      "expected": {
+        "cn_name": "药师少女的独语",
+        "en_name": "Kusuriya No Hitorigoto",
+        "begin_season": null,
+        "begin_episode": 50
+      }
+    },
+    {
+      "source": "mikan",
+      "title": "[绿茶字幕组] 攻壳机动队 The Ghost in the Shell / Koukaku Kidoutai 2026 [01-10][WebRip][1080p][简繁日内封]",
+      "url": "https://mikanani.me/Home/Episode/4f231e8c7b62f04fc15fb5d2cb1be235d741d9d4",
+      "kind": "title",
+      "id": "mikan-063",
+      "expected": {
+        "cn_name": "攻壳机动队",
+        "en_name": "Koukaku Kidoutai",
+        "begin_season": null,
+        "begin_episode": 1,
+        "year": "2026",
+        "end_episode": 10
+      }
+    },
+    {
+      "source": "mikan",
+      "title": "[Nix-Raws] 佐佐木与文鸟小哔 Season 2 / 佐佐木与文鸟小哔 Season 2 / 佐々木とピーちゃん シーズン２ / Sasaki to Pii chan S02E02 [CR WEB-DL 1080p AVC AAC][简繁内封]",
+      "url": "https://mikanani.me/Home/Episode/28a463d17fcbcab53d110aa35d7dbd58944427a6",
+      "kind": "title",
+      "id": "mikan-068",
+      "expected": {
+        "cn_name": "佐佐木与文鸟小哔",
+        "en_name": "Sasaki To Pii Chan",
+        "begin_season": 2,
+        "begin_episode": 2
+      }
+    },
+    {
+      "source": "mikan",
+      "title": "[丸子家族][樱桃小丸子第二期(Chibi Maruko-chan II)][1551]小丸子和奶奶去摘木通果&妈妈的秋假[2026.10.11][BIG5][1080P][MP4]",
+      "url": "https://mikanani.me/Home/Episode/30b6e58461b4e3561b636e2584bfae6bf9b83db2",
+      "kind": "title",
+      "id": "mikan-088",
+      "expected": {
+        "cn_name": "樱桃小丸子",
+        "en_name": null,
+        "begin_season": 2,
+        "begin_episode": 1551
+      }
+    },
+    {
+      "source": "mikan",
+      "title": "[晚街与灯][Re：从零开始的异世界生活 第四季合集 全（丧失篇+夺回篇+小剧场） / Re:Zero kara Hajimeru Isekai Seikatsu 4th][总第67~85][WebRip][1080P_AVC_AAC][繁日双语内嵌]",
+      "url": "https://mikanani.me/Home/Episode/c450c32078d3a2fa7559b2b31a976e00020b96a4",
+      "kind": "title",
+      "id": "mikan-095",
+      "expected": {
+        "cn_name": "Re：从零开始的异世界生活",
+        "en_name": "Re:Zero Kara Hajimeru Isekai Seikatsu",
+        "begin_season": 4,
+        "begin_episode": 67,
+        "end_episode": 85
+      }
+    },
+    {
+      "source": "dmhy",
+      "title": "[绿茶字幕组] 僵尸搜寻中 / Zombie Sagashitemasu [02][WebRip][1080p][简日内嵌]",
+      "url": "https://share.dmhy.org/topics/view/728920_Zombie_Sagashitemasu_02_WebRip_1080p.html",
+      "kind": "title",
+      "id": "dmhy-104",
+      "expected": {
+        "cn_name": "僵尸搜寻中",
+        "en_name": "Zombie Sagashitemasu",
+        "begin_season": null,
+        "begin_episode": 2
+      }
+    },
+    {
+      "source": "anibt",
+      "title": "[Nix-Raws] 兽王武神丹帝拜恩 / 獸王武神丹帝拜恩 / 獣王武神ダンデヴァイン / Juuou Mujin Dandivine S01E02 [CR WEB-DL 1080p AVC AAC][简繁内封]",
+      "url": "https://anibt.net/release/rel_ERxx9J0Z8SEO",
+      "kind": "title",
+      "id": "anibt-180",
+      "expected": {
+        "cn_name": "兽王武神丹帝拜恩",
+        "en_name": "Juuou Mujin Dandivine",
+        "begin_season": 1,
+        "begin_episode": 2
+      }
+    },
+    {
+      "source": "nyaa",
+      "title": "[Yameii] The Prince of Tennis II - S05E01 [English Dub] [CR WEB-DL 720p H264 AAC] [DDCC880E] (Shin Tennis no Ouji-sama: U-17 World Cup - Kesshou Member Ketteisen | Final Member Selection Match)",
+      "url": "https://nyaa.si/view/2174153",
+      "kind": "title",
+      "id": "nyaa-215",
+      "expected": {
+        "cn_name": null,
+        "en_name": "The Prince Of Tennis Ii",
+        "begin_season": 5,
+        "begin_episode": 1
+      }
+    },
+    {
+      "source": "nyaa",
+      "title": "[SubsPlease] Mairimashita! Iruma-kun S4 (01-24) (1080p) [Batch]",
+      "url": "https://nyaa.si/view/2174137",
+      "kind": "title",
+      "id": "nyaa-223",
+      "expected": {
+        "cn_name": null,
+        "en_name": "Mairimashita! Iruma Kun",
+        "begin_season": 4,
+        "begin_episode": 1,
+        "end_episode": 24
+      }
+    },
+    {
+      "source": "nyaa",
+      "title": "[ASW] The Prince of Tennis II - U-17 World Cup Final Member Selection Match - 03 [1080p HEVC x265 10Bit][AAC]",
+      "url": "https://nyaa.si/view/2174082",
+      "kind": "title",
+      "id": "nyaa-248",
+      "expected": {
+        "cn_name": null,
+        "en_name": "The Prince Of Tennis Ii - U-17 World Cup Final Member Selection Match",
+        "begin_season": null,
+        "begin_episode": 3
+      }
+    },
+    {
+      "source": "audiences",
+      "subtitle": "国宝 / Kokuho / National Treasure | 类型：剧情",
+      "title": "Kokuho 2025 REPACK2 1080p AMZN WEB-DL DDP 5.1 H.264-ppkhoa",
+      "kind": "title",
+      "id": "audiences-299",
+      "expected": {
+        "cn_name": null,
+        "en_name": "Kokuho",
+        "year": "2025",
+        "begin_season": null,
+        "end_season": null,
+        "begin_episode": null,
+        "end_episode": null,
+        "resource_pix": "1080p",
+        "resource_type": "WEB-DL",
+        "video_encode": "H264",
+        "audio_encode": "DDP 5.1",
+        "resource_team": null
+      },
+      "expectation": "compatibility"
+    },
+    {
+      "source": "audiences",
+      "subtitle": "国宝 / Kokuho / National Treasure [澳版蓝光原盘][自带英文硬字幕 DIY正片.简繁字幕，不撸酷客第1117弹]",
+      "title": "Kokuho 2025 1080p AUS Blu-ray AVC DTS-HD MA 5.1-blucook#1117@CHDBits",
+      "kind": "title",
+      "id": "audiences-305",
+      "expected": {
+        "cn_name": null,
+        "en_name": "Kokuho",
+        "year": "2025",
+        "begin_season": null,
+        "end_season": null,
+        "begin_episode": null,
+        "end_episode": null,
+        "resource_pix": "1080p",
+        "resource_type": "BluRay DIY",
+        "video_encode": "AVC",
+        "audio_encode": "DTS-HD MA 5.1",
+        "resource_team": "CHDBits"
+      },
+      "expectation": "compatibility"
+    },
+    {
+      "source": "audiences",
+      "subtitle": "新玫瑰旅馆 / 豪门诱惑  【原生IG菜单新增按钮】【Radiance英版原盘DIY/双语简繁字幕】",
+      "title": "New Rose Hotel 1998 1080p GBR BluRay AVC DTS-HD MA 5.1-DIY@Audies",
+      "kind": "title",
+      "id": "audiences-333",
+      "expected": {
+        "cn_name": null,
+        "en_name": "New Rose Hotel",
+        "year": "1998",
+        "begin_season": null,
+        "end_season": null,
+        "begin_episode": null,
+        "end_episode": null,
+        "resource_pix": "1080p",
+        "resource_type": "BluRay DIY",
+        "video_encode": "AVC",
+        "audio_encode": "DTS-HD MA 5.1",
+        "resource_team": "Audies"
+      },
+      "expectation": "compatibility"
+    },
+    {
+      "source": "audiences",
+      "subtitle": "披荆斩棘 第六季 预热直播  五公小考：阿云嘎在线“点评”小沈阳部落 曹骏吉他舞台首秀惊喜登场 | 披荆斩棘6 / 披荆斩棘的哥哥6",
+      "title": "Call Me By Fire S06E15 Warm-Up 2026 2160p WEB-DL H265 AAC-ADWeb",
+      "kind": "title",
+      "id": "audiences-421",
+      "expected": {
+        "cn_name": null,
+        "en_name": "Call Me By Fire",
+        "year": "2026",
+        "begin_season": 6,
+        "end_season": null,
+        "begin_episode": 15,
+        "end_episode": null,
+        "resource_pix": "2160p",
+        "resource_type": "WEB-DL",
+        "video_encode": "H265",
+        "audio_encode": "AAC",
+        "resource_team": "ADWeb"
+      },
+      "expectation": "compatibility"
+    },
+    {
+      "source": "dmhy",
+      "title": "[LoliHouse] Tantei wa Mou, Shindeiru. S2 - 02 [WebRip 1080p HEVC-10bit AAC SRTx2].mkv",
+      "url": "https://share.dmhy.org/topics/view/728923_LoliHouse_Tantei_wa_Mou_Shindeiru_S2_-_02_WebRip_1080p_HEVC-10bit_AAC.html",
+      "kind": "filename",
+      "id": "dmhy-file-00",
+      "expected": {
+        "en_name": "Tantei Wa Mou, Shindeiru.",
+        "begin_season": 2,
+        "begin_episode": 2,
+        "isfile": true
+      }
+    },
+    {
+      "source": "nyaa",
+      "title": "[EUR]_Demon_of_Steel_[4961119F].mkv",
+      "url": "https://nyaa.si/view/2174163",
+      "kind": "filename",
+      "id": "nyaa-file-04",
+      "expected": {
+        "en_name": "Demon Of Steel",
+        "begin_season": null,
+        "begin_episode": null,
+        "isfile": true
+      }
+    },
+    {
+      "source": "nyaa",
+      "title": "[SubsPlease] Mairimashita! Iruma-kun S4 - 01v2 (1080p) [90D8A26F].mkv",
+      "url": "https://nyaa.si/view/2174137",
+      "kind": "filename",
+      "id": "nyaa-file-07",
+      "expected": {
+        "en_name": "Mairimashita! Iruma-Kun",
+        "begin_season": 4,
+        "begin_episode": 1,
+        "isfile": true
+      }
+    },
+    {
+      "source": "dmhy",
+      "title": "[Sakurato] Mouse Cursor de Genjitsu o Sousa Dekiru You ni Natta no de, Onnanoko o Ippai Click Shima~su [01v2][HEVC-10bit 1080P AAC][CHS&CHT].mkv",
+      "url": "https://share.dmhy.org/topics/view/728896_Mouse_Cursor_de_Genjitsu_o_Sousa_Dekiru_You_ni_Natta_no_de_Onnanoko_o_Ippai_Click_Shima_su_01v2_1080P.html",
+      "kind": "filename",
+      "id": "dmhy-file-33",
+      "expected": {
+        "en_name": "Mouse Cursor De Genjitsu O Sousa Dekiru You Ni Natta No De, Onnanoko O Ippai Click Shima~Su",
+        "begin_season": null,
+        "begin_episode": 1,
+        "isfile": true
+      }
+    },
+    {
+      "id": "reported-subtitle-label",
+      "source": "user-report",
+      "kind": "title",
+      "title": "[爱恋&漫猫字幕组][7月新番][令和妖神斑小姐][Reiwa no Dara-san][13][1080p][MP4][GB][简中]",
+      "expected": {
+        "cn_name": "令和妖神斑小姐",
+        "en_name": "Reiwa No Dara-San",
+        "begin_episode": 13,
+        "resource_pix": "1080p"
+      }
+    }
+  ]
+}

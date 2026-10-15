@@ -11,7 +11,25 @@
 - **Git** (用于版本控制)
 - **RAR 解压工具**：本地开发如需测试或使用 `.rar` 字幕包解压，请安装 `unar`、`unrar`、`7z` 或 `bsdtar` 之一；Docker 镜像会内置 `unar`。
 
-Rust 加速扩展通过 `moviepilot-rust` PyPI 包安装，主项目本地开发不再需要 Rust toolchain。需要修改或发布 Rust 扩展时，请在 `MoviePilot-Rust` 仓库中构建。
+Rust 加速扩展通过 `requirements.in` 中固定的 `moviepilot-rust==0.2.9+neo.3` 安装，
+`--find-links` 指向 `4Nest/MoviePilot-Rust` 的对应 GitHub Release。pip 与 uv 会选择当前平台的 wheel，
+主项目本地开发无需 Rust toolchain。需要修改或发布扩展时，在 `MoviePilot-Rust` 仓库构建并先发布制品。
+
+BT/PT 识别改进目前配套本地扩展 `0.2.9+neo.3`（基于上游 `v0.2.9`，兼容 Python 3.11+）。
+它通过 `ANIME_EPISODE_REVISION=1` 声明修订集号能力，`BT_PT_RECOGNITION_REVISION=3`
+标识万条语料验证后的片名括号、字幕标签和技术边界修复。通过每次解析结果的
+`anime_names_resolved` 标记告知后端别名已处理，减少重复 Python 解析。
+旧扩展继续保留原来的 Python 回退。仅更新后端代码不会获得新的 Rust 识别规则；
+应在 Rust 仓库构建目标平台 wheel，安装到实际运行后端的环境，并重启对应进程。
+此定制版本通过 GitHub Release 分发，不发布到上游 PyPI 项目；镜像构建会检查万条识别能力标记，
+缺少新版扩展时直接失败。前后端版本统一为 `v2.15.15`。
+
+站点语料及完整回归保存在 Rust 仓库 `tests/metainfo/site_samples.json`、
+`expanded_samples.json`、`volume_samples.json`、`diverse_samples.json` 和
+`recognition_10k.jsonl.gz`。后端集成语料位于 `tests/cases/bt_pt_recognition.json`、
+`bt_pt_expanded.json`、`bt_pt_10k.jsonl.gz`，测试均离线。万条集合包含真实采集与格式变体，
+生成脚本、来源统计和 SHA-256 清单均随语料保存；测试核对去重数量和校验和。
+样本口径、修复行为和验证结果见 `docs/rust-bt-pt-recognition.md`。
 
 ### 1. 创建虚拟环境
 

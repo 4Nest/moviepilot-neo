@@ -444,7 +444,7 @@ def _meta_from_rust(parsed: dict) -> Optional[MetaBase]:
     # 统一资源类型写法,Rust 大写形式与 Python/动漫回退保持一致
     if meta.resource_type and meta.resource_type.upper() == "WEBRIP":
         meta.resource_type = "WebRip"
-    if parsed.get("kind") == "anime":
+    if parsed.get("kind") == "anime" and not parsed.get("anime_names_resolved"):
         alias_cn_name, alias_en_name = extract_multilingual_anime_names(meta.org_string or meta.title)
         if alias_cn_name and alias_en_name:
             meta.cn_name = alias_cn_name
@@ -471,15 +471,17 @@ def _requires_python_metainfo(
     """
     判断标题或临时识别词是否需要使用 Python 解析器。
 
-    Rust 扩展尚未支持扩展数据源 ID，也可能把动漫集数修正版
-    （如 [01v2]、S03E01v2）误判为普通影视，且不识别 #10 形式的集号。
+    旧版 Rust 可能把动漫集数修正版误判为普通影视；仅在扩展声明
+    支持后启用其修订版快路径。#10 集号继续使用 Python 兜底。
 
     :param title: 原始标题
     :param custom_words: 临时识别词
     :return: 是否必须使用 Python 解析器
     """
     candidates = [title or "", *(custom_words or [])]
-    if has_versioned_anime_episode(title) or has_hash_episode(title):
+    if has_hash_episode(title):
+        return True
+    if has_versioned_anime_episode(title) and not rust_accel.supports_anime_episode_revision():
         return True
     contains_extended_id = any(
         _EXTENDED_MEDIA_ID_TAG_RE.search(candidate) for candidate in candidates

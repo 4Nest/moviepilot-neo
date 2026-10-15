@@ -11,6 +11,7 @@ from app.core.meta.metavideo import MetaVideo
 from app.helper.torrent import TorrentHelper
 from app.helper.message import TemplateContextBuilder
 from app.schemas.types import MediaType
+from app.utils import rust_accel
 from tests.cases.meta import meta_cases
 
 
@@ -44,6 +45,10 @@ def test_metainfo():
             target["tmdbid"] = meta_info.tmdbid
 
         expected = info.get("target")
+        if rust_accel.supports_anime_episode_revision():
+            expected = {**expected, **info.get("rust_target", {})}
+        elif not rust_accel.is_enabled():
+            expected = {**expected, **info.get("python_target", {})}
         if "fps" not in expected:
             target.pop("fps", None)
         assert target == expected
