@@ -348,14 +348,24 @@ class MoviePilotServerHelper:
         """
         if res is None:
             return False, "连接MoviePilot服务器失败"
+        try:
+            payload = res.json()
+        except (json.JSONDecodeError, ValueError, AttributeError):
+            if res.status_code != 200:
+                return False, f"响应解析失败: {getattr(res, 'text', '')[:100]}..."
+            # 兼容旧服务端仅用 HTTP 状态码表示成功的文本响应。
+            payload = None
+        message = ""
+        if isinstance(payload, dict):
+            message = str(payload.get("message") or payload.get("detail") or "")
+            # HTTP 请求完成不等于操作成功，必须保留服务端返回的业务失败。
+            if payload.get("success") is False:
+                return False, message or "操作失败"
         if res.status_code == 200:
             if clear_cache:
                 clear_cache()
             return True, ""
-        try:
-            return False, res.json().get("message", "未知错误")
-        except (json.JSONDecodeError, ValueError, AttributeError):
-            return False, f"响应解析失败: {getattr(res, 'text', '')[:100]}..."
+        return False, message or "未知错误"
 
     @classmethod
     def usage_report(cls, payload: Dict[str, Any]):
@@ -928,10 +938,8 @@ class MoviePilotServerHelper:
     @classmethod
     def share_delete(cls, share_id: int) -> Tuple[bool, str]:
         """
-        删除订阅分享。
+        撤回已有订阅分享，关闭数据共享后仍允许撤回。
         """
-        if not settings.SUBSCRIBE_STATISTIC_SHARE:
-            return False, "当前没有开启订阅数据共享功能"
         return cls._handle_response(
             cls.subscribe_share_delete(share_id, cls.get_user_uuid()),
             cls._clear_subscribe_share_cache,
@@ -940,10 +948,8 @@ class MoviePilotServerHelper:
     @classmethod
     async def async_share_delete(cls, share_id: int) -> Tuple[bool, str]:
         """
-        异步删除订阅分享。
+        异步撤回已有订阅分享，关闭数据共享后仍允许撤回。
         """
-        if not settings.SUBSCRIBE_STATISTIC_SHARE:
-            return False, "当前没有开启订阅数据共享功能"
         return cls._handle_response(
             await cls.async_subscribe_share_delete(share_id, cls.get_user_uuid()),
             cls._clear_subscribe_share_cache,
@@ -1734,20 +1740,16 @@ class MoviePilotServerHelper:
         """
         清理订阅共享相关缓存。
         """
+        # 同步、异步列表及统计共用 subscribe_share 区域，清理一次即可。
         cls.get_subscribe_shares.cache_clear()
-        cls.async_get_subscribe_shares.cache_clear()
-        cls.get_subscribe_statistic.cache_clear()
-        cls.async_get_subscribe_statistic.cache_clear()
-        cls.get_subscribe_share_statistics.cache_clear()
-        cls.async_get_subscribe_share_statistics.cache_clear()
 
     @classmethod
     def _clear_workflow_share_cache(cls) -> None:
         """
         清理工作流共享相关缓存。
         """
+        # 同步、异步查询共用同一缓存区域，不额外创建未等待的协程。
         cls.get_workflow_shares.cache_clear()
-        cls.async_get_workflow_shares.cache_clear()
 
     @classmethod
     def _has_header(cls, headers: dict, name: str) -> bool:
