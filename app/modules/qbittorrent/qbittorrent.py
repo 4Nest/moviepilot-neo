@@ -239,7 +239,7 @@ class Qbittorrent:
                     tags = tags.split(',')
                 try:
                     for torrent in torrents:
-                        torrent_tags = [str(tag).strip() for tag in torrent.get("tags").split(',')]
+                        torrent_tags = [str(tag).strip() for tag in (torrent.get("tags") or "").split(',')]
                         if set(tags).issubset(set(torrent_tags)):
                             results.append(torrent)
                 finally:
@@ -301,22 +301,27 @@ class Qbittorrent:
                                             tags=tags)
         return None if error else torrents or []
 
-    def delete_torrents_tag(self, ids: Union[str, list], tag: Union[str, list]) -> bool:
+    def delete_torrents_tag(self, ids: Optional[Union[str, list]], tag: Union[str, list]) -> bool:
         """
-        从指定种子移除标签，并删除全局标签定义
-        :param ids: 种子Hash列表
+        删除全局标签及所有任务上的同名标签，瞬时失败时最多尝试三次
+        :param ids: 为兼容旧调用保留，全局删除无需种子Hash，可传None
         :param tag: 标签内容
         :return: 是否删除成功
         """
-        if not self.qbc:
+        if not self.qbc or not tag:
             return False
-        try:
-            self.qbc.torrents_remove_tags(torrent_hashes=ids, tags=tag)
-            self.qbc.torrents_delete_tags(tags=tag)
-            return True
-        except Exception as err:
-            logger.error(f"删除种子Tag出错：{str(err)}")
-            return False
+        last_error = None
+        for index in range(3):
+            try:
+                # deleteTags 会同步移除任务关联，避免分步移除失败后留下空标签。
+                self.qbc.torrents_delete_tags(tags=tag)
+                return True
+            except Exception as err:
+                last_error = err
+            if index < 2:
+                time.sleep(1)
+        logger.error(f"删除全局标签 {tag} 失败（已尝试3次）：{last_error}")
+        return False
 
     def remove_torrents_tag(self, ids: Union[str, list], tag: Union[str, list]) -> bool:
         """
@@ -383,20 +388,21 @@ class Qbittorrent:
     def get_torrent_id_by_tag(self, tags: Union[str, list],
                               status: Optional[str] = None) -> Optional[str]:
         """
-        通过标签多次尝试获取刚添加的种子ID，并移除标签
+        通过临时标签多次尝试获取刚添加的种子ID，结束后无论成功与否均清理标签
         """
         torrent_id = None
-        # QB添加下载后需要时间，重试10次每次等待3秒
-        for i in range(1, 10):
-            time.sleep(3)
-            torrent_id = self.__get_last_add_torrentid_by_tag(tags=tags,
-                                                              status=status)
-            if torrent_id is None:
-                continue
-            else:
-                self.delete_torrents_tag(torrent_id, tags)
-                break
-        return torrent_id
+        try:
+            # QB添加下载后需要时间，等待任务信息就绪。
+            for _ in range(1, 10):
+                time.sleep(3)
+                torrent_id = self.__get_last_add_torrentid_by_tag(tags=tags,
+                                                                status=status)
+                if torrent_id is not None:
+                    break
+            return torrent_id
+        finally:
+            # 即使查询超时或异常，也需要删除下载器中已创建的全局标签。
+            self.delete_torrents_tag(torrent_id, tags)
 
     def add_torrent(self,
                     content: Union[str, bytes],

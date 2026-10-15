@@ -5,6 +5,8 @@ from enum import Enum
 from pathlib import Path
 from unittest.mock import call, MagicMock, patch
 
+import pytest
+
 
 def _load_qbittorrent_modules():
     repo_root = Path(__file__).resolve().parents[1]
@@ -565,24 +567,146 @@ def test_download_removes_temporary_tag_from_existing_torrent():
     )
 
     assert result == ("qb", "existing123", "Original", "下载任务已存在")
-    fake_server.delete_torrents_tag.assert_called_once_with("existing123", "tmp-tag-01")
+    fake_server.delete_torrents_tag.assert_called_once_with(None, "tmp-tag-01")
     assert fake_server.mock_calls.index(
-        call.delete_torrents_tag("existing123", "tmp-tag-01")
+        call.delete_torrents_tag(None, "tmp-tag-01")
     ) < fake_server.mock_calls.index(call.get_content_layout())
 
 
 def test_delete_torrents_tag_uses_supported_qbittorrent_api_arguments():
-    """删除标签时应分别调用任务移除接口和全局标签删除接口。"""
+    """全局删除标签无需种子 Hash，也无需先从任务单独移除。"""
     fake_client = MagicMock()
     downloader = Qbittorrent.__new__(Qbittorrent)
     downloader.qbc = fake_client
 
     assert downloader.delete_torrents_tag("abc123", "tmp-tag-01")
-    fake_client.torrents_remove_tags.assert_called_once_with(
-        torrent_hashes="abc123",
-        tags="tmp-tag-01",
-    )
+    fake_client.torrents_remove_tags.assert_not_called()
     fake_client.torrents_delete_tags.assert_called_once_with(tags="tmp-tag-01")
+
+
+@pytest.mark.parametrize("content", [b"torrent-content", "magnet:?xt=urn:btih:123"])
+@pytest.mark.parametrize("query_result", [
+    ([], False),
+    ([{"name": "unrelated", "hash": "other123", "total_size": 1}], False),
+    ([], True),
+])
+def test_download_cleans_temporary_tag_after_add_failure(content, query_result):
+    """添加失败后，无论查询为空、未匹配或连接异常，都应清除本次临时标签。"""
+    fake_server = MagicMock()
+    fake_server.add_torrent.return_value = (False, [])
+    fake_server.get_torrents.return_value = ([dict(item) for item in query_result[0]], query_result[1])
+
+    result = _build_module(fake_server).download(
+        content=content, download_dir=Path("/downloads"), cookie="", downloader="qb",
+    )
+
+    assert result[:3] == (None, None, None)
+    fake_server.delete_torrents_tag.assert_called_once_with(None, "tmp-tag-01")
+
+
+@pytest.mark.parametrize("outcome", ["added-id", "lookup", "timeout", "rejected", "query-error"])
+@pytest.mark.parametrize("label", [None, "custom-tag"])
+def test_download_removes_only_its_temporary_tag(outcome, label):
+    """下载各出口都应清除临时标签，保留业务、自定义及其他任务的标签。"""
+    permanent_tags = {"moviepilot-tag", "custom-tag", "已整理", "bYy97mXkDx"}
+    global_tags = set(permanent_tags)
+    torrent_tags = set(permanent_tags)
+    fake_client = MagicMock()
+
+    def add_torrent(**kwargs):
+        global_tags.update(kwargs["tags"])
+        if outcome != "rejected":
+            torrent_tags.update(kwargs["tags"])
+        if outcome == "added-id":
+            return {"added_torrent_ids": ["abc123"]}
+        return "Fails." if outcome == "rejected" else "Ok."
+
+    def get_torrents(**_kwargs):
+        if outcome == "query-error":
+            raise ConnectionError("查询暂时失败")
+        if outcome in {"timeout", "rejected"}:
+            return []
+        return [{"hash": "abc123", "tags": ", ".join(torrent_tags)}]
+
+    def remove_tags(*, torrent_hashes, tags):
+        assert torrent_hashes == "abc123"
+        torrent_tags.discard(tags)
+
+    def delete_tags(*, tags):
+        # qBittorrent 的全局删除接口同时移除任务上的标签。
+        global_tags.discard(tags)
+        torrent_tags.discard(tags)
+
+    fake_client.torrents_add.side_effect = add_torrent
+    fake_client.torrents_info.side_effect = get_torrents
+    fake_client.torrents_remove_tags.side_effect = remove_tags
+    fake_client.torrents_delete_tags.side_effect = delete_tags
+    with patch.object(Qbittorrent, "_Qbittorrent__login_qbittorrent", return_value=fake_client):
+        downloader = Qbittorrent(host="http://127.0.0.1", port=8080)
+    with patch.object(qbittorrent_module.time, "sleep"), \
+            patch.object(downloader, "get_content_layout", return_value="Original"):
+        result = _build_module(downloader).download(
+            content=b"torrent-content", download_dir=Path("/downloads"),
+            cookie="", downloader="qb", label=label,
+        )
+
+    if outcome in {"added-id", "lookup"}:
+        assert result == ("qb", "abc123", "Original", "添加下载成功")
+    else:
+        assert result[:3] == (None, None, None)
+    assert global_tags == permanent_tags
+    assert torrent_tags == permanent_tags
+
+
+def test_tag_lookup_cleans_temporary_tag_when_interrupted():
+    """等待任务信息意外中断时也应执行临时标签清理。"""
+    downloader = Qbittorrent.__new__(Qbittorrent)
+    downloader.qbc = MagicMock()
+
+    with patch.object(qbittorrent_module.time, "sleep", side_effect=RuntimeError("查询中断")):
+        with pytest.raises(RuntimeError, match="查询中断"):
+            downloader.get_torrent_id_by_tag("tmp-tag-01")
+
+    downloader.qbc.torrents_delete_tags.assert_called_once_with(tags="tmp-tag-01")
+
+
+def test_delete_torrents_tag_does_not_depend_on_task_removal():
+    """任务移除接口失败不应阻止全局标签清理。"""
+    downloader = Qbittorrent.__new__(Qbittorrent)
+    downloader.qbc = MagicMock()
+    downloader.qbc.torrents_remove_tags.side_effect = ConnectionError("任务已不存在")
+
+    assert downloader.delete_torrents_tag("missing123", "tmp-tag-01")
+    downloader.qbc.torrents_delete_tags.assert_called_once_with(tags="tmp-tag-01")
+
+
+@pytest.mark.parametrize("failure_count", [1, 2, 3])
+def test_delete_torrents_tag_retries_transient_errors_with_a_limit(failure_count):
+    """瞬时失败应重试，持续失败应有界退出并返回失败。"""
+    downloader = Qbittorrent.__new__(Qbittorrent)
+    downloader.qbc = MagicMock()
+    downloader.qbc.torrents_delete_tags.side_effect = [ConnectionError("临时不可用")] * failure_count + [None]
+
+    with patch.object(qbittorrent_module.time, "sleep"):
+        result = downloader.delete_torrents_tag(None, "tmp-tag-01")
+
+    assert result is (failure_count < 3)
+    assert downloader.qbc.torrents_delete_tags.call_count == min(failure_count + 1, 3)
+
+
+def test_tag_lookup_ignores_torrents_without_tags():
+    """列表中的空标签不应中断查找刚添加的任务。"""
+    downloader = Qbittorrent.__new__(Qbittorrent)
+    downloader.qbc = MagicMock()
+    downloader.qbc.torrents_info.return_value = [
+        {"hash": "untagged", "tags": None},
+        {"hash": "abc123", "tags": "moviepilot-tag, tmp-tag-01"},
+    ]
+
+    torrents, error = downloader.get_torrents(tags="tmp-tag-01")
+
+    assert not error
+    assert [torrent["hash"] for torrent in torrents] == ["abc123"]
 
 
 def test_get_files_retries_until_qbittorrent_files_available():

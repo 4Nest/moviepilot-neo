@@ -196,6 +196,8 @@ class QbittorrentModule(_ModuleBase, _DownloaderBase[Qbittorrent]):
         )
 
         if not state:
+            # 添加失败也可能已在下载器创建标签；后续按名称和大小查重，不再需要临时标签。
+            server.delete_torrents_tag(None, tag)
             # 查询所有下载器的种子
             torrents, error = server.get_torrents()
             if error:
@@ -207,7 +209,6 @@ class QbittorrentModule(_ModuleBase, _DownloaderBase[Qbittorrent]):
                         if torrent.get("name") == getattr(torrent_from_file, 'name', '') \
                                 and torrent.get("total_size") == getattr(torrent_from_file, 'total_size', 0):
                             torrent_hash = torrent.get("hash")
-                            server.delete_torrents_tag(torrent_hash, tag)
                             torrent_tags = [str(tag).strip() for tag in (torrent.get("tags") or "").split(',')]
                             logger.warn(f"下载器中已存在该种子任务：{torrent_hash} - {torrent.get('name')}")
                             # 给种子打上标签
