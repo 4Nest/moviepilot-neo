@@ -1,4 +1,3 @@
-import traceback
 from dataclasses import dataclass
 from typing import Union, Optional, List, Self
 
@@ -10,31 +9,52 @@ from app.schemas.types import MediaType
 from app.utils.string import StringUtils
 
 
-TITLE_EPISODE_RE = re.compile(r"Episode\s+(\d{1,4})", re.IGNORECASE)
-SUBTITLE_HAS_SEASON_EPISODE_RE = re.compile(r"[全第季集话話期幕]", re.IGNORECASE)
-SUBTITLE_SEASON_RE = re.compile(r"(?<![全共]\s*)[第\s]+([0-9一二三四五六七八九十S\-]+)\s*季(?!\s*[全共])", re.IGNORECASE)
-SUBTITLE_SEASON_ALL_RE = re.compile(r"[全共]\s*([0-9一二三四五六七八九十]+)\s*季", re.IGNORECASE)
-SUBTITLE_EPISODE_RE = re.compile(r"(?<![全共]\s*)[第\s]+([0-9一二三四五六七八九十百零EP]+)\s*[集话話期幕](?!\s*[全共])", re.IGNORECASE)
-SUBTITLE_EPISODE_BETWEEN_RE = re.compile(
-    r"[第]*\s*([0-9一二三四五六七八九十百零]+)\s*[集话話期幕]?\s*-\s*第*\s*"
-    r"([0-9一二三四五六七八九十百零]+)\s*[集话話期幕]",
+TITLE_EPISODE_RE = re.compile(
+    r"\bEpisode\s+(\d{1,4})(?!\d)",
+    re.IGNORECASE,
+)
+SUBTITLE_SEASON_RE = re.compile(
+    r"(?<![全共]\s*)(?:第|[\s\[【])\s*([0-9一二三四五六七八九十百零]+)\s*(?:季?\s*[-~～–—至]\s*第?\s*([0-9一二三四五六七八九十百零]+)\s*)?季",
+    re.IGNORECASE,
+)
+SUBTITLE_SEASON_ALL_RE = re.compile(
+    r"[全共]\s*([0-9一二三四五六七八九十百零]+)\s*季",
+    re.IGNORECASE,
+)
+SUBTITLE_EPISODE_RE = re.compile(
+    r"(?<![全共]\s*)(?:第|[\s\[【])\s*(?:EP?)?([0-9一二三四五六七八九十百零]+)\s*(?:[集话話期幕]?\s*[-~～–—至]\s*第?\s*([0-9一二三四五六七八九十百零]+)\s*)?([集话話期幕])(?!\s*全(?![0-9一二三四五六七八九十百零]))",
     re.IGNORECASE,
 )
 SUBTITLE_EPISODE_ALL_RE = re.compile(
     r"([0-9一二三四五六七八九十百零]+)\s*集\s*全|[全共]\s*([0-9一二三四五六七八九十百零]+)\s*[集话話期幕]",
     re.IGNORECASE,
 )
-# 结尾分支显式区分有无右方括号，避免可选括号回溯后绕过数字后缀边界
 SUBTITLE_EPISODE_RANGE_FIN_RE = re.compile(
-    r"(?<!\d)\[?\s*(\d{1,4})\s*-\s*(\d{1,4})\s*"
-    r"(?:(?:Fin|End)(?![a-z0-9])|完结(?![\u4e00-\u9fff]))"
-    r"(?:\s*\](?!\d)|(?!\s*(?:\]\d|\d))\s*)",
+    r"(?<!\d)\[?\s*(\d{1,4})\s*[-~～–—至]\s*(\d{1,4})\s*(?:(?:Fin|End)(?![a-z0-9])|完结(?![\u4e00-\u9fff]))(?:\s*\](?!\d)|(?!\s*(?:\]\d|\d))\s*)",
+    re.IGNORECASE,
+)
+DESCRIPTION_INFO_RE = re.compile(
+    r"(?:剧情简介|劇情簡介|类型|類型|主演|演员|演員|导演|導演|编剧|編劇|简介|簡介|剧情|劇情|备注|備註|豆瓣|上映|首播)\s*[:：]",
+    re.IGNORECASE,
+)
+DESCRIPTION_NOISE_RE = re.compile(
+    r"预计|預計|计划|計劃|每周|每週|将于|將於|下周|下週|预告|預告|另见|另見|另附|附赠|附贈|前情|回顾|回顧|剧情|劇情|简介|簡介|播出进度|更新至|更新到",
     re.IGNORECASE,
 )
 VIDEO_BIT_RE = re.compile(
     r"(?<![A-Za-z0-9])(?P<bit>8|10|12|16)[\s._-]*bits?(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
+
+
+def _subtitle_number(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(cn2an.cn2an(value.strip(), mode="smart"))
+    except (ValueError, TypeError) as err:
+        logger.debug(f"副标题数字无效：{value} - {err}")
+        return None
 
 
 @dataclass
@@ -108,12 +128,6 @@ class MetaBase(object):
 
     # 副标题解析
     _subtitle_flag = False
-    _title_episodel_re = r"Episode\s+(\d{1,4})"
-    _subtitle_season_re = r"(?<![全共]\s*)[第\s]+([0-9一二三四五六七八九十S\-]+)\s*季(?!\s*[全共])"
-    _subtitle_season_all_re = r"[全共]\s*([0-9一二三四五六七八九十]+)\s*季"
-    _subtitle_episode_re = r"(?<![全共]\s*)[第\s]+([0-9一二三四五六七八九十百零EP]+)\s*[集话話期幕](?!\s*[全共])"
-    _subtitle_episode_between_re = r"[第]*\s*([0-9一二三四五六七八九十百零]+)\s*[集话話期幕]?\s*-\s*第*\s*([0-9一二三四五六七八九十百零]+)\s*[集话話期幕]"
-    _subtitle_episode_all_re = r"([0-9一二三四五六七八九十百零]+)\s*集\s*全|[全共]\s*([0-9一二三四五六七八九十百零]+)\s*[集话話期幕]"
 
     def __init__(self, title: str, subtitle: str = None, isfile: bool = False):
         if not title:
@@ -146,191 +160,68 @@ class MetaBase(object):
             self.en_name = name
             self.cn_name = None
 
-    def init_subtitle(self, title_text: str):
-        """
-        副标题识别
-        """
+    def init_description(self, description: str) -> None:
+        """只解析副标题中的资源信息，隔离剧情、更新计划与其他资源说明。"""
+        for section in re.split(r"[|｜\n]", description):
+            header = DESCRIPTION_INFO_RE.split(section, maxsplit=1)[0]
+            for alias in header.split("/"):
+                if not DESCRIPTION_NOISE_RE.search(alias):
+                    self.init_subtitle(alias)
+
+
+    def init_subtitle(self, title_text: str) -> None:
+        """按字段补充季集，已确定的单集或范围不与其他描述拼接。"""
         if not title_text:
             return
         title_text = f" {title_text} "
-        episode_str = TITLE_EPISODE_RE.search(title_text)
-        if episode_str:
-            if episode_str:
-                try:
-                    episode = int(episode_str.group(1))
-                except Exception as err:
-                    logger.debug(f'识别集失败：{str(err)} - {traceback.format_exc()}')
-                    return
-                if episode >= 10000:
-                    return
-                if self.begin_episode is None:
-                    self.begin_episode = episode
-                    self.total_episode = 1
+        season = SUBTITLE_SEASON_RE.search(title_text)
+        if season:
+            begin = _subtitle_number(season.group(1))
+            end = _subtitle_number(season.group(2))
+            if begin is None or not 0 <= begin <= 100 or (end is not None and not begin <= end <= 100):
+                return
+            if self.begin_season is not None and self.begin_season != begin:
+                return
+            if self.begin_season is None:
+                self.begin_season, self.end_season = begin, end
+                self.total_season = end - begin + 1 if end is not None else 1
                 self.type = MediaType.TV
                 self._subtitle_flag = True
-        elif SUBTITLE_HAS_SEASON_EPISODE_RE.search(title_text):
-            # 全x季 x季全
-            season_all_str = SUBTITLE_SEASON_ALL_RE.search(title_text)
-            if season_all_str:
-                season_all = season_all_str.group(1)
-                if not season_all:
-                    season_all = season_all_str.group(2)
-                if season_all and self.begin_season is None and self.begin_episode is None:
-                    try:
-                        self.total_season = int(cn2an.cn2an(season_all.strip(), mode='smart'))
-                    except Exception as err:
-                        logger.debug(f'识别季失败：{str(err)} - {traceback.format_exc()}')
-                        return
-                    self.begin_season = 1
-                    self.end_season = self.total_season
-                    self.type = MediaType.TV
-                    self._subtitle_flag = True
-                return
-            # 第x季
-            season_str = SUBTITLE_SEASON_RE.search(title_text)
-            if season_str:
-                seasons = season_str.group(1)
-                if seasons:
-                    seasons = seasons.upper().replace("S", "").strip()
-                else:
-                    return
-                try:
-                    end_season = None
-                    if seasons.find('-') != -1:
-                        seasons = seasons.split('-')
-                        begin_season = int(cn2an.cn2an(seasons[0].strip(), mode='smart'))
-                        if len(seasons) > 1:
-                            end_season = int(cn2an.cn2an(seasons[1].strip(), mode='smart'))
-                    else:
-                        begin_season = int(cn2an.cn2an(seasons, mode='smart'))
-                except Exception as err:
-                    logger.debug(f'识别季失败：{str(err)} - {traceback.format_exc()}')
-                    return
-                if begin_season and begin_season > 100:
-                    return
-                if end_season and end_season > 100:
-                    return
-                if self.begin_season is None and isinstance(begin_season, int):
-                    self.begin_season = begin_season
-                    self.total_season = 1
-                if self.begin_season is not None \
-                        and self.end_season is None \
-                        and isinstance(end_season, int) \
-                        and end_season != self.begin_season:
-                    self.end_season = end_season
-                    self.total_season = (self.end_season - self.begin_season) + 1
-                self.type = MediaType.TV
-                self._subtitle_flag = True
-            # 第x-x集 第x集-x集
-            episode_between_str = SUBTITLE_EPISODE_BETWEEN_RE.search(title_text)
-            if episode_between_str:
-                episodes = episode_between_str.groups()
-                if episodes:
-                    begin_episode = episodes[0]
-                    end_episode = episodes[1]
-                else:
-                    return
-                try:
-                    begin_episode = int(cn2an.cn2an(begin_episode.strip(), mode='smart'))
-                    end_episode = int(cn2an.cn2an(end_episode.strip(), mode='smart'))
-                except Exception as err:
-                    logger.debug(f'识别集失败：{str(err)} - {traceback.format_exc()}')
-                    return
-                if begin_episode and begin_episode >= 10000:
-                    return
-                if end_episode and end_episode >= 10000:
-                    return
-                if self.begin_episode is None and isinstance(begin_episode, int):
-                    self.begin_episode = begin_episode
-                    self.total_episode = 1
-                if self.begin_episode is not None \
-                        and self.end_episode is None \
-                        and isinstance(end_episode, int) \
-                        and end_episode != self.begin_episode:
-                    self.end_episode = end_episode
-                    self.total_episode = (self.end_episode - self.begin_episode) + 1
-                self.type = MediaType.TV
-                self._subtitle_flag = True
-                return
-            # 第x集
-            episode_str = SUBTITLE_EPISODE_RE.search(title_text)
-            if episode_str:
-                episodes = episode_str.group(1)
-                if episodes:
-                    episodes = episodes.upper().replace("E", "").replace("P", "").strip()
-                else:
-                    return
-                try:
-                    end_episode = None
-                    if episodes.find('-') != -1:
-                        episodes = episodes.split('-')
-                        begin_episode = int(cn2an.cn2an(episodes[0].strip(), mode='smart'))
-                        if len(episodes) > 1:
-                            end_episode = int(cn2an.cn2an(episodes[1].strip(), mode='smart'))
-                    else:
-                        begin_episode = int(cn2an.cn2an(episodes, mode='smart'))
-                except Exception as err:
-                    logger.debug(f'识别集失败：{str(err)} - {traceback.format_exc()}')
-                    return
-                if begin_episode and begin_episode >= 10000:
-                    return
-                if end_episode and end_episode >= 10000:
-                    return
-                if self.begin_episode is None and isinstance(begin_episode, int):
-                    self.begin_episode = begin_episode
-                    self.total_episode = 1
-                if self.begin_episode is not None \
-                        and self.end_episode is None \
-                        and isinstance(end_episode, int) \
-                        and end_episode != self.begin_episode:
-                    self.end_episode = end_episode
-                    self.total_episode = (self.end_episode - self.begin_episode) + 1
-                self.type = MediaType.TV
-                self._subtitle_flag = True
-                return
-            # x集全/全x集
-            episode_all_str = SUBTITLE_EPISODE_ALL_RE.search(title_text)
-            if episode_all_str:
-                episode_all = episode_all_str.group(1)
-                if not episode_all:
-                    episode_all = episode_all_str.group(2)
-                if episode_all and self.begin_episode is None:
-                    try:
-                        self.total_episode = int(cn2an.cn2an(episode_all.strip(), mode='smart'))
-                    except Exception as err:
-                        logger.debug(f'识别集失败：{str(err)} - {traceback.format_exc()}')
-                        return
-                    self.type = MediaType.TV
-                    self._subtitle_flag = True
-                return
-            # 01-26Fin 等数字范围+完结标记
-            self.__init_episode_range_fin(title_text)
         else:
-            # 副标题无中文季集标记时，仍识别 01-26Fin 等数字范围+完结标记
-            self.__init_episode_range_fin(title_text)
+            season_all = SUBTITLE_SEASON_ALL_RE.search(title_text)
+            total = _subtitle_number(season_all.group(1)) if season_all else None
+            if total is not None and 1 <= total <= 100 \
+                    and self.begin_season is None and self.begin_episode is None:
+                self.begin_season, self.end_season = 1, total
+                self.total_season = total
+                self.type = MediaType.TV
+                self._subtitle_flag = True
+        if self.begin_episode is not None or self.total_episode > 0:
+            return
 
-    def __init_episode_range_fin(self, title_text: str):
-        """
-        识别 01-26Fin / [01-38 END] 等"数字范围+完结标记"格式的集数信息
-        """
-        episode_range_str = SUBTITLE_EPISODE_RANGE_FIN_RE.search(title_text)
-        if not episode_range_str:
-            return
-        try:
-            begin_episode = int(episode_range_str.group(1))
-            end_episode = int(episode_range_str.group(2))
-        except Exception as err:
-            logger.debug(f'识别集失败：{str(err)} - {traceback.format_exc()}')
-            return
-        if begin_episode < 1 or begin_episode > end_episode or end_episode >= 10000:
-            return
-        # 两个数字都落在常见年份区间时视为年份范围而非集数（如 2019-2020完结）
-        if begin_episode >= 1900 and end_episode <= 2155:
-            return
-        if self.begin_episode is None:
-            self.begin_episode = begin_episode
-            self.end_episode = end_episode
-            self.total_episode = end_episode
+        # 集/话优先于日文别名中的期数，同类标记优先读取前面的资源编号。
+        candidates = []
+        for match in SUBTITLE_EPISODE_RE.finditer(title_text):
+            begin = _subtitle_number(match.group(1))
+            end = _subtitle_number(match.group(2))
+            if begin is None or begin >= 10000 \
+                    or (end is not None and not 1 <= begin <= end < 10000):
+                continue
+            candidates.append((int(match.group(3) == "期"), match.start(), begin, end,
+                               end - begin + 1 if end is not None else 1))
+        for match in TITLE_EPISODE_RE.finditer(title_text):
+            candidates.append((0, match.start(), int(match.group(1)), None, 1))
+        for match in SUBTITLE_EPISODE_RANGE_FIN_RE.finditer(title_text):
+            begin, end = int(match.group(1)), int(match.group(2))
+            if 1 <= begin <= end < 10000 and not (begin >= 1900 and end <= 2155):
+                candidates.append((0, match.start(), begin, end, end - begin + 1))
+        for match in SUBTITLE_EPISODE_ALL_RE.finditer(title_text):
+            total = _subtitle_number(match.group(1) or match.group(2))
+            if total is not None and 1 <= total < 10000:
+                candidates.append((2, match.start(), None, None, total))
+        if candidates:
+            _, _, begin, end, total = min(candidates, key=lambda item: item[:2])
+            self.begin_episode, self.end_episode, self.total_episode = begin, end, total
             self.type = MediaType.TV
             self._subtitle_flag = True
 

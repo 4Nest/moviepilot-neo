@@ -16,6 +16,7 @@ from app.modules.themoviedb.tmdbapi import TmdbApi
 from app.schemas.category import CategoryConfig
 from app.schemas.types import MediaType, MediaImageType, ModuleType, MediaRecognizeType
 from app.utils.http import RequestUtils
+from app.utils.string import StringUtils
 from app.utils.zhconv import convert as zhconv_convert
 
 
@@ -124,8 +125,52 @@ class TheMovieDbModule(_ModuleBase):
         """
         # 简体名称
         zh_name = zhconv_convert(meta.cn_name, "zh-hans") if meta.cn_name else None
+        # 部分别名只收录繁体，TMDB 搜索不会自动把简体查询映射到它们。
+        traditional_name = zhconv_convert(meta.cn_name, "zh-hant") if meta.cn_name else None
         # 使用中英文名分别识别，去重去空，但要保持顺序
-        return list(dict.fromkeys([k for k in [meta.cn_name, zh_name, meta.en_name] if k]))
+        return list(dict.fromkeys(
+            k for k in [meta.cn_name, zh_name, meta.en_name, traditional_name] if k
+        ))
+
+    @staticmethod
+    def _fill_title_season_info(mediainfo: MediaInfo, meta: Optional[MetaBase],
+                                episode_group: Optional[str]) -> None:
+        """完整别名明确包含唯一季名时，为缺季号的单集补全标准季号。"""
+        if (not meta or mediainfo.type != MediaType.TV or episode_group
+                or meta.begin_season is not None or meta.end_season is not None
+                or meta.begin_episode is None):
+            return
+
+        def normalize(name: str) -> str:
+            return StringUtils.clear(zhconv_convert(name or "", "zh-hans")).upper()
+
+        info = mediainfo.tmdb_info
+        series_names = {normalize(info.get(key)) for key in ("name", "original_name")}
+        aliases = {normalize(name) for name in info.get("names", []) if name}
+        # 先验证完整别名，不能仅凭短篇章名或截断的片名猜作品和季号。
+        titles = ({
+            normalize(name) for name in (meta.cn_name, meta.en_name) if name
+        } & aliases) - series_names
+        matched_seasons = set()
+        for season in info.get("seasons", []):
+            number = season.get("season_number")
+            name = normalize(season.get("name"))
+            # 通用的“第 N 季”不作为篇章名证据；过短季名易与其他后缀碰撞。
+            if (not isinstance(number, int) or number <= 0 or len(name) < 4
+                    or re.fullmatch(r"(?:第[\d一二三四五六七八九十百]+[季期部]|SEASON\d+)", name)):
+                continue
+            if meta.year and (season.get("air_date") or "")[:4] != str(meta.year):
+                continue
+            episode_count = season.get("episode_count")
+            if (isinstance(episode_count, int) and episode_count > 0
+                    and (meta.end_episode or meta.begin_episode) > episode_count):
+                continue
+            if any(title != name and title.endswith(name) for title in titles):
+                matched_seasons.add(number)
+        if len(matched_seasons) == 1:
+            meta.begin_season = matched_seasons.pop()
+            mediainfo.season = meta.begin_season
+            logger.info(f"{meta.name} 根据TMDB完整别名和季名补全第{meta.begin_season}季")
 
     @staticmethod
     def _fill_group_season_info(mediainfo: MediaInfo, episode_group: Optional[str],
@@ -429,6 +474,7 @@ class TheMovieDbModule(_ModuleBase):
         # 赋值TMDB信息并返回
         mediainfo = MediaInfo(tmdb_info=info)
         mediainfo.set_category(cat)
+        self._fill_title_season_info(mediainfo, meta, episode_group)
 
         if meta:
             logger.info(f"{meta.name} TMDB识别结果：{mediainfo.type.value} "
@@ -455,6 +501,7 @@ class TheMovieDbModule(_ModuleBase):
         # 赋值TMDB信息并返回
         mediainfo = MediaInfo(tmdb_info=info)
         mediainfo.set_category(cat)
+        self._fill_title_season_info(mediainfo, meta, episode_group)
 
         if meta:
             logger.info(f"{meta.name} TMDB识别结果：{mediainfo.type.value} "

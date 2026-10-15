@@ -1,0 +1,34 @@
+{
+  "records": 10000,
+  "sha256_uncompressed": "c35499ffc542dfa1bbaeb438df837cb0d844793831e43e3353a3678c806359af",
+  "origin": {
+    "real": 148,
+    "constructed": 337,
+    "derived": 9515
+  },
+  "source": {
+    "audiences": 564,
+    "constructed": 337,
+    "mikan": 799,
+    "dmhy": 1170,
+    "anibt": 369,
+    "nyaa": 6743,
+    "user-report": 18
+  },
+  "category": {
+    "original-pair": 148,
+    "subtitle-supplement": 26,
+    "season-supplement": 5,
+    "partial-title": 2,
+    "title-precedence": 240,
+    "range-format": 36,
+    "negative-diy": 9,
+    "positive-diy": 3,
+    "pinyin-label": 12,
+    "pinyin-name": 1,
+    "explicit-override": 3,
+    "description-isolation": 9515
+  },
+  "field_assertions": 60394,
+  "annotation": "真实主副标题独立标注；构造案例按语义指定期望；说明变体继承已有独立标注。不是一万条新抓取副标题，也不是全站准确率。"
+}

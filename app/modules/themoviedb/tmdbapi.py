@@ -115,7 +115,7 @@ class TmdbApi:
     @staticmethod
     def __compare_names(file_name: str, tmdb_names: list) -> bool:
         """
-        比较文件名是否匹配，忽略大小写和特殊字符
+        比较文件名是否匹配，统一简繁体并忽略大小写和特殊字符
         :param file_name: 识别的文件名或者种子名
         :param tmdb_names: TMDB返回的译名
         :return: True or False
@@ -124,9 +124,9 @@ class TmdbApi:
             return False
         if not isinstance(tmdb_names, list):
             tmdb_names = [tmdb_names]
-        file_name = StringUtils.clear(file_name).upper()
+        file_name = StringUtils.clear(zhconv_convert(file_name, "zh-hans")).upper()
         for tmdb_name in tmdb_names:
-            tmdb_name = StringUtils.clear(tmdb_name).strip().upper()
+            tmdb_name = StringUtils.clear(zhconv_convert(tmdb_name or "", "zh-hans")).strip().upper()
             if file_name == tmdb_name:
                 return True
         return False

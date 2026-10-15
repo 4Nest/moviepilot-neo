@@ -5,7 +5,10 @@ from Pinyin2Hanzi import is_pinyin
 
 from app.core.config import settings
 from app.core.meta.customization import CustomizationMatcher
-from app.core.meta.metabase import MetaBase
+from app.core.meta.metabase import (
+    MetaBase, DESCRIPTION_INFO_RE, DESCRIPTION_NOISE_RE,
+    SUBTITLE_SEASON_RE, SUBTITLE_EPISODE_RE, SUBTITLE_EPISODE_ALL_RE,
+)
 from app.core.meta.releasegroup import ReleaseGroupsMatcher
 from app.schemas.types import MediaType
 from app.utils.string import StringUtils
@@ -13,7 +16,7 @@ from app.utils.tokens import Tokens
 from app.core.meta.streamingplatform import StreamingPlatforms
 
 
-SEASON_FULL_RE = re.compile(r"^(?:Season\s+|S)(\d{1,3})$", re.IGNORECASE)
+SEASON_FULL_RE = re.compile(r"^(?:Season\s+|S)(\d{1,4})$", re.IGNORECASE)
 FIRST_BRACKET_RE = re.compile(r'^[\[【](.+?)[\]】]')
 BRACKET_DOT_TITLE_RE = re.compile(r'[A-Za-z]+\..+(?:19|20)\d{2}')
 BRACKET_RESOURCE_RE = re.compile(
@@ -23,7 +26,16 @@ BRACKET_RESOURCE_RE = re.compile(
 YEAR_RANGE_RE = re.compile(r'([\s.]+)(\d{4})-(\d{4})')
 FILE_SIZE_RE = re.compile(r'[0-9.]+\s*[MGT]i?B(?![A-Z]+)', re.IGNORECASE)
 DATE_RE = re.compile(r'\d{4}[\s._-]\d{1,2}[\s._-]\d{1,2}')
-DIY_RE = re.compile(r'DIY', re.IGNORECASE)
+DIY_RE = re.compile(r'(?<![A-Za-z0-9])DIY(?![A-Za-z0-9])', re.IGNORECASE)
+DIY_NEGATION_RE = re.compile(
+    r'(?:非|没有|沒有|无|無|未|无需|無需|不含|禁止|\bno|\bnot|\bnon[- ]?)\s*$', re.IGNORECASE,
+)
+DESCRIPTION_LABEL_RE = re.compile(
+    r'^(?:(?:简|簡|繁)(?:体|體|中|日|英)?|中日|中英|双语|雙語|字幕|'
+    r'内封|內封|内嵌|內嵌|外挂|外掛|中文|日文|英文|日语|日語|粤语|粵語|'
+    r'国语|國語|国英|國英|国配|國配|中字|音轨|音軌|中文|CHS|CHT|GB|BIG5|JPSC|JPTC|JP|EN|UTF8|ASS|SRT|PGS|MP4|MKV|[\s/&+_／-])+$',
+    re.IGNORECASE,
+)
 DIY_TITLE_RE = re.compile(r'-DIY@', re.IGNORECASE)
 DESCRIPTION_SPLIT_RE = re.compile(r'[\s/|]+')
 SPACE_RE = re.compile(r'\s+')
@@ -31,6 +43,11 @@ SEASON_SUFFIX_RE = re.compile(r"SEASON$", re.IGNORECASE)
 # 独立的 #数字 是 Raws 类发布常见的集号写法，例如 [AI-Raws] 标题 #10 (BD ...)
 # 要求左侧为空白或开头，避免误伤 C# 之类的名称
 HASH_EPISODE_RE = re.compile(r'(?<!\S)#(\d{1,4})(?=[\s.\[(]|$)')
+
+
+def _has_diy_description(description: str) -> bool:
+    header = DESCRIPTION_INFO_RE.split(description, maxsplit=1)[0]
+    return any(not DIY_NEGATION_RE.search(header[:match.start()]) for match in DIY_RE.finditer(header))
 
 
 def has_hash_episode(title: Optional[str]) -> bool:
@@ -72,7 +89,7 @@ class MetaVideo(MetaBase):
     _source = ""
     _effect = []
     # 正则式区
-    _season_re = r"S(\d{3})|^S(\d{1,3})$|S(\d{1,3})E"
+    _season_re = r"S(\d{4})(?!\d)|^S(\d{1,4})$|S(\d{1,4})E"
     _episode_re = r"EP?(\d{2,4})$|^EP?(\d{1,4})$|^S\d{1,2}EP?(\d{1,4})$|S\d{2}EP?(\d{2,4})"
     _part_re = r"(^PART[0-9ABI]{0,2}$|^CD[0-9]{0,2}$|^DVD[0-9]{0,2}$|^DISK[0-9]{0,2}$|^DISC[0-9]{0,2}$)"
     _roman_numerals = r"^(?=[MDCLXVI])M*(C[MD]|D?C{0,3})(X[CL]|L?X{0,3})(I[XV]|V?I{0,3})$"
@@ -218,13 +235,13 @@ class MetaVideo(MetaBase):
             self.resource_type = self._source.strip()
         # 提取原盘DIY
         if self.resource_type and "BluRay" in self.resource_type:
-            if (self.subtitle and DIY_RE.search(self.subtitle)) \
+            if (self.subtitle and _has_diy_description(self.subtitle)) \
                     or DIY_TITLE_RE.search(original_title):
                 self.resource_type = f"{self.resource_type} DIY"
         # 解析副标题，只要季和集
         self.init_subtitle(self.org_string)
-        if not self._subtitle_flag and self.subtitle:
-            self.init_subtitle(self.subtitle)
+        if self.subtitle:
+            self.init_description(self.subtitle)
         # 去掉名字中不需要的干扰字符，过短的纯数字不要
         self.cn_name = self.__fix_name(self.cn_name)
         self.en_name = StringUtils.str_title(self.__fix_name(self.en_name))
@@ -254,7 +271,13 @@ class MetaVideo(MetaBase):
         if not description:
             return None
         titles = DESCRIPTION_SPLIT_RE.split(description)
-        if StringUtils.is_chinese(titles[0]):
+        if StringUtils.is_chinese(titles[0]) \
+                and not DESCRIPTION_LABEL_RE.fullmatch(titles[0].strip("[]【】")) \
+                and not SUBTITLE_SEASON_RE.search(f" {titles[0]} ") \
+                and not SUBTITLE_EPISODE_RE.search(f" {titles[0]} ") \
+                and not SUBTITLE_EPISODE_ALL_RE.search(titles[0]) \
+                and not DESCRIPTION_INFO_RE.search(titles[0]) \
+                and not DESCRIPTION_NOISE_RE.search(titles[0]):
             return titles[0]
         return None
 

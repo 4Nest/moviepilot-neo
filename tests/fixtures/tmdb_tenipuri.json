@@ -1,0 +1,565 @@
+{
+  "recorded_on": "2026-10-15",
+  "source": "TMDB API /3/search/tv and /3/tv/205493",
+  "searches": {
+    "新网球王子 U-17 WORLD CUP 世界杯决赛成员决定战": {
+      "page": 1,
+      "results": [],
+      "total_pages": 1,
+      "total_results": 0
+    },
+    "Tenipuri: U-17 Kesshou Member Ketteisen": {
+      "page": 1,
+      "results": [],
+      "total_pages": 1,
+      "total_results": 0
+    },
+    "新网球王子 U-17": {
+      "page": 1,
+      "results": [
+        {
+          "adult": false,
+          "backdrop_path": "/x3kTIGpx66VUTlUsPASyfjAlp98.jpg",
+          "genre_ids": [
+            16,
+            35
+          ],
+          "id": 205493,
+          "origin_country": [
+            "JP"
+          ],
+          "original_language": "ja",
+          "original_name": "新テニスの王子様 U-17 WORLD CUP",
+          "overview": "天才网球少年越前龙马迎来了U-17网球世界杯大赛。但他不是代表日本，而是代表美国队参赛。在大会上他遇到了同样离开日本，代表德国队参赛的手冢。亦敌亦友的两人在强手如林的世界杯上，将会展开怎样的对战？日本U-17队伍是否可以实现他们的目标？曾经挥洒过的热血汗水，曾经战斗过的网球场，曾经并肩作战的同伴们，还有曾经的……离别。",
+          "popularity": 20.4565,
+          "poster_path": "/jXGnTXBOYAmVq23O2DWewZp6sUL.jpg",
+          "first_air_date": "2022-07-07",
+          "softcore": false,
+          "name": "新网球王子 U-17世界杯篇",
+          "vote_average": 7.5,
+          "vote_count": 8
+        }
+      ],
+      "total_pages": 1,
+      "total_results": 1
+    },
+    "新網球王子 U-17 WORLD CUP 世界盃決賽成員決定戰": {
+      "page": 1,
+      "results": [
+        {
+          "adult": false,
+          "backdrop_path": "/x3kTIGpx66VUTlUsPASyfjAlp98.jpg",
+          "genre_ids": [
+            16,
+            35
+          ],
+          "id": 205493,
+          "origin_country": [
+            "JP"
+          ],
+          "original_language": "ja",
+          "original_name": "新テニスの王子様 U-17 WORLD CUP",
+          "overview": "天才网球少年越前龙马迎来了U-17网球世界杯大赛。但他不是代表日本，而是代表美国队参赛。在大会上他遇到了同样离开日本，代表德国队参赛的手冢。亦敌亦友的两人在强手如林的世界杯上，将会展开怎样的对战？日本U-17队伍是否可以实现他们的目标？曾经挥洒过的热血汗水，曾经战斗过的网球场，曾经并肩作战的同伴们，还有曾经的……离别。",
+          "popularity": 20.4565,
+          "poster_path": "/jXGnTXBOYAmVq23O2DWewZp6sUL.jpg",
+          "first_air_date": "2022-07-07",
+          "softcore": false,
+          "name": "新网球王子 U-17世界杯篇",
+          "vote_average": 7.5,
+          "vote_count": 8
+        }
+      ],
+      "total_pages": 1,
+      "total_results": 1
+    }
+  },
+  "details": {
+    "adult": false,
+    "backdrop_path": "/x3kTIGpx66VUTlUsPASyfjAlp98.jpg",
+    "created_by": [],
+    "episode_run_time": [
+      24
+    ],
+    "first_air_date": "2022-07-07",
+    "genres": [
+      {
+        "id": 16,
+        "name": "动画"
+      },
+      {
+        "id": 35,
+        "name": "喜剧"
+      }
+    ],
+    "homepage": "http://tenipuri.jp/u17",
+    "id": 205493,
+    "in_production": true,
+    "languages": [
+      "ja"
+    ],
+    "last_air_date": "2026-10-08",
+    "last_episode_to_air": {
+      "id": 7896646,
+      "name": "选拔赛开幕！",
+      "overview": "决胜队员决赛——最终的战斗终于拉开帷幕。S1（单打第一场）是德川对真田。在缺少平等院和鬼的日本代表队中，实力绝对第一的德川面前，真田挑战着要完成『黑龙三重斩』。S2（单打第二场）是不二对切原。在德国战中意识到自己的进化的切原，带着“我一定要进入决赛！”的强烈决心向天才不二发起挑战。D2（双打第二场）则是丸井&木手组合挑战种岛&白石组合——！",
+      "vote_average": 0.0,
+      "vote_count": 0,
+      "air_date": "2026-10-08",
+      "episode_number": 2,
+      "episode_type": "standard",
+      "production_code": "",
+      "runtime": 24,
+      "season_number": 3,
+      "show_id": 205493,
+      "still_path": "/vlAIF5rCrkbz26iZTK40BuM4EVD.jpg"
+    },
+    "name": "新网球王子 U-17世界杯篇",
+    "next_episode_to_air": {
+      "id": 7920533,
+      "name": "不轻言放弃的男人们",
+      "overview": "",
+      "vote_average": 0.0,
+      "vote_count": 0,
+      "air_date": "2026-10-15",
+      "episode_number": 3,
+      "episode_type": "standard",
+      "production_code": "",
+      "runtime": 24,
+      "season_number": 3,
+      "show_id": 205493,
+      "still_path": "/7Y3HxpZPCY1va52pi46Z3cPIpUe.jpg"
+    },
+    "networks": [
+      {
+        "id": 98,
+        "logo_path": "/jnuO8pZNEBLEq5YaOP1f5OkmG91.png",
+        "name": "TV Tokyo",
+        "origin_country": "JP"
+      },
+      {
+        "id": 173,
+        "logo_path": "/fERjndErEpveJmQZccJbJDi93rj.png",
+        "name": "AT-X",
+        "origin_country": "JP"
+      }
+    ],
+    "number_of_episodes": 39,
+    "number_of_seasons": 3,
+    "origin_country": [
+      "JP"
+    ],
+    "original_language": "ja",
+    "original_name": "新テニスの王子様 U-17 WORLD CUP",
+    "overview": "天才网球少年越前龙马迎来了U-17网球世界杯大赛。但他不是代表日本，而是代表美国队参赛。在大会上他遇到了同样离开日本，代表德国队参赛的手冢。亦敌亦友的两人在强手如林的世界杯上，将会展开怎样的对战？日本U-17队伍是否可以实现他们的目标？曾经挥洒过的热血汗水，曾经战斗过的网球场，曾经并肩作战的同伴们，还有曾经的……离别。",
+    "popularity": 20.4565,
+    "poster_path": "/jXGnTXBOYAmVq23O2DWewZp6sUL.jpg",
+    "production_companies": [
+      {
+        "id": 125523,
+        "logo_path": "/jE5kEho5Dd2XxSOBzPOz7zuF4Y2.png",
+        "name": "Studio KAI",
+        "origin_country": "JP"
+      },
+      {
+        "id": 26258,
+        "logo_path": null,
+        "name": "M.S.C.",
+        "origin_country": "JP"
+      },
+      {
+        "id": 53504,
+        "logo_path": null,
+        "name": "NAS",
+        "origin_country": "JP"
+      },
+      {
+        "id": 529,
+        "logo_path": "/rwB6w2aPENQbx756pBWSw44Ouk.png",
+        "name": "Production I.G",
+        "origin_country": "JP"
+      },
+      {
+        "id": 173132,
+        "logo_path": "/yV9EORK2ZwdMg45K10PuVh6LlM3.png",
+        "name": "Bandai Namco Filmworks",
+        "origin_country": "JP"
+      },
+      {
+        "id": 169858,
+        "logo_path": "/1IjKiiE3uuh7PheIdX1ogmayPHG.png",
+        "name": "Marvelous",
+        "origin_country": "JP"
+      },
+      {
+        "id": 3034,
+        "logo_path": "/jnuO8pZNEBLEq5YaOP1f5OkmG91.png",
+        "name": "TV Tokyo",
+        "origin_country": "JP"
+      },
+      {
+        "id": 2918,
+        "logo_path": "/gyEWUBWwqrm3H5T2hkERD9LxpOq.png",
+        "name": "Shueisha",
+        "origin_country": "JP"
+      }
+    ],
+    "production_countries": [
+      {
+        "iso_3166_1": "JP",
+        "name": "Japan"
+      }
+    ],
+    "seasons": [
+      {
+        "air_date": "2022-07-07",
+        "episode_count": 13,
+        "id": 299913,
+        "name": "新网球王子 U-17世界杯篇",
+        "overview": "天才网球少年越前龙马迎来了U-17网球世界杯大赛。但他不是代表日本，而是代表美国队参赛。在大会上他遇到了同样离开日本，代表德国队参赛的手冢。亦敌亦友的两人在强手如林的世界杯上，将会展开怎样的对战？日本U-17队伍是否可以实现他们的目标？曾经挥洒过的热血汗水，曾经战斗过的网球场，曾经并肩作战的同伴们，还有曾经的……离别。",
+        "poster_path": "/jXGnTXBOYAmVq23O2DWewZp6sUL.jpg",
+        "season_number": 1,
+        "vote_average": 0.0
+      },
+      {
+        "air_date": "2024-10-03",
+        "episode_count": 13,
+        "id": 406428,
+        "name": "半决赛",
+        "overview": "战斗的舞台来到半决赛！龙马等人组成的日本代表队在U-17世界杯战胜了传统强队法国队，打入了半决赛。他们在半决赛的对手，是职业选手伯格领军的世界最强队伍：德国队。而且德国队中，还有曾经在集训期间和大家同甘共苦过的手冢。面对具有压倒性实力的德国队，日本队众人决心磨练自身，力求进化！日本VS德国，激战即将拉开帷幕！",
+        "poster_path": "/c2b0Vg32cOaPC9GT0eTEnZ1TIWO.jpg",
+        "season_number": 2,
+        "vote_average": 0.0
+      },
+      {
+        "air_date": "2026-10-01",
+        "episode_count": 13,
+        "id": 547453,
+        "name": "决赛成员决定战",
+        "overview": "新作延续2024年播出的《半决赛》剧情，讲述日本代表队为迎战西班牙队展开的内部席位争夺战。该系列自2001年播出以来，舞台从全国大赛扩展至世界赛场，最新作将展现选手们为决赛名额展开的激烈竞争。",
+        "poster_path": "/6U1csJAZNIO9KU3JValbcg3S6Lo.jpg",
+        "season_number": 3,
+        "vote_average": 0.0
+      }
+    ],
+    "softcore": false,
+    "spoken_languages": [
+      {
+        "english_name": "Japanese",
+        "iso_639_1": "ja",
+        "name": "日本語"
+      }
+    ],
+    "status": "Returning Series",
+    "tagline": "",
+    "type": "Scripted",
+    "vote_average": 7.5,
+    "vote_count": 8,
+    "alternative_titles": {
+      "results": [
+        {
+          "iso_3166_1": "CN",
+          "title": "新网球王子 U-17世界杯篇",
+          "type": ""
+        },
+        {
+          "iso_3166_1": "CN",
+          "title": "新网球王子 U-17 世界杯",
+          "type": ""
+        },
+        {
+          "iso_3166_1": "CN",
+          "title": "新网球王子 U-17 世界杯 SEMIFINAL",
+          "type": "第二季"
+        },
+        {
+          "iso_3166_1": "CN",
+          "title": "新网球王子 U-17 世界杯 决赛成员选拔赛",
+          "type": ""
+        },
+        {
+          "iso_3166_1": "JP",
+          "title": "Shin Tennis no Ouji-sama: U-17 World Cup",
+          "type": "Romaji"
+        },
+        {
+          "iso_3166_1": "JP",
+          "title": "新テニスの王子様 Uー17 WORLD CUP SEMIFINAL",
+          "type": "S2"
+        },
+        {
+          "iso_3166_1": "JP",
+          "title": "Shin Tennis no Oujisama: U-17 World Cup",
+          "type": "romaji"
+        },
+        {
+          "iso_3166_1": "JP",
+          "title": "Shin Tennis no Ouji-sama: U-17 WORLD CUP SEMIFINAL",
+          "type": ""
+        },
+        {
+          "iso_3166_1": "JP",
+          "title": "新テニスの王子様 U-17 WORLD CUP 決勝メンバー決定戦",
+          "type": ""
+        },
+        {
+          "iso_3166_1": "JP",
+          "title": "The Prince of Tennis II - U-17 World Cup Final Member Selection Match",
+          "type": ""
+        },
+        {
+          "iso_3166_1": "JP",
+          "title": "The Prince of Tennis II",
+          "type": ""
+        },
+        {
+          "iso_3166_1": "KR",
+          "title": "신 테니스의 왕자： U-17 WORLD CUP",
+          "type": ""
+        },
+        {
+          "iso_3166_1": "KR",
+          "title": "신 테니스의 왕자 U-17 WORLD CUP",
+          "type": ""
+        },
+        {
+          "iso_3166_1": "TW",
+          "title": "新網球王子 U-17 世界盃",
+          "type": ""
+        },
+        {
+          "iso_3166_1": "TW",
+          "title": "新網球王子 U-17 世界盃 SEMIFINAL",
+          "type": "S2"
+        },
+        {
+          "iso_3166_1": "TW",
+          "title": "新網球王子 U-17 WORLD CUP 世界盃決賽成員決定戰",
+          "type": ""
+        },
+        {
+          "iso_3166_1": "US",
+          "title": "New Prince of Tennis: U-17 World Cup",
+          "type": ""
+        },
+        {
+          "iso_3166_1": "US",
+          "title": "The Prince of Tennis II U-17 WORLD CUP SEMIFINAL",
+          "type": ""
+        },
+        {
+          "iso_3166_1": "VN",
+          "title": "Hoàng Tử Tennis II: U-17 World Cup",
+          "type": ""
+        }
+      ]
+    },
+    "translations": {
+      "translations": [
+        {
+          "iso_3166_1": "BR",
+          "iso_639_1": "pt",
+          "name": "Português",
+          "english_name": "Portuguese",
+          "data": {
+            "name": "The Prince of Tennis II U-17 World Cup",
+            "overview": "Quando o prodígio do tênis Ryoma Echizen é expulso da seleção sub-17 do Japão por violar suas regras, ele fica desapontado... Mas a sorte sorri para ele, e lhe apresenta a chance de se candidatar à seleção estadunidense. Testar sua habilidade contra veteranos experientes não vai ser tarefa fácil, e se ele for aceito, terá de enfrentar seus antigos colegas. Será que seus novos companheiros vão ajudá-lo a alcançar a vitória?",
+            "homepage": "",
+            "tagline": ""
+          }
+        },
+        {
+          "iso_3166_1": "US",
+          "iso_639_1": "en",
+          "name": "English",
+          "english_name": "English",
+          "data": {
+            "name": "The Prince of Tennis II U-17 WORLD CUP",
+            "overview": "The story follows the unfolding of the U-17 World Cup, which takes place at the KCC Arena, in Melbourne, Australia. A total of 32 countries are participating in this long-awaited competition, and only 16 of them will manage to qualify for the final stages…",
+            "homepage": "",
+            "tagline": ""
+          }
+        },
+        {
+          "iso_3166_1": "DE",
+          "iso_639_1": "de",
+          "name": "Deutsch",
+          "english_name": "German",
+          "data": {
+            "name": "The Prince of Tennis II U-17 World Cup",
+            "overview": "Fortsetzung von The Prince of Tennis OVA vs. Genius 10.",
+            "homepage": "",
+            "tagline": ""
+          }
+        },
+        {
+          "iso_3166_1": "FR",
+          "iso_639_1": "fr",
+          "name": "Français",
+          "english_name": "French",
+          "data": {
+            "name": "The Prince of Tennis II: U-17 World Cup",
+            "overview": "Lorsque le prodige du tennis, Ryoma Echizen, est expulsé du camp d'entraînement de l'élite des moins de 17 ans du Japon pour avoir enfreint les règles, il est désemparé. Mais la chance lui sourit quand il apprend qu’il peut tenter sa chance dans l'équipe américaine. Faire ses preuves face à leurs vétérans endurcis ne sera pas facile et, s'il est accepté, il devra jouer contre ses anciens amis. Pourra-t-il aider ses nouveaux équipiers à se frayer un chemin vers la victoire ?",
+            "homepage": "",
+            "tagline": ""
+          }
+        },
+        {
+          "iso_3166_1": "KR",
+          "iso_639_1": "ko",
+          "name": "한국어/조선말",
+          "english_name": "Korean",
+          "data": {
+            "name": "신 테니스의 왕자: U-17 WORLD CUP",
+            "overview": "U-17 월드컵 일본 대표팀 합숙소에서 퇴거 명령받은 에치젠 료마는 형인 료가의 권유로 미국 대표팀에 합류해 대회에 참가하게 된다. 또한 테즈카도 프로가 되기 위해 독일 대표팀 선수가 되어 일본 대표팀과 U-17 월드컵 경기에서 적으로 맞서게 된다.",
+            "homepage": "",
+            "tagline": "테니스의 왕자"
+          }
+        },
+        {
+          "iso_3166_1": "JP",
+          "iso_639_1": "ja",
+          "name": "日本語",
+          "english_name": "Japanese",
+          "data": {
+            "name": "",
+            "overview": "U-17(アンダーセブンティーン)日本代表合宿に参加した越前リョーマだったが、合宿の規範を破ったとされ退去を命じられてしまう。合宿所を後にしたリョーマは兄である越前リョーガの誘いでアメリカ代表として、「U-17 WORLD CUP」に参戦することを決める。プロとなるためドイツに渡った手塚と、アメリカ代表となったリョーマが日本代表の敵となる中、「U-17 WORLD CUP」が開幕する",
+            "homepage": "",
+            "tagline": ""
+          }
+        },
+        {
+          "iso_3166_1": "CN",
+          "iso_639_1": "zh",
+          "name": "普通话",
+          "english_name": "Mandarin",
+          "data": {
+            "name": "新网球王子 U-17世界杯篇",
+            "overview": "天才网球少年越前龙马迎来了U-17网球世界杯大赛。但他不是代表日本，而是代表美国队参赛。在大会上他遇到了同样离开日本，代表德国队参赛的手冢。亦敌亦友的两人在强手如林的世界杯上，将会展开怎样的对战？日本U-17队伍是否可以实现他们的目标？曾经挥洒过的热血汗水，曾经战斗过的网球场，曾经并肩作战的同伴们，还有曾经的……离别。",
+            "homepage": "",
+            "tagline": ""
+          }
+        },
+        {
+          "iso_3166_1": "TW",
+          "iso_639_1": "zh",
+          "name": "普通话",
+          "english_name": "Mandarin",
+          "data": {
+            "name": "新網球王子 U-17 世界盃",
+            "overview": "因打破規範被勒令退出日本代表隊集訓營的越前龍馬，受哥哥龍牙的邀請，以美國代表隊身份參加 U-17 世界盃；同時，為進軍職業網壇遠赴德國的手塚也加入堪稱最強的德國代表隊。齊聚各國好手的 U-17 世界盃即將開幕！",
+            "homepage": "",
+            "tagline": ""
+          }
+        },
+        {
+          "iso_3166_1": "TR",
+          "iso_639_1": "tr",
+          "name": "Türkçe",
+          "english_name": "Turkish",
+          "data": {
+            "name": "The Prince of Tennis II: U-17 World Cup",
+            "overview": "Hikaye, Avustralya'nın Melbourne kentindeki KCC Arena'da gerçekleşen 17 Yaş Altı Dünya Kupası'nın açılışını takip ediyor. Uzun zamandır beklenen bu yarışmaya toplam 32 ülke katılıyor ve bunlardan sadece 16'sı final etabına katılmayı başarabilecek…",
+            "homepage": "",
+            "tagline": "Tenis Prensi II: U-17 Dünya Kupası"
+          }
+        },
+        {
+          "iso_3166_1": "MX",
+          "iso_639_1": "es",
+          "name": "Español",
+          "english_name": "Spanish",
+          "data": {
+            "name": "The Prince of Tennis II U-17 World Cup",
+            "overview": "Ryoma está obsesionado con vencer a Byodoin, aunque para ello tenga que unirse al equipo nacional de EE. UU. en la Copa Mundial sub-17.",
+            "homepage": "",
+            "tagline": "The Prince of Tennis II U-17 World Cup"
+          }
+        },
+        {
+          "iso_3166_1": "NL",
+          "iso_639_1": "nl",
+          "name": "Nederlands",
+          "english_name": "Dutch",
+          "data": {
+            "name": "",
+            "overview": "Het verhaal volgt de ontvouwing van het WK U-17, dat plaatsvindt in de KCC Arena in Melbourne, Australië. In totaal doen 32 landen mee aan deze langverwachte competitie, en slechts 16 daarvan zullen zich weten te kwalificeren voor de eindfase…",
+            "homepage": "",
+            "tagline": ""
+          }
+        },
+        {
+          "iso_3166_1": "PL",
+          "iso_639_1": "pl",
+          "name": "Polski",
+          "english_name": "Polish",
+          "data": {
+            "name": "",
+            "overview": "",
+            "homepage": "",
+            "tagline": ""
+          }
+        },
+        {
+          "iso_3166_1": "ES",
+          "iso_639_1": "es",
+          "name": "Español",
+          "english_name": "Spanish",
+          "data": {
+            "name": "The Prince of Tennis II U-17 WORLD CUP",
+            "overview": "La historia sigue el desarrollo de la Copa Mundial Sub-17, que se celebra en el KCC Arena de Melbourne, Australia. Un total de 32 países participan en esta esperada competición, pero solo 16 lograrán clasificarse para las fases finales…",
+            "homepage": "",
+            "tagline": ""
+          }
+        },
+        {
+          "iso_3166_1": "IT",
+          "iso_639_1": "it",
+          "name": "Italiano",
+          "english_name": "Italian",
+          "data": {
+            "name": "",
+            "overview": "",
+            "homepage": "",
+            "tagline": ""
+          }
+        },
+        {
+          "iso_3166_1": "RU",
+          "iso_639_1": "ru",
+          "name": "Pусский",
+          "english_name": "Russian",
+          "data": {
+            "name": "Новый Принц Тенниса: Чемпионат мира U-17",
+            "overview": "Когда восходящую звезду тенниса Рёму Этидзэна выгнали из подготовительного лагеря для юниоров за нарушение правил, он впал в отчаяние. Но удача снова улыбнулась ему, подарив возможность сыграть за команду США. Будет непросто пробиться через их ветеранов, чтобы показать себя, но ещё сложнее будет выйти на корт против своих друзей. Поможет ли Рёма своим новым братьям одержать победу?",
+            "homepage": "",
+            "tagline": ""
+          }
+        },
+        {
+          "iso_3166_1": "HK",
+          "iso_639_1": "zh",
+          "name": "普通话",
+          "english_name": "Mandarin",
+          "data": {
+            "name": "新網球王子 U - 17 世界盃",
+            "overview": "因打破規範被勒令退出日本代表隊集訓營的越前龍馬，受哥哥龍牙的邀請，以美國代表隊身份參加 U - 17 世界盃；同時，為進軍職業網壇遠赴德國的手塚也加入堪稱最強的德國代表隊。齊聚各國好手的 U - 17 世界盃即將開幕！",
+            "homepage": "",
+            "tagline": ""
+          }
+        },
+        {
+          "iso_3166_1": "VN",
+          "iso_639_1": "vi",
+          "name": "Tiếng Việt",
+          "english_name": "Vietnamese",
+          "data": {
+            "name": "Hoàng Tử Tennis II: U-17 World Cup",
+            "overview": "Vòng chung kết U-17 World Cup diễn ra tại nhà thi đấu KCC, Melbourne, Úc. Tổng cộng 32 quốc gia tham dự giải đấu được chờ đợi bấy lâu, và chỉ 16 đội lọt vào vòng chung kết…",
+            "homepage": "",
+            "tagline": ""
+          }
+        }
+      ]
+    }
+  }
+}
