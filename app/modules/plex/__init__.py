@@ -12,6 +12,14 @@ if TYPE_CHECKING:
     from app.modules.plex.plex import Plex
 
 
+def __getattr__(name: str) -> Any:
+    """按需导出 Plex 客户端，兼容插件的旧导入路径并保留延迟加载。"""
+    if name == "Plex":
+        from app.modules.plex.plex import Plex
+        return Plex
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 class PlexModule(_ModuleBase, _MediaServerBase["Plex"]):
 
     def init_module(self) -> None:
