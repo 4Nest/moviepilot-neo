@@ -41,6 +41,10 @@ Before executing any task, identify the domain and load the corresponding docume
 * **Primary Reference:** `docs/rules/11-quality-and-security.md`
 * **Required Constraints:** All code changes must pass the relevant pytest tests and pylint checks. Dependency changes require a passing safety scan.
 
+### Releases and Change Notes
+* **Primary Reference:** `.github/release-notes/README.md` and `docs/rules/12-collaboration-and-distribution.md`.
+* **Required Constraints:** Release titles contain only the version. Read the body from `.github/release-notes/<tag>.md`; use concise, accurate Chinese bullet points for actual changes. Merge same-version additions into the existing list instead of appending sections or generating commit logs.
+
 ### Testing
 * **Primary Reference:** `docs/testing.md`
 * **Required Constraints:** pytest is the only runner; `tests/conftest.py` isolates each run to a temporary `CONFIG_DIR`. Tests must not touch the real database, network, or external services (TMDB, downloaders, media servers, MP server) — mock at the boundary or replay recorded responses; the bar is zero real outbound traffic. Tests must restore any process-level state they stub (`sys.modules`, singletons, caches, settings). New tests must be pytest-native (function + `assert` + fixtures); do not add new `unittest.TestCase`. Convert existing `TestCase` files to pytest-native opportunistically when you modify them. Before opening a PR to `v2`, run the full suite locally (`python tests/run.py`) and confirm it is green with zero real network calls.

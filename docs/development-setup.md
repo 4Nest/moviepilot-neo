@@ -11,13 +11,13 @@
 - **Git** (用于版本控制)
 - **RAR 解压工具**：本地开发如需测试或使用 `.rar` 字幕包解压，请安装 `unar`、`unrar`、`7z` 或 `bsdtar` 之一；Docker 镜像会内置 `unar`。
 
-Rust 加速扩展通过 `requirements.in` 中固定的 `moviepilot-rust==0.2.9+neo.3` 安装，
+Rust 加速扩展通过 `requirements.in` 中固定的 `moviepilot-rust==0.2.9+neo.4` 安装，
 `--find-links` 指向 `4Nest/MoviePilot-Rust` 的对应 GitHub Release。pip 与 uv 会选择当前平台的 wheel，
 主项目本地开发无需 Rust toolchain。需要修改或发布扩展时，在 `MoviePilot-Rust` 仓库构建并先发布制品。
 
-BT/PT 识别改进目前配套本地扩展 `0.2.9+neo.3`（基于上游 `v0.2.9`，兼容 Python 3.11+）。
-它通过 `ANIME_EPISODE_REVISION=1` 声明修订集号能力，`BT_PT_RECOGNITION_REVISION=3`
-标识万条语料验证后的片名括号、字幕标签和技术边界修复。通过每次解析结果的
+BT/PT 识别改进配套扩展 `0.2.9+neo.4`（基于上游 `v0.2.9`，兼容 Python 3.11+）。
+它通过 `ANIME_EPISODE_REVISION=1` 声明修订集号能力，`BT_PT_RECOGNITION_REVISION=4`
+标识标题、文件名及副标题语料验证后的修复。通过每次解析结果的
 `anime_names_resolved` 标记告知后端别名已处理，减少重复 Python 解析。
 旧扩展继续保留原来的 Python 回退。仅更新后端代码不会获得新的 Rust 识别规则；
 应在 Rust 仓库构建目标平台 wheel，安装到实际运行后端的环境，并重启对应进程。
@@ -31,10 +31,14 @@ BT/PT 识别改进目前配套本地扩展 `0.2.9+neo.3`（基于上游 `v0.2.9`
 生成脚本、来源统计和 SHA-256 清单均随语料保存；测试核对去重数量和校验和。
 样本口径、修复行为和验证结果见 `docs/rust-bt-pt-recognition.md`。
 
-副标题专项开发版为 `0.2.9+neo.4`，目前仅在本地构建和验证，尚未发布；
-安装该 wheel 后可运行 `tests/test_subtitle_recognition.py` 的完整一万条 Rust 入口测试。
+副标题专项随 `0.2.9+neo.4` 提供，安装该 wheel 后可运行
+`tests/test_subtitle_recognition.py` 的完整一万条 Rust 入口测试。
 未安装 revision 4 时这部分测试会明确跳过，485 条 Python 回退用例仍可独立运行。
 正式发布时先发布 Rust 制品，再更新上述固定依赖和镜像能力门禁，避免引用尚不存在的下载地址。
+
+Release 说明统一从 `.github/release-notes/<tag>.md` 读取，格式见该目录的 `README.md`。
+同版本补充发布保持 `version.py` 和前端版本号不变，通过 `build-custom.yml` 的
+`publish_latest=true` 更新镜像，并合并现有版本的改动列表。
 
 ### 1. 创建虚拟环境
 

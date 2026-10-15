@@ -35,6 +35,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+      - name: Validate release notes
+        run: |
+          app_version=$(python -c 'import runpy; print(runpy.run_path("version.py")["APP_VERSION"])')
+          test -s ".github/release-notes/${app_version}.md"
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -53,6 +57,9 @@ jobs:
     needs: quality
     runs-on: ubuntu-latest
     name: Build and Push GHCR Image
+    permissions:
+      contents: write
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -153,3 +160,17 @@ jobs:
             org.opencontainers.image.licenses=GPL-3.0-only
           cache-from: type=gha,scope=moviepilot-neo-docker
           cache-to: type=gha,scope=moviepilot-neo-docker,mode=max
+
+      - name: Update release notes
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish_latest == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          app_version=$(python3 -c 'import runpy; print(runpy.run_path("version.py")["APP_VERSION"])')
+          notes_file=".github/release-notes/${app_version}.md"
+          if gh release view "$app_version" >/dev/null 2>&1; then
+            gh release edit "$app_version" --title "$app_version" --latest --notes-file "$notes_file"
+          else
+            gh release create "$app_version" --target "$GITHUB_SHA" --title "$app_version" \
+              --latest --notes-file "$notes_file"
+          fi
