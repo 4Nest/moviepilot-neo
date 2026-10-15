@@ -20,6 +20,73 @@ PLUGIN_ID = "DemoPlugin"
 REPO_URL = "https://github.com/demo/MoviePilot-Plugins"
 
 
+@pytest.mark.parametrize("rust_version", ["0.2.9+neo.3", "0.2.9+neo.4"])
+def test_runtime_constraints_preserve_local_versions(tmp_path, monkeypatch, rust_version):
+    """定制构建必须生成合法约束，并保留其本地版本标记。"""
+    from app.helper.plugin import PluginHelper
+
+    monkeypatch.setattr("app.helper.plugin.settings", SimpleNamespace(TEMP_PATH=tmp_path))
+    constraints_file = PluginHelper._PluginHelper__create_runtime_constraints_file({
+        "moviepilot_rust": Version(rust_version),
+        "fastapi": Version("0.136.3"),
+        "httpx": Version("0.28.1"),
+    })
+    constraints = {
+        requirement.name: requirement.specifier
+        for requirement in map(Requirement, constraints_file.read_text(encoding="utf-8").splitlines())
+    }
+
+    assert constraints["moviepilot-rust"].contains(rust_version)
+    assert not constraints["moviepilot-rust"].contains("0.2.9")
+    assert not constraints["moviepilot-rust"].contains("0.2.10")
+    assert constraints["fastapi"].contains("0.136.3")
+    assert not constraints["fastapi"].contains("0.136.4")
+    assert constraints["httpx"].contains("0.29.0")
+    assert not constraints["httpx"].contains("0.27.0")
+
+
+@pytest.mark.parametrize("backend", ["uv", "pip"])
+def test_plugin_dependencies_install_with_local_runtime_version(tmp_path, monkeypatch, backend):
+    """复放 CloudDriveDisk 依赖安装，两个安装器都应收到合法的主程序约束。"""
+    from app.helper.plugin import PluginHelper
+
+    requirements_file = tmp_path / "requirements.txt"
+    requirements_file.write_text(
+        "grpcio~=1.80.0\nprotobuf>=6.31.1,<7\nclouddrive2-client==0.3.0\nhttpx[http2]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.helper.plugin.settings", SimpleNamespace(
+        TEMP_PATH=tmp_path, CONFIG_PATH=tmp_path, PACKAGE_CACHE_PATH=tmp_path / "cache",
+        PIP_PROXY="", PROXY_HOST="",
+    ))
+    monkeypatch.setattr("app.helper.package._find_uv", lambda _: tmp_path / "uv" if backend == "uv" else None)
+    monkeypatch.setattr(PluginHelper, "_PluginHelper__get_installed_packages", lambda: {})
+    monkeypatch.setattr(PluginHelper, "_PluginHelper__get_protected_runtime_packages", lambda _: {
+        "moviepilot_rust": Version("0.2.9+neo.4"),
+        "httpx": Version("0.28.1"),
+    })
+    monkeypatch.setattr(PluginHelper, "_PluginHelper__run_runtime_healthcheck", lambda: {
+        "pip check": (True, "ok"), "核心依赖导入检查": (True, "ok"),
+    })
+    monkeypatch.setattr(PluginHelper, "_PluginHelper__refresh_import_system", lambda: None)
+    constraint_paths = []
+
+    def execute(command, **_kwargs):
+        """在安装器边界解析真实生成的约束，保持回归测试离线。"""
+        assert command[command.index("-r") + 1] == str(requirements_file)
+        path = Path(command[command.index("-c") + 1])
+        constraint_paths.append(path)
+        for line in path.read_text(encoding="utf-8").splitlines():
+            Requirement(line)
+        return True, "installed"
+
+    monkeypatch.setattr("app.helper.plugin.SystemUtils.execute_with_subprocess", execute)
+
+    assert PluginHelper.pip_install_with_fallback(requirements_file) == (True, "installed")
+    assert len(constraint_paths) == 1
+    assert not constraint_paths[0].exists()
+
+
 class _FakeResponse:
     """模拟 requests/httpx 响应对象，覆盖插件 release 安装分支读取的最小协议。"""
 

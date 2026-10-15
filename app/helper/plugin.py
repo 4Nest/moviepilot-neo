@@ -1348,7 +1348,7 @@ class PluginHelper(metaclass=WeakSingleton):
     @classmethod
     def __create_runtime_constraints_file(cls, protected_packages: Dict[str, Version]) -> Path:
         """
-        以主程序依赖的当前已安装版本生成临时约束文件，确保插件安装不会改写主程序依赖。
+        生成主程序依赖约束：核心包和本地定制版本精确锁定，其余包只允许升级。
         """
         temp_dir = Path(settings.TEMP_PATH) / "plugin_dependencies"
         temp_dir.mkdir(parents=True, exist_ok=True)
@@ -1361,8 +1361,8 @@ class PluginHelper(metaclass=WeakSingleton):
                 delete=False
         ) as temp_file:
             for package_name, version in sorted(protected_packages.items()):
-                if package_name in cls._protected_runtime_packages:
-                    # 核心包严格锁定，插件不得改写
+                if package_name in cls._protected_runtime_packages or version.local is not None:
+                    # PEP 440 不允许 >= 携带本地版本标记；精确锁定还能保留定制构建的修复。
                     temp_file.write(f"{cls.__format_pkg_name_for_pip(package_name)}=={version}\n")
                 else:
                     # 非核心主程序依赖：允许升级，但禁止降级
