@@ -62,13 +62,13 @@ def test_successful_snapshot_survives_parent_total_growth(state):
     assert schemas.Subscribe.model_validate(parent).completed_episode == 5
 
 
-def test_successful_snapshot_counts_only_parent_target(state):
-    """父订阅从第26集开始时，范围外的前25集不能计入进度。"""
+def test_successful_snapshot_counts_parent_prefix_once(state):
+    """父订阅从第26集开始时，前25集视为完成，不与库内快照重复累加。"""
     parent, chain = state
     _persist(parent, chain, range(27, 38))
     assert schemas.Subscribe.model_validate(parent).completed_episode == 26
     parent.start_episode = 26
-    assert schemas.Subscribe.model_validate(parent).completed_episode == 1
+    assert schemas.Subscribe.model_validate(parent).completed_episode == 26
 
 
 def test_unknown_refresh_preserves_known_episodes_and_new_download(state):
@@ -144,7 +144,7 @@ def test_manual_version_range_clips_known_episodes(state):
     view = build_subscribe_version_view(parent, parent.version_rules[0])
     assert view.total_episode == 20
     assert SubscribeChain.compute_lack_episode(view) == 0
-    assert schemas.Subscribe.model_validate(parent).completed_episode == 11
+    assert schemas.Subscribe.model_validate(parent).completed_episode == 20
 
 
 def test_successful_whole_season_missing_replaces_old_snapshot(state):

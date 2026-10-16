@@ -32,20 +32,23 @@ def compute_subscribe_completed_episode(subscribe: "Subscribe") -> Optional[int]
     """
     计算订阅"已完成"集数派生值，仅用于响应填充，不入库。
 
-    普通电视剧按 ``total_episode - lack_episode`` 计算；分集洗版按订阅目标范围内
-    priority==100 的分集数量计算；全集洗版按整包准入基线是否达到 100 计算。
+    起始集之前的集数视为已完成，与原版 ``total_episode - lack_episode`` 口径一致。
+    版本订阅在此前提下合并明确集号；洗版再计算目标范围内达到顶档的集数。
     """
     total_episode = subscribe.total_episode or 0
     if subscribe.type != MediaType.TV.value or not total_episode:
         return None
 
-    start_episode = subscribe.start_episode or 1
+    start_episode = max(subscribe.start_episode or 1, 1)
+    target_count = max(total_episode - start_episode + 1, 0)
+    skipped_count = min(start_episode - 1, total_episode)
     version_rules = getattr(subscribe, "version_rules", None) or []
     if version_rules:
         # 父行 lack_episode 不承载版本进度。单版本普通订阅使用查库确认的明确集号，
-        # 多版本、洗版和跳过查库的订阅仍只统计各自的下载事实。
+        # 多版本、洗版和跳过查库的订阅在目标范围内仍只统计各自的下载事实。
         target = set(range(start_episode, total_episode + 1))
-        downloaded: set = set()
+        # 跳过集数只用于响应进度，不写入 note 或伪造媒体库存在事实。
+        downloaded: set = set(range(1, skipped_count + 1))
         progress = subscribe.version_progress or {}
         for rule in version_rules:
             if not (rule.get("enabled", True) if isinstance(rule, dict) else rule.enabled):
@@ -53,17 +56,18 @@ def compute_subscribe_completed_episode(subscribe: "Subscribe") -> Optional[int]
             rule_id = rule.get("id") if isinstance(rule, dict) else getattr(rule, "id", None)
             entry = progress.get(str(rule_id))
             known = []
-            version_target = target
-            if len(version_rules) == 1 and not subscribe.skip_library_check:
-                settings = rule.get("settings", {}) if isinstance(rule, dict) else rule.settings
-                if not isinstance(settings, dict):
-                    settings = settings.model_dump(exclude_unset=True)
-                if not settings.get("best_version", subscribe.best_version):
-                    known = entry.get("known_episodes") if isinstance(entry, dict) \
-                        else getattr(entry, "known_episodes", None)
-                    version_total = compute_subscribe_version_total_episode(subscribe, rule)
-                    version_start = settings.get("start_episode", start_episode) or 1
-                    version_target = target.intersection(range(version_start, version_total + 1))
+            settings = rule.get("settings", {}) if isinstance(rule, dict) else rule.settings
+            if not isinstance(settings, dict):
+                settings = settings.model_dump(exclude_unset=True)
+            version_total = compute_subscribe_version_total_episode(subscribe, rule)
+            version_start = max(settings.get("start_episode", start_episode) or 1, start_episode)
+            version_skipped = min(version_start - 1, version_total, total_episode)
+            downloaded.update(range(1, version_skipped + 1))
+            version_target = target.intersection(range(version_start, version_total + 1))
+            if len(version_rules) == 1 and not subscribe.skip_library_check \
+                    and not settings.get("best_version", subscribe.best_version):
+                known = entry.get("known_episodes") if isinstance(entry, dict) \
+                    else getattr(entry, "known_episodes", None)
             note = entry.get("note") if isinstance(entry, dict) else getattr(entry, "note", None)
             for episode in list(note or []) + list(known or []):
                 try:
@@ -75,12 +79,10 @@ def compute_subscribe_completed_episode(subscribe: "Subscribe") -> Optional[int]
         return len(downloaded)
     if not subscribe.best_version:
         lack = subscribe.lack_episode or 0
-        return max(total_episode - lack, 0)
+        return min(max(total_episode - lack, 0), total_episode)
 
     if subscribe.best_version_full:
-        completed_targets = max(total_episode - start_episode + 1, 0) \
-            if subscribe.current_priority == 100 else 0
-        return min(min(max(start_episode - 1, 0), total_episode) + completed_targets, total_episode)
+        return skipped_count + (target_count if subscribe.current_priority == 100 else 0)
 
     episode_priority = subscribe.episode_priority or {}
     if not episode_priority and subscribe.current_priority is not None:
@@ -96,7 +98,7 @@ def compute_subscribe_completed_episode(subscribe: "Subscribe") -> Optional[int]
         and start_episode <= int(ep_key) <= total_episode
         and priority == 100
     )
-    return min(max(start_episode - 1, 0), total_episode) + priority_completed
+    return skipped_count + priority_completed
 
 
 class SubscribeVersionSettings(BaseModel):
@@ -237,7 +239,7 @@ class Subscribe(BaseModel):
     start_episode: Optional[int] = 0
     # 缺失集数
     lack_episode: Optional[int] = 0
-    # 已完成集数
+    # 已完成集数，包含起始集之前视为完成的集数
     completed_episode: Optional[int] = None
     # 附加信息
     note: Optional[Any] = None

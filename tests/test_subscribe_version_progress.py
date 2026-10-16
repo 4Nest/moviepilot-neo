@@ -158,8 +158,8 @@ def test_disabled_single_version_does_not_contribute_progress():
 
 
 @pytest.mark.parametrize("explicit_start", [False, True])
-def test_single_version_response_counts_only_target_episode_range(explicit_start):
-    """从第 26 集开始的版本不能把范围外的前 25 集伪计成版本下载。"""
+def test_single_version_response_counts_skipped_prefix(explicit_start):
+    """从第26集开始时前25集计入展示进度，同时保持真实下载记录不变。"""
     parent = _build_subscribe(
         start_episode=26,
         version_progress={"adweb": {"note": [26], "lack_episode": 11}},
@@ -169,8 +169,8 @@ def test_single_version_response_counts_only_target_episode_range(explicit_start
     view = build_subscribe_version_view(parent, parent.version_rules[0])
 
     assert SubscribeChain.compute_lack_episode(view, no_exists=_missing(range(27, 38))) == 11
-    assert schemas.compute_subscribe_completed_episode(parent) == 1
-    assert schemas.Subscribe.model_validate(parent).completed_episode == 1
+    assert schemas.compute_subscribe_completed_episode(parent) == 26
+    assert schemas.Subscribe.model_validate(parent).completed_episode == 26
     assert parent.version_progress["adweb"]["note"] == [26]
 
 
