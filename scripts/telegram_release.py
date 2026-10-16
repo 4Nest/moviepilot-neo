@@ -1,14 +1,19 @@
 """生成正式版 Telegram 公告并校验发送结果；网络发送由发布工作流负责。"""
 
 import argparse
+import html
 import json
 import sys
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 
 
 RELEASE_CHANNEL = "@MoviePilot_NEO"
 MAX_MESSAGE_LENGTH = 4096
+COLLAPSE_AFTER_ITEMS = 6
+COLLAPSE_AFTER_LENGTH = 1200
+RELEASE_IMAGE = "ghcr.io/4nest/moviepilot-neo:latest"
 
 
 def _text_length(text: str) -> int:
@@ -16,31 +21,47 @@ def _text_length(text: str) -> int:
 
 
 def build_release_payload(version: str, notes: str, repository: str) -> dict[str, Any]:
-    """把维护好的改动列表生成单条纯文本公告，超长时保留完整条目和发布链接。"""
+    """生成带层级、折叠长列表和链接按钮的公告，安全保留改动文本与完整条目。"""
     lines = [line.strip() for line in notes.splitlines() if line.strip()]
     if not lines or any(not line.startswith("- ") for line in lines):
         raise ValueError("发布说明必须是非空的中文无序列表")
-    header = f"MoviePilot NEO {version} 正式版更新\n\n"
-    footer = (
-        "\n\n镜像：ghcr.io/4nest/moviepilot-neo:latest\n"
-        f"发布说明：https://github.com/{repository}/releases/tag/{version}"
-    )
-    summary = "\n…更多改动请查看发布说明。"
-    text = header + "\n".join(lines) + footer
-    if _text_length(text) > MAX_MESSAGE_LENGTH:
+    entries = [f"• {line[2:]}" for line in lines]
+    header = f"🚀 MoviePilot NEO\n{version} · 正式版更新\n\n更新内容\n"
+    footer = f"\n\n更新镜像\n{RELEASE_IMAGE}"
+    summary = "…更多改动请查看完整更新日志。"
+    selected = entries
+    # Telegram 限制的是解析格式后的文本，不能把 HTML 标签或转义字符重复计数。
+    if _text_length(header + "\n\n".join(entries) + footer) > MAX_MESSAGE_LENGTH:
         selected = []
-        for line in lines:
-            candidate = header + "\n".join([*selected, line]) + summary + footer
+        for entry in entries:
+            candidate = header + "\n\n".join([*selected, entry, summary]) + footer
             if _text_length(candidate) > MAX_MESSAGE_LENGTH:
                 break
-            selected.append(line)
-        text = header + "\n".join(selected) + summary + footer
-    if _text_length(text) > MAX_MESSAGE_LENGTH:
-        raise ValueError("版本号或发布链接过长")
+            selected.append(entry)
+        selected.append(summary)
+    body = "\n\n".join(selected)
+    if _text_length(header + body + footer) > MAX_MESSAGE_LENGTH:
+        raise ValueError("版本号过长")
+    formatted_body = html.escape(body)
+    if len(selected) > COLLAPSE_AFTER_ITEMS or _text_length(body) > COLLAPSE_AFTER_LENGTH:
+        formatted_body = f"<blockquote expandable>{formatted_body}</blockquote>"
+    text = (
+        f"🚀 <b>MoviePilot NEO</b>\n<code>{html.escape(version)}</code> · 正式版更新\n\n"
+        f"<b>更新内容</b>\n{formatted_body}\n\n"
+        f"<b>更新镜像</b>\n<code>{RELEASE_IMAGE}</code>"
+    )
+    repository_url = f"https://github.com/{quote(repository, safe='/')}"
     return {
         "chat_id": RELEASE_CHANNEL,
         "text": text,
+        "parse_mode": "HTML",
         "link_preview_options": {"is_disabled": True},
+        "reply_markup": {
+            "inline_keyboard": [[
+                {"text": "完整更新日志", "url": f"{repository_url}/releases/tag/{quote(version, safe='')}"},
+                {"text": "项目主页", "url": repository_url},
+            ]],
+        },
     }
 
 

@@ -42,8 +42,10 @@ Release 说明统一从 `.github/release-notes/<tag>.md` 读取，格式见该�
 
 正式镜像推送及 Release 说明更新成功后，工作流通过独立的
 `Notify Telegram Release Channel` 任务向 `@MoviePilot_NEO` 发布一条公告。
-公告使用同一份版本说明，包含版本号、改动列表、latest 镜像和 Release 链接；
-超过 Telegram 长度限制时保留完整条目，其余改动通过链接查看。
+公告使用同一份版本说明：加粗标题、独立版本行、留有间距的改动条目，以及等宽镜像地址。
+超过 6 项或正文超过 1200 个 UTF-16 代码单元时折叠列表，底部提供完整更新日志和项目主页按钮。
+HTML 格式只用于排版，版本与改动内容统一转义；按实际显示文本计算长度，
+超过 Telegram 长度限制时保留完整条目，其余改动通过按钮查看。
 普通 neo 构建和失败的正式发布不会发送公告，同版本的 latest 补充发布也会通知。
 
 首次启用需在 `4Nest/moviepilot-neo` 的 **Settings → Environments** 中创建
