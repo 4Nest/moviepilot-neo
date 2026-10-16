@@ -64,6 +64,7 @@ MediaVault 媒体服务已更名为 Vyo（Muvyo 内置媒体服务）。连接�
 | --- | --- |
 | 前端仓库 | [4Nest/moviepilot-neo-frontend](https://github.com/4Nest/moviepilot-neo-frontend) |
 | 上游项目 | [jxxghp/MoviePilot](https://github.com/jxxghp/MoviePilot) |
+| Telegram 频道 | [@MoviePilot_NEO](https://t.me/MoviePilot_NEO) |
 | CLI 使用 | [docs/cli.md](docs/cli.md) |
 | 环境诊断 | [docs/doctor.md](docs/doctor.md) |
 | 订阅生命周期 | [docs/subscribe-lifecycle.md](docs/subscribe-lifecycle.md) |
