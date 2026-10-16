@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple, Union
 from app.core.context import SubtitleInfo, TorrentInfo
 from app.db.site_oper import SiteOper
 from app.helper.module import ModuleHelper
-from app.helper.sites import SitesHelper  # noqa
+from app.helper.site import SitesHelper
 from app.log import logger
 from app.modules import _ModuleBase
 from app.modules.indexer.parser import SiteParserBase

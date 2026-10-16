@@ -11,7 +11,7 @@ from app.chain.storage import StorageChain
 from app.core.config import settings
 from app.core.context import Context
 from app.db.site_oper import SiteOper
-from app.helper.sites import SitesHelper  # noqa
+from app.helper.site import SitesHelper
 from app.helper.torrent import TorrentHelper
 from app.log import logger
 from app.modules import _ModuleBase

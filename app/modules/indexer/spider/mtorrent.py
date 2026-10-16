@@ -14,7 +14,7 @@ from app.utils.string import StringUtils
 
 class MTorrentSpider:
     """
-    mTorrent API
+    M-Team 兼容接口搜索、下载与字幕解析
     """
     _indexerid = None
     _domain = None
@@ -181,8 +181,7 @@ class MTorrentSpider:
             timeout=self._timeout
         ).post_res(url=self._searchurl, json=params)
         if res and res.status_code == 200:
-            results = res.json().get('data', {}).get("data") or []
-            return False, self.__parse_result(results)
+            return self._process_search_response(res.json())
         elif res is not None:
             logger.warn(f"{self._name} 搜索失败，错误码：{res.status_code}")
             return True, []
@@ -213,14 +212,25 @@ class MTorrentSpider:
             timeout=self._timeout
         ).post_res(url=self._searchurl, json=params)
         if res and res.status_code == 200:
-            results = res.json().get('data', {}).get("data") or []
-            return False, self.__parse_result(results)
+            return self._process_search_response(res.json())
         elif res is not None:
             logger.warn(f"{self._name} 搜索失败，错误码：{res.status_code}")
             return True, []
         else:
             logger.warn(f"{self._name} 搜索失败，无法连接 {self._domain}")
             return True, []
+
+    def _process_search_response(self, payload: dict) -> Tuple[bool, List[dict]]:
+        """兼容整数与字符串成功码，鉴权失败不能被当作搜索无结果。"""
+        if not isinstance(payload, dict) or str(payload.get("code")) != "0":
+            logger.warning(f"{self._name} 搜索失败，接口未返回成功状态")
+            return True, []
+        data = payload.get("data")
+        results = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(results, list):
+            logger.warning(f"{self._name} 搜索失败，接口结果格式错误")
+            return True, []
+        return False, self.__parse_result(results)
 
     @staticmethod
     def __find_imdbid(imdb: str) -> str:

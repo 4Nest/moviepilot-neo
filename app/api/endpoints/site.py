@@ -24,7 +24,7 @@ from app.db.models.siteuserdata import SiteUserData
 from app.db.site_oper import SiteOper
 from app.db.systemconfig_oper import SystemConfigOper
 from app.db.user_oper import get_current_admin, get_current_admin_async
-from app.helper.sites import SitesHelper  # noqa
+from app.helper.site import SitesHelper
 from app.log import logger
 from app.scheduler import Scheduler
 from app.schemas.event import ConfigChangeEventData

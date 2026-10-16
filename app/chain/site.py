@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Callable, List, Optional, Tuple, Union, Dict
 from urllib.parse import urljoin
 
-from app.helper.sites import SitesHelper  # noqa
+from app.helper.site import SitesHelper
 from lxml import etree
 
 from app.chain import ChainBase
@@ -54,6 +54,7 @@ class SiteChain(ChainBase):
             "zhuque.in": self.__zhuque_test,
             "m-team.io": self.__mteam_test,
             "m-team.cc": self.__mteam_test,
+            "colapt.com": self.__mteam_test,
             "ptlsp.com": self.__indexphp_test,
             "1ptba.com": self.__indexphp_test,
             "star-space.net": self.__indexphp_test,
@@ -227,8 +228,10 @@ class SiteChain(ChainBase):
     @staticmethod
     def __mteam_test(site: Site) -> Tuple[bool, str]:
         """
-        判断站点是否已经登陆：m-team
+        通过 M-Team 兼容接口验证 API Key（含 Cola）。
         """
+        if not site.apikey:
+            return False, "请配置站点 API Key"
         user_agent = site.ua or settings.USER_AGENT
         domain = StringUtils.get_url_domain(site.url)
         url = f"https://api.{domain}/api/member/profile"
@@ -246,7 +249,7 @@ class SiteChain(ChainBase):
             return False, "无法打开网站！"
         if res.status_code == 200:
             user_info = res.json() or {}
-            if user_info.get("data"):
+            if str(user_info.get("code")) == "0" and user_info.get("data"):
                 return True, "连接成功"
             return False, user_info.get("message", "鉴权已过期或无效")
         else:

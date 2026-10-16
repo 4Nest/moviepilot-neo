@@ -9,6 +9,8 @@ from app.utils.string import StringUtils
 
 
 class MTorrentSiteUserInfo(SiteParserBase):
+    """读取 M-Team 及兼容站点的账户、流量和做种数据。"""
+
     schema = SiteSchema.MTorrent
     request_mode = "apikey"
 
@@ -79,7 +81,7 @@ class MTorrentSiteUserInfo(SiteParserBase):
         if not html_text:
             return None
         detail = json.loads(html_text)
-        if not detail or detail.get("code") != "0":
+        if not detail or str(detail.get("code")) != "0":
             return
         user_info = detail.get("data", {})
         self.userid = user_info.get("id")
@@ -118,7 +120,7 @@ class MTorrentSiteUserInfo(SiteParserBase):
         if not html_text:
             return None
         seeding_info = json.loads(html_text)
-        if not seeding_info or seeding_info.get("code") != "0":
+        if not seeding_info or str(seeding_info.get("code")) != "0":
             return None
         seeding_data = seeding_info.get("data") or {}
         if not isinstance(seeding_data, dict):
@@ -171,7 +173,7 @@ class MTorrentSiteUserInfo(SiteParserBase):
         if not html_text:
             return None
         messages_info = json.loads(html_text)
-        if not messages_info or messages_info.get("code") != "0":
+        if not messages_info or str(messages_info.get("code")) != "0":
             return None
         messages = messages_info.get("data", {}).get("data", [])
         for message in messages:

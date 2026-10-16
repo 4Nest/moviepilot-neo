@@ -3,7 +3,7 @@ import re
 import traceback
 from typing import Callable, Dict, List, Union, Optional
 
-from app.helper.sites import SitesHelper  # noqa
+from app.helper.site import SitesHelper
 
 from app.chain import ChainBase
 from app.chain.media import MediaChain

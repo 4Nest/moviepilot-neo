@@ -1,0 +1,78 @@
+{
+  "code": 0,
+  "data": {
+    "pageNumber": 1,
+    "totalPages": 2,
+    "data": [
+      {
+        "id": 633,
+        "name": "Divas Hit The Road S08E10 2014 1080p WEB-DL H.264 AAC2.0-HHWEB",
+        "smallDescr": "花儿与少年 第八季 (2026)",
+        "createdDate": 1792128843,
+        "category": "402",
+        "size": "2118166278",
+        "status": {
+          "seeders": 0,
+          "leechers": 0,
+          "timesCompleted": 0,
+          "discount": "FREE",
+          "promotionRule": {
+            "discount": "FREE",
+            "endTime": 1798769400
+          },
+          "mallSingleFree": null,
+          "discountEndTime": 1798769400
+        },
+        "imdb": "",
+        "labels": "0",
+        "labelsNew": []
+      },
+      {
+        "id": 632,
+        "name": "The Lament of Autumn 2026 S01E10 2160p WEB-DL 50fps H264 AAC-PTerWEB",
+        "smallDescr": "玉簟秋 (2026)",
+        "createdDate": 1792128808,
+        "category": "402",
+        "size": "3540459387",
+        "status": {
+          "seeders": 0,
+          "leechers": 3,
+          "timesCompleted": 0,
+          "discount": "FREE",
+          "promotionRule": {
+            "discount": "FREE",
+            "endTime": 1798769400
+          },
+          "mallSingleFree": null,
+          "discountEndTime": 1798769400
+        },
+        "imdb": "tt37109705",
+        "labels": "0",
+        "labelsNew": []
+      },
+      {
+        "id": 631,
+        "name": "Up All Friday Night S01E08 2026 1080p WEB-DL H.264 AAC2.0-HHWEB",
+        "smallDescr": "不想睡的星期五 (2026)",
+        "createdDate": 1792128211,
+        "category": "402",
+        "size": "1976085875",
+        "status": {
+          "seeders": 7,
+          "leechers": 0,
+          "timesCompleted": 6,
+          "discount": "FREE",
+          "promotionRule": {
+            "discount": "FREE",
+            "endTime": 1798769400
+          },
+          "mallSingleFree": null,
+          "discountEndTime": 1798769400
+        },
+        "imdb": "",
+        "labels": "0",
+        "labelsNew": []
+      }
+    ]
+  }
+}
