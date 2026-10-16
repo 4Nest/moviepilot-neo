@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional, List, Dict, Any, ClassVar, Union
 
 from pydantic import BaseModel, Field, ConfigDict, model_validator
@@ -286,6 +287,30 @@ class Subscribe(BaseModel):
         """填充电视剧订阅的派生完成集数。"""
         if self.completed_episode is None:
             self.completed_episode = compute_subscribe_completed_episode(self)
+        return self
+
+    @model_validator(mode="after")
+    def _fill_last_update(self) -> "Subscribe":
+        """汇总现有版本的最新更新时间，仅填充响应，不回写父订阅运行事实。"""
+        if not self.version_rules or not self.version_progress:
+            return self
+        # 保留原版父时间；停用版本仍有历史事实，已删除规则的残留快照不参与展示。
+        candidates = [self.last_update]
+        for rule in self.version_rules:
+            progress = self.version_progress.get(rule.id)
+            if progress:
+                candidates.append(progress.last_update)
+        latest_time = None
+        for value in candidates:
+            if not value:
+                continue
+            try:
+                parsed = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            if latest_time is None or parsed > latest_time:
+                latest_time = parsed
+                self.last_update = value
         return self
 
     @model_validator(mode="after")

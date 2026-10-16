@@ -224,6 +224,8 @@ def test_manual_recompute_updates_version_snapshot_only(progress_chain, monkeypa
     assert updates
     assert all(set(data) == {"version_progress"} for _, data in updates)
     assert schemas.Subscribe.model_validate(parent).completed_episode == 26
+    assert parent.last_update is None
+    assert parent.version_progress["adweb"].get("last_update") is None
     downloader.get_no_exists_info.assert_called_once()
 
 
@@ -244,10 +246,13 @@ def test_manual_recompute_failure_preserves_snapshot(progress_chain, monkeypatch
 
 
 @pytest.mark.parametrize("supplied_missing", [False, True])
-def test_download_facts_retain_library_progress(progress_chain, monkeypatch, supplied_missing):
+@pytest.mark.parametrize("parent_time", [None, "2026-10-13 18:00:00"])
+def test_download_facts_retain_library_progress(progress_chain, monkeypatch, supplied_missing, parent_time):
     """下载第 26 集后仍计入库内前 25 集，note 只记录真实的新下载。"""
     chain, updates = progress_chain
-    parent = _build_subscribe(version_progress={"adweb": {"note": [], "lack_episode": 37}})
+    parent = _build_subscribe(
+        last_update=parent_time, version_progress={"adweb": {"note": [], "lack_episode": 37}},
+    )
     media = _media_info()
     download = SimpleNamespace(
         version_rule_id="adweb", media_info=media,
@@ -268,6 +273,10 @@ def test_download_facts_retain_library_progress(progress_chain, monkeypatch, sup
     assert parent.lack_episode == 37
     assert all(set(data) == {"version_progress"} for _, data in updates)
     assert schemas.Subscribe.model_validate(parent).completed_episode == 26
+    latest_update = parent.version_progress["adweb"]["last_update"]
+    assert latest_update
+    assert parent.last_update == parent_time
+    assert schemas.Subscribe.model_validate(parent).last_update == latest_update
     if supplied_missing:
         downloader.get_no_exists_info.assert_not_called()
     else:
