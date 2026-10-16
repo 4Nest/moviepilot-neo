@@ -180,6 +180,7 @@ jobs:
     if: github.repository == '4Nest/moviepilot-neo' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish_latest == true)
     runs-on: ubuntu-latest
     name: Notify Telegram Release Channel
+    environment: TELEGRAM_RELEASE_BOT_TOKEN
     timeout-minutes: 5
     permissions:
       contents: read
@@ -207,7 +208,7 @@ jobs:
           TELEGRAM_RELEASE_BOT_TOKEN: ${{ secrets.TELEGRAM_RELEASE_BOT_TOKEN }}
         run: |
           if [[ -z "$TELEGRAM_RELEASE_BOT_TOKEN" ]]; then
-            echo '::error::正式版已发布，但缺少 TELEGRAM_RELEASE_BOT_TOKEN；请配置仓库 Secret 后重试此通知任务。'
+            echo '::error::正式版已发布，但缺少 TELEGRAM_RELEASE_BOT_TOKEN；请检查同名 Environment 中的 Secret 后重试此通知任务。'
             exit 1
           fi
           # POST 超时可能已经送达，不自动重试，避免频道重复公告。

@@ -1,0 +1,49 @@
+name: Check Telegram Release Channel
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    if: github.repository == '4Nest/moviepilot-neo'
+    runs-on: ubuntu-latest
+    name: Verify Telegram Token and Channel Permissions
+    environment: TELEGRAM_RELEASE_BOT_TOKEN
+    timeout-minutes: 5
+    steps:
+      - name: Check bot credentials and posting permission
+        shell: bash
+        env:
+          TELEGRAM_RELEASE_BOT_TOKEN: ${{ secrets.TELEGRAM_RELEASE_BOT_TOKEN }}
+        run: |
+          if [[ -z "$TELEGRAM_RELEASE_BOT_TOKEN" ]]; then
+            echo '::error::缺少 TELEGRAM_RELEASE_BOT_TOKEN，请检查同名 Environment 中的 Secret。'
+            exit 1
+          fi
+          # 只调用查询接口，验证配置时不发布公告，也不回显原始响应或凭证。
+          curl --silent --show-error --connect-timeout 10 --max-time 30 \
+            --output "$RUNNER_TEMP/telegram-bot.json" \
+            "https://api.telegram.org/bot${TELEGRAM_RELEASE_BOT_TOKEN}/getMe"
+          if ! jq -e '.ok == true and .result.is_bot == true and
+            (.result.id | type == "number" and . > 0)' \
+            "$RUNNER_TEMP/telegram-bot.json" >/dev/null; then
+            echo '::error::Telegram Token 验证失败，请检查 Secret 是否为有效的机器人 Token。'
+            exit 1
+          fi
+          bot_id=$(jq -r '.result.id' "$RUNNER_TEMP/telegram-bot.json")
+          curl --silent --show-error --connect-timeout 10 --max-time 30 \
+            --get --data-urlencode 'chat_id=@MoviePilot_NEO' \
+            --data-urlencode "user_id=$bot_id" \
+            --output "$RUNNER_TEMP/telegram-member.json" \
+            "https://api.telegram.org/bot${TELEGRAM_RELEASE_BOT_TOKEN}/getChatMember"
+          if ! jq -e --argjson bot_id "$bot_id" '.ok == true and
+            .result.user.id == $bot_id and
+            (.result.status == "creator" or
+              (.result.status == "administrator" and .result.can_post_messages == true))' \
+            "$RUNNER_TEMP/telegram-member.json" >/dev/null; then
+            echo '::error::机器人尚无 @MoviePilot_NEO 频道发文权限，请将其设为管理员并允许发布消息。'
+            exit 1
+          fi
+          echo 'Telegram Token 有效，机器人已拥有 @MoviePilot_NEO 频道发文权限。' | tee -a "$GITHUB_STEP_SUMMARY"
