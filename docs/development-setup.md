@@ -50,7 +50,8 @@ Release 说明统一从 `.github/release-notes/<tag>.md` 读取，格式见该�
 `TELEGRAM_RELEASE_BOT_TOKEN` 环境，并在其中设置同名 Secret；通知任务绑定该环境。
 将对应机器人设为频道管理员、授予发布消息权限。凭证只在通知和检查步骤通过环境变量读取，
 不写入代码或公告文件。配置后可手动运行 **Check Telegram Release Channel** 工作流，
-只查询 Token 有效性与频道发文权限，不发送消息或重新发布镜像。
+默认只查询 Token 有效性与频道发文权限；需要试发或补发时，勾选 `send_announcement`，
+检查通过后读取 GitHub 当前正式版 Release 说明并向频道发送一条公告，无需重新发布镜像。
 若缺少凭证或发送失败，通知任务会明确报错；镜像发布结果不受影响。
 修复配置后可在该次 Actions 运行中选择 **Re-run failed jobs**，无需重建镜像。
 若请求超时，先检查频道是否已收到消息再重试，避免重复发送。

@@ -1,9 +1,17 @@
 name: Check Telegram Release Channel
+run-name: ${{ inputs.send_announcement && 'Send latest release to Telegram' || 'Check Telegram release permissions' }}
 
 on:
   workflow_dispatch:
+    inputs:
+      send_announcement:
+        description: '检查通过后向频道发送当前正式版公告（会实际发文）'
+        required: true
+        default: false
+        type: boolean
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   check:
@@ -47,3 +55,44 @@ jobs:
             exit 1
           fi
           echo 'Telegram Token 有效，机器人已拥有 @MoviePilot_NEO 频道发文权限。' | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout
+        if: inputs.send_announcement
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        if: inputs.send_announcement
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Prepare published release announcement
+        if: inputs.send_announcement
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 手动发送读取已发布的正式版，避免将 neo 尚未发布的改动写入公告。
+          gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > "$RUNNER_TEMP/telegram-published-release.json"
+          app_version=$(jq -er '.tag_name' "$RUNNER_TEMP/telegram-published-release.json")
+          jq -er '.body' "$RUNNER_TEMP/telegram-published-release.json" > "$RUNNER_TEMP/telegram-release-notes.md"
+          python -m scripts.telegram_release prepare \
+            --version "$app_version" \
+            --repository "$GITHUB_REPOSITORY" \
+            --notes-file "$RUNNER_TEMP/telegram-release-notes.md" \
+            --output "$RUNNER_TEMP/telegram-release.json"
+
+      - name: Send published release announcement
+        if: inputs.send_announcement
+        shell: bash
+        env:
+          TELEGRAM_RELEASE_BOT_TOKEN: ${{ secrets.TELEGRAM_RELEASE_BOT_TOKEN }}
+        run: |
+          # POST 超时可能已经送达，不自动重试，避免频道重复公告。
+          curl --silent --show-error --connect-timeout 10 --max-time 30 \
+            --request POST --header 'Content-Type: application/json' \
+            --data-binary "@$RUNNER_TEMP/telegram-release.json" \
+            --output "$RUNNER_TEMP/telegram-response.json" \
+            "https://api.telegram.org/bot${TELEGRAM_RELEASE_BOT_TOKEN}/sendMessage"
+          python -m scripts.telegram_release check \
+            --response-file "$RUNNER_TEMP/telegram-response.json" | tee -a "$GITHUB_STEP_SUMMARY"
