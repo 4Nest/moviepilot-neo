@@ -33,30 +33,6 @@ docker pull ghcr.io/4nest/moviepilot-neo:neo
 docker pull ghcr.io/4nest/moviepilot-neo:latest
 ```
 
-## 从源码运行
-
-需要 **Python 3.11+** 与 **Git**。macOS / Linux：
-
-```bash
-git clone --branch neo https://github.com/4Nest/moviepilot-neo.git
-cd moviepilot-neo
-python3 -m venv venv
-source venv/bin/activate
-## 更新与回滚
-
-`latest` 仅在推送 `v*` 版本标签时更新，代表最近一次正式稳定版；`neo` 跟随开发分支更新，仅用于测试。
-
-正式版更新：
-
-```bash
-docker pull ghcr.io/4nest/moviepilot-neo:latest
-```
-
-## Vyo 媒体服务
-
-MediaVault 媒体服务已更名为 Vyo（Muvyo 内置媒体服务）。连接地址填写 Muvyo 管理面板地址（默认端口 `7811`），API Key 从管理面板的系统配置中生成，不要填写 Vyo 的播放端口。
-
-已保存的媒体服务器配置及媒体库类型值仍为 `mediavault`，无需迁移；模块入口为 `app.modules.vyo:VyoModule`。
 
 ## 项目入口
 
@@ -64,7 +40,7 @@ MediaVault 媒体服务已更名为 Vyo（Muvyo 内置媒体服务）。连接�
 | --- | --- |
 | 前端仓库 | [4Nest/moviepilot-neo-frontend](https://github.com/4Nest/moviepilot-neo-frontend) |
 | 上游项目 | [jxxghp/MoviePilot](https://github.com/jxxghp/MoviePilot) |
-| Telegram 频道 | [@MoviePilot_NEO](https://t.me/MoviePilot_NEO) |
+| Telegram 频道 | [MoviePilot_NEO](https://t.me/MoviePilot_NEO) |
 | CLI 使用 | [docs/cli.md](docs/cli.md) |
 | 环境诊断 | [docs/doctor.md](docs/doctor.md) |
 | 订阅生命周期 | [docs/subscribe-lifecycle.md](docs/subscribe-lifecycle.md) |
