@@ -160,9 +160,9 @@ def test_module_stop_isolates_each_service_instance(
     getattr(healthy_client, stop_method).assert_called_once_with()
 
 
-def test_telegram_stop_closes_sdk_and_waits_for_polling_thread():
+def test_telegram_stop_closes_sdk_and_waits_for_polling_thread() -> None:
     """客户端停止完成后不得保留 SDK worker 或 polling 线程句柄。"""
-    client = Telegram.__new__(Telegram)
+    client = Telegram()
     bot = Mock()
     client._bot = bot
     polling_thread = Mock()

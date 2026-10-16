@@ -70,15 +70,6 @@ class Telegram:
     _ds_url = (
         f"http://127.0.0.1:{settings.PORT}/api/v1/message?token={settings.API_TOKEN}"
     )
-    _bot: TeleBot = None
-    _callback_handlers: Dict[str, Callable] = {}  # 存储回调处理器
-    _user_chat_mapping: Dict[
-        str, str
-    ] = {}  # userid -> chat_id mapping for reply targeting
-    _bot_username: Optional[str] = None  # Bot username for mention detection
-    _typing_tasks: Dict[str, threading.Thread] = {}  # chat_id -> typing任务
-    _typing_stop_flags: Dict[str, threading.Event] = {}  # chat_id -> 停止信号
-    _typing_lock = threading.RLock()
     _typing_interval_seconds = 5
     _typing_initial_delay_seconds = 1
     _typing_max_duration_seconds = 10 * 60
@@ -98,6 +89,14 @@ class Telegram:
         self._telegram_token = TELEGRAM_TOKEN
         self._telegram_chat_id = TELEGRAM_CHAT_ID
         self._polling_thread = None
+        # 同一用户可与多个机器人交互；会话映射和 typing 生命周期必须按渠道隔离。
+        self._bot: Optional[TeleBot] = None
+        self._bot_username: Optional[str] = None
+        self._callback_handlers: Dict[str, Callable] = {}
+        self._user_chat_mapping: Dict[str, str] = {}
+        self._typing_tasks: Dict[str, threading.Thread] = {}
+        self._typing_stop_flags: Dict[str, threading.Event] = {}
+        self._typing_lock = threading.RLock()
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
             logger.error("Telegram配置不完整！")
             return
@@ -148,15 +147,14 @@ class Telegram:
                 "audio", "voice", "sticker", "video_note",
             ], func=lambda message: True)
             def echo_all(message):
-                # Update user-chat mapping when receiving messages
-                self._update_user_chat_mapping(message.from_user.id, message.chat.id)
-
                 # Check if we should process this message
                 if self._should_process_message(message):
                     payload = self._serialize_update_payload(message)
                     if not payload:
                         logger.warn("Telegram消息序列化失败，跳过转发")
                         return
+                    # 被忽略的群聊消息不能改变用户下一条通知的投递位置。
+                    self._update_user_chat_mapping(message.from_user.id, message.chat.id)
                     response = RequestUtils(timeout=15).post_res(
                         self._ds_url, json=payload
                     )
