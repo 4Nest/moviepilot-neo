@@ -190,5 +190,7 @@ def test_authentication_finish_token_cannot_be_replayed():
             )
 
     assert result.access_token == "access-token"
+    assert result.super_user is True
+    assert result.permissions["discovery"] is True
     assert replay_error.value.status_code == 401
     assert replay_error.value.detail == "认证请求已失效"

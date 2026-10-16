@@ -1,6 +1,6 @@
 from typing import Optional
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, computed_field, field_validator
 
 
 # Shared properties
@@ -44,8 +44,24 @@ class UserInDBBase(UserBase):
 
 # Additional properties to return via API
 class User(UserInDBBase):
+    """用户资料响应，兼容第三方客户端的只读账号状态。"""
+
     name: str
     email: Optional[str] = None
+    is_active: bool = False
+    is_superuser: bool = False
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: Optional[str]) -> str:
+        """未设置邮箱时返回空字符串，兼容客户端的非空字符串模型。"""
+        return value or ""
+
+    @computed_field
+    @property
+    def permissions(self) -> dict[str, bool]:
+        """仅从账号实际状态派生客户端功能标记。"""
+        return {key: self.is_active and self.is_superuser for key in ("discovery", "search", "subscribe", "manage")}
 
 
 # Additional properties stored in DB

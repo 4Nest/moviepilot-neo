@@ -2,7 +2,7 @@ import base64
 import re
 from typing import Annotated, Any, Union
 
-from fastapi import APIRouter, Body, Depends, UploadFile, File
+from fastapi import APIRouter, Body, Depends, UploadFile, File, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import schemas
@@ -96,3 +96,22 @@ def set_config(
     """
     UserConfigOper().set(username=current_user.name, key=key, value=value)
     return schemas.Response(success=True)
+
+
+@router.get("/", summary="兼容客户端的当前账号列表", response_model=list[schemas.User])
+async def read_users(
+    current_user: User = Depends(get_current_admin_async),
+) -> Any:
+    """兼容客户端用户列表请求，仅返回已通过鉴权的当前管理员。"""
+    return [current_user]
+
+
+@router.get("/{user_name}", summary="按名称读取当前账号", response_model=schemas.User)
+async def read_user_by_name(
+    user_name: str,
+    current_user: User = Depends(get_current_admin_async),
+) -> Any:
+    """兼容客户端按用户名刷新资料，不提供其它账号的查询能力。"""
+    if user_name != current_user.name:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return current_user

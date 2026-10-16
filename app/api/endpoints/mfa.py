@@ -437,6 +437,7 @@ def passkey_authenticate_finish(
             token_type="bearer",
             user_id=user.id,
             user_name=user.name,
+            super_user=user.is_superuser,
             avatar=user.avatar,
             level=level,
             wizard=show_wizard,

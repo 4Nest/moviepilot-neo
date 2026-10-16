@@ -75,6 +75,7 @@ def login_access_token(
         token_type="bearer",
         user_id=user_or_message.id,
         user_name=user_or_message.name,
+        super_user=user_or_message.is_superuser,
         avatar=user_or_message.avatar,
         level=level,
         wizard=show_wizard,

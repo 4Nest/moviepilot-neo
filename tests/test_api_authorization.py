@@ -190,9 +190,9 @@ def test_login_sets_resource_token_cookie(monkeypatch):
     )
 
     assert token.user_id == 1
-    # 登录响应不再暴露权限/管理员标记
-    assert not hasattr(token, "permissions")
-    assert not hasattr(token, "super_user")
+    # 兼容客户端显示权限，但服务端仍通过 canonical admin guard 鉴权。
+    assert token.super_user is True
+    assert token.permissions == {key: True for key in ("discovery", "search", "subscribe", "manage")}
     assert "set-cookie" in response.headers
 
     resource_cookie = response.headers["set-cookie"].split("=", 1)[1].split(";", 1)[0]
@@ -297,7 +297,7 @@ def test_update_current_user_merges_nickname_into_settings(monkeypatch):
 
 
 def test_user_management_routes_removed():
-    """多用户管理路由已删除，只保留当前用户自助接口。"""
+    """多用户写接口保持删除，旧版只读接口仅映射到当前管理员。"""
     from fastapi.routing import APIRoute
 
     paths = {
@@ -306,12 +306,14 @@ def test_user_management_routes_removed():
         if isinstance(route, APIRoute)
         for method in route.methods
     }
-    assert ("/", "GET") not in paths
+    assert ("/", "GET") in paths
     assert ("/", "POST") not in paths
     assert ("/", "PUT") not in paths
     assert ("/id/{user_id}", "DELETE") not in paths
     assert ("/name/{user_name}", "DELETE") not in paths
-    assert ("/{username}", "GET") not in paths
+    assert ("/{user_name}", "GET") in paths
+    assert _dependency_of(user_endpoint.read_users, "current_user") is get_current_admin_async
+    assert _dependency_of(user_endpoint.read_user_by_name, "current_user") is get_current_admin_async
     assert ("/avatar/{user_id}", "POST") not in paths
     assert ("/current", "GET") in paths
     assert ("/current", "PUT") in paths
