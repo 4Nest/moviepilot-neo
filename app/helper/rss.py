@@ -260,7 +260,7 @@ class RssHelper:
         return None
 
     def _normalize_items(self, items: list[dict], url: str) -> list[dict]:
-        """按 RSS 副标题开关拆分名称和描述，普通订阅保留原始字段。"""
+        """拆分 RSS 副标题并清理 HTML，Python 与 Rust 解析路径共用。"""
         params = parse_qs(urlsplit(url).query)
         include_description = any(
             params.get(key) == ["1"] for key in ("ismalldescr", "itemsmalldescr")
@@ -302,6 +302,9 @@ class RssHelper:
                 item["title"] = name.rstrip() + suffix
                 if include_description:
                     item["description"] = subtitle
+        for item in items:
+            if item.get("description"):
+                item["description"] = StringUtils.strip_html(item["description"])
         return items
 
     def parse(self, url, proxy: bool = False,

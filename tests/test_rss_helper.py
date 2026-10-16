@@ -32,6 +32,9 @@ def parse_rss(monkeypatch, request):
 
 
 @pytest.mark.parametrize("feed_url", [
+    "https://mikanani.me/RSS/Classic",
+    "https://mikanani.tv/RSS/Classic",
+    "https://nyaa.si/?page=rss",
     "https://anibt.net/rss/magnets.xml",
     "https://share.dmhy.org/topics/rss/rss.xml",
     "https://bangumi.moe/rss/latest",
@@ -40,12 +43,12 @@ def parse_rss(monkeypatch, request):
     "https://www.miobt.com/rss.xml",
 ])
 def test_bt_rss_preserves_release_body_for_recognition(parse_rss, feed_url):
-    """通知摘要不能通过截断 RSS 原文实现，否则会影响字幕等条件的识别和过滤。"""
+    """清理 RSS 的 HTML 包装但保留完整正文，字幕等识别和过滤条件不能截断。"""
     title = "[三明治摆烂组&LoliHouse] Example S02 - 02 [WebRip 1080p][简繁日内封字幕]"
     description = '<p>资源摘要</p><hr/><p>字幕：简繁日内封</p><p>发布说明和播放器推荐</p>'
     item = parse_rss(title, description, query="", feed_url=feed_url)
     assert item["title"] == title
-    assert item["description"] == description
+    assert item["description"] == "资源摘要\n字幕：简繁日内封\n发布说明和播放器推荐"
     assert item["size"] == 1024
     assert item["enclosure"] == "https://example.com/download.php?id=1"
 

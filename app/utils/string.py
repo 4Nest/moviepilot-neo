@@ -4,6 +4,8 @@ import hashlib
 import random
 import re
 import unicodedata
+from html import unescape
+from html.parser import HTMLParser
 from typing import Union, Tuple, Optional, Any, List, Generator
 from urllib import parse
 
@@ -36,7 +38,84 @@ _media_sentence_punctuation_pattern = re.compile(r"[，。！？!?,；;]")
 _media_title_char_pattern = re.compile(r"[\u4e00-\u9fffA-Za-z]")
 
 
+class _HtmlTextParser(HTMLParser):
+    """仅提取 HTML 文字，不执行脚本或读取链接、图片等外部资源。"""
+
+    BLOCK_TAGS = frozenset("address article aside blockquote br dd div dl dt figure figcaption footer form "
+                           "h1 h2 h3 h4 h5 h6 header hr li main nav ol p pre section table tr ul".split())
+    SKIP_TAGS = frozenset("script style iframe object template noscript".split())
+    INLINE_TAGS = frozenset("a abbr b bdi bdo body button caption cite code col colgroup data del details dfn "
+                            "em embed font head html i img input ins kbd label link mark meta param picture q "
+                            "rp rt ruby s samp small source span strike strong sub summary sup td th time "
+                            "title track tt u var video audio wbr".split())
+    TAG_PATTERN = re.compile(
+        r"<!--|</?(?:" + "|".join(sorted(BLOCK_TAGS | SKIP_TAGS | INLINE_TAGS)) + r")(?=[\s/>])",
+        re.IGNORECASE,
+    )
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.skipped: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        """保留段落边界，忽略主动内容和所有 HTML 属性。"""
+        if tag in self.SKIP_TAGS:
+            self.skipped.append(tag)
+        if self.skipped:
+            return
+        if tag in self.BLOCK_TAGS:
+            self.parts.append("\n")
+        elif tag in {"td", "th"}:
+            self.parts.append(" ")
+        elif tag not in self.INLINE_TAGS:
+            # <CHS> 等资源标记不是 HTML，必须保留供识别和过滤使用。
+            self.parts.append(self.get_starttag_text())
+
+    def handle_endtag(self, tag: str) -> None:
+        """结束主动内容屏蔽，并保留块级元素后的换行。"""
+        if self.skipped:
+            if tag == self.skipped[-1]:
+                self.skipped.pop()
+            return
+        if tag in self.BLOCK_TAGS:
+            self.parts.append("\n")
+        elif tag in {"td", "th"}:
+            self.parts.append(" ")
+        elif tag not in self.INLINE_TAGS and tag not in self.SKIP_TAGS:
+            self.parts.append(f"</{tag}>")
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        """兼容自闭合标签，不为非 HTML 标记附加结束标签。"""
+        self.handle_starttag(tag, attrs)
+        if tag in self.SKIP_TAGS:
+            self.handle_endtag(tag)
+
+    def handle_data(self, data: str) -> None:
+        """收集可见文字，跳过脚本、样式和嵌入内容。"""
+        if not self.skipped:
+            self.parts.append(data)
+
+
 class StringUtils:
+
+    @staticmethod
+    def strip_html(text: Optional[str]) -> Optional[str]:
+        """去除资源描述的 HTML 包装，保留完整文字、换行及非 HTML 资源标记。"""
+        if not text or ("<" not in text and "&" not in text):
+            return text
+        # RSS 中可能同时使用 XML 转义和 HTML 实体，先展开常见的多层编码。
+        for _ in range(3):
+            decoded = unescape(text)
+            if decoded == text:
+                break
+            text = decoded
+        if not _HtmlTextParser.TAG_PATTERN.search(text):
+            return text
+        parser = _HtmlTextParser()
+        parser.feed(text)
+        parser.close()
+        return "\n".join(" ".join(line.split()) for line in "".join(parser.parts).splitlines() if line.strip())
 
     @staticmethod
     def num_filesize(text: Union[str, int, float]) -> int:

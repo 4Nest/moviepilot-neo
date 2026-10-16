@@ -1,5 +1,13 @@
 # Rust BT/PT 识别改进验证记录
 
+## 资源描述入缓存前清理
+
+RSS 的 Python 兜底与 Rust 加速共用描述归一化出口，搜索结果也在构造 `TorrentInfo` 前清理 HTML。Mikan、Nyaa 等站点的段落、换行和表格转换为纯文本；脚本、样式、图片属性和嵌入内容不进入识别与缓存。完整正文、字幕及编码文字继续保留，不按通知摘要长度截断，普通 PT 副标题和 `<CHS>` 等资源标记不变。
+
+`GET /api/v1/torrent/cache` 返回清理后的描述。RSS 和爬虫旧缓存读取时同时清理 `torrent_info.description` 与 `meta_info.subtitle`，正常刷新或修改缓存后写回磁盘；识别结果、资源链接和其它元数据保留。列表、删除和重复资源检查使用同一份归一化内容，避免指纹不一致。
+
+相关回归位于 `tests/test_torrent_description.py`、`tests/test_rss_helper.py`，覆盖真实 Rust/Python 解析、长正文、实体转义、非 HTML 标记、旧缓存删除及刷新去重。
+
 ## TMDB 繁体别名与篇章季号（v2.15.15 补充更新）
 
 用户报告原始标题：

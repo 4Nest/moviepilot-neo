@@ -672,6 +672,11 @@ class TorrentsChain(ChainBase):
         for domain, contexts in torrents_cache.items():
             for context in contexts:
                 context_fields = vars(context)
+                # 旧缓存可能含 RSS 的 HTML 正文；在签名比较和识别前清理，刷新时自然落盘。
+                if context.torrent_info:
+                    context.torrent_info.description = StringUtils.strip_html(context.torrent_info.description)
+                if context.meta_info:
+                    context.meta_info.subtitle = StringUtils.strip_html(context.meta_info.subtitle)
                 # 旧 pickle 实例会读到 dataclass 类默认值，必须检查实例字段，避免跳过兼容回填。
                 if "media_recognize_fail_count" not in context_fields:
                     context.media_recognize_fail_count = 0

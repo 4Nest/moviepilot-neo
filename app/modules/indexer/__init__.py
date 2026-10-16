@@ -158,6 +158,9 @@ class IndexerModule(_ModuleBase):
         logger.info(
             f"{site.get('name')} 搜索完成，耗时 {seconds} 秒，返回数据：{len(result_array)}")
         site_cookie = None if AniBTSpider.matches(site) else site.get("cookie")
+        for result in result_array:
+            if result.get("description"):
+                result["description"] = StringUtils.strip_html(result["description"])
         return [TorrentInfo(site=site.get("id"),
                             site_name=site.get("name"),
                             site_cookie=site_cookie,
