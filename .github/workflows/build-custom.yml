@@ -174,3 +174,47 @@ jobs:
             gh release create "$app_version" --target "$GITHUB_SHA" --title "$app_version" \
               --latest --notes-file "$notes_file"
           fi
+
+  notify:
+    needs: build
+    if: github.repository == '4Nest/moviepilot-neo' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish_latest == true)
+    runs-on: ubuntu-latest
+    name: Notify Telegram Release Channel
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Prepare release announcement
+        run: |
+          app_version=$(python -c 'import runpy; print(runpy.run_path("version.py")["APP_VERSION"])')
+          python -m scripts.telegram_release prepare \
+            --version "$app_version" \
+            --repository "$GITHUB_REPOSITORY" \
+            --notes-file ".github/release-notes/${app_version}.md" \
+            --output "$RUNNER_TEMP/telegram-release.json"
+
+      - name: Send release announcement
+        shell: bash
+        env:
+          TELEGRAM_RELEASE_BOT_TOKEN: ${{ secrets.TELEGRAM_RELEASE_BOT_TOKEN }}
+        run: |
+          if [[ -z "$TELEGRAM_RELEASE_BOT_TOKEN" ]]; then
+            echo '::error::正式版已发布，但缺少 TELEGRAM_RELEASE_BOT_TOKEN；请配置仓库 Secret 后重试此通知任务。'
+            exit 1
+          fi
+          # POST 超时可能已经送达，不自动重试，避免频道重复公告。
+          curl --silent --show-error --connect-timeout 10 --max-time 30 \
+            --request POST --header 'Content-Type: application/json' \
+            --data-binary "@$RUNNER_TEMP/telegram-release.json" \
+            --output "$RUNNER_TEMP/telegram-response.json" \
+            "https://api.telegram.org/bot${TELEGRAM_RELEASE_BOT_TOKEN}/sendMessage"
+          python -m scripts.telegram_release check \
+            --response-file "$RUNNER_TEMP/telegram-response.json" | tee -a "$GITHUB_STEP_SUMMARY"

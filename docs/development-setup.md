@@ -40,6 +40,19 @@ Release 说明统一从 `.github/release-notes/<tag>.md` 读取，格式见该�
 同版本补充发布保持 `version.py` 和前端版本号不变，通过 `build-custom.yml` 的
 `publish_latest=true` 更新镜像，并合并现有版本的改动列表。
 
+正式镜像推送及 Release 说明更新成功后，工作流通过独立的
+`Notify Telegram Release Channel` 任务向 `@MoviePilot_NEO` 发布一条公告。
+公告使用同一份版本说明，包含版本号、改动列表、latest 镜像和 Release 链接；
+超过 Telegram 长度限制时保留完整条目，其余改动通过链接查看。
+普通 neo 构建和失败的正式发布不会发送公告，同版本的 latest 补充发布也会通知。
+
+首次启用需在 `4Nest/moviepilot-neo` 的 Actions Secrets 中设置
+`TELEGRAM_RELEASE_BOT_TOKEN`，并将对应机器人设为频道管理员、授予发布消息权限。
+凭证只在发送步骤通过环境变量读取，不写入代码或公告文件。
+若缺少凭证或发送失败，通知任务会明确报错；镜像发布结果不受影响。
+修复配置后可在该次 Actions 运行中选择 **Re-run failed jobs**，无需重建镜像。
+若请求超时，先检查频道是否已收到消息再重试，避免重复发送。
+
 ### 1. 创建虚拟环境
 
 在项目根目录下创建并激活虚拟环境：
