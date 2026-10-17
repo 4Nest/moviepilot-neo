@@ -92,9 +92,12 @@ def test_cancel_share_refreshes_cached_list_without_unawaited_coroutines(monkeyp
     assert not [item for item in caught if issubclass(item.category, RuntimeWarning)]
 
 
-@pytest.mark.parametrize("payload", [{"success": True}, {"message": "删除成功"}, None])
+@pytest.mark.parametrize(
+    "payload",
+    [{"success": True}, {"code": 0, "message": "success"}, {"code": "0"}, {"message": "删除成功"}, None],
+)
 def test_server_response_preserves_legacy_success_contract(payload):
-    """保留旧服务端未返回 success 字段或仅返回文本的成功响应。"""
+    """保留公共服务及旧服务端的成功响应契约。"""
     response = Mock(status_code=200)
     if payload is None:
         response.json.side_effect = ValueError("旧版纯文本响应")
@@ -104,3 +107,21 @@ def test_server_response_preserves_legacy_success_contract(payload):
 
     assert MoviePilotServerHelper._handle_response(response, clear_cache) == (True, "")
     clear_cache.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "payload, message",
+    [
+        ({"code": 1, "message": "分享不存在或无权限"}, "分享不存在或无权限"),
+        ({"code": 2, "message": "昵称已分享"}, "昵称已分享"),
+        ({"code": 1}, "操作失败"),
+    ],
+)
+def test_server_code_failure_is_not_treated_as_success(payload, message):
+    """公共服务以 HTTP 200 返回非零 code 时仍应保留失败结果。"""
+    response = Mock(status_code=200)
+    response.json.return_value = payload
+    clear_cache = Mock()
+
+    assert MoviePilotServerHelper._handle_response(response, clear_cache) == (False, message)
+    clear_cache.assert_not_called()

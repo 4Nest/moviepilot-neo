@@ -168,7 +168,7 @@ Python 与 Rust 入口行为一致；原本使用 `@` 或独立组标签的结�
 
 `DELETE /api/v1/subscribe/share/{share_id}` 只撤回对应分享，不删除本地订阅。请求使用当前安装实例的身份交由共享服务端校验权限；关闭 `SUBSCRIBE_STATISTIC_SHARE` 后仍允许撤回已有分享。
 
-服务端返回 HTTP 200 但响应中包含 `success: false` 时，接口仍返回 `success: false`，并保留 `message` 或 `detail` 中的失败原因。只有确认成功才清理共享列表与统计缓存。前端单条、批量取消均检查业务结果，失败项继续保留在列表中。
+服务端返回 HTTP 200 但响应中包含 `success: false` 或公共服务协议中的非零 `code` 时，接口仍返回 `success: false`，并保留 `message` 或 `detail` 中的失败原因。公共服务以 `code: 0` 表示成功。只有确认成功才清理共享列表与统计缓存。前端单条、批量取消均检查业务结果，失败项继续保留在列表中。
 
 ## 媒体库查询失败处理
 

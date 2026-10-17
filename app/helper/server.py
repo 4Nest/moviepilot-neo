@@ -361,6 +361,11 @@ class MoviePilotServerHelper:
             # HTTP 请求完成不等于操作成功，必须保留服务端返回的业务失败。
             if payload.get("success") is False:
                 return False, message or "操作失败"
+            # MoviePilot 公共服务的写入接口使用 code=0 表示成功，非零 code
+            # 仍可能通过 HTTP 200 返回，不能只看 HTTP 状态码。
+            response_code = payload.get("code")
+            if response_code is not None and str(response_code) != "0":
+                return False, message or "操作失败"
         if res.status_code == 200:
             if clear_cache:
                 clear_cache()
