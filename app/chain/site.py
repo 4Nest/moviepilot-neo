@@ -81,7 +81,11 @@ class SiteChain(ChainBase):
             })
             self._post_site_messages(site=site, userdata=userdata)
             # 低分享率警告
-            if userdata.ratio and float(userdata.ratio) < 1 and not bool(
+            # Cola 兼容接口只提供原始流量分享率，免费流量也在分母中，不能用于计费分享率预警。
+            ratio_warning_supported = StringUtils.get_url_domain(
+                site.get("domain") or site.get("url")
+            ) != "colapt.com"
+            if ratio_warning_supported and userdata.ratio and float(userdata.ratio) < 1 and not bool(
                     re.search(r"(贵宾|VIP?)", userdata.user_level or "", re.IGNORECASE)):
                 self.post_message(Notification(
                     mtype=NotificationType.SiteMessage,

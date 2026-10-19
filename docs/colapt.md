@@ -19,5 +19,10 @@ v2 官方资源目录尚未收录 Cola，因此在 `app/helper/site.py` 补充�
 搜索业务失败不能被误判成成功但无结果，连接测试通过 profile 接口验证 API Key，
 不通过首页 HTML 判断 Cookie 登录态。
 
+2026-10-19 实测，账户接口 `memberCount.uploaded`、`downloaded`、`shareRate` 使用原始流量口径，
+未提供站内使用的计费流量；免费流量也会计入接口下载量。因此网页计费下载为 0、分享率为无限时，
+接口仍可能返回低于 1 的原始分享率。MoviePilot 保留接口统计用于展示，但不对 Cola 发送低分享率预警。
+在站点接口提供可靠的计费统计前，账号分享率及考核状态以 Cola 网页为准。
+
 适配依据为站内 [MoviePilot 对接说明](https://www.colapt.com/account/tracker?tab=moviepilot)，
 于 2026-10-16 验证。离线测试样本仅保留资源字段，不包含 API Key、账户资料或临时下载票。
