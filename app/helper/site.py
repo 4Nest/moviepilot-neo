@@ -9,12 +9,29 @@ from app.helper.sites import SitesHelper as ResourceSitesHelper
 from app.utils.string import StringUtils
 
 
+_TEMPLATE_KEYS = (
+    "category",
+    "torrents",
+    "search",
+    "batch",
+    "browse",
+    "subtitles",
+    "result_num",
+)
+
 SITE_SUPPLEMENTS = {
     "colapt.com": {
         "id": "colapt", "name": "Cola", "url": "https://www.colapt.com/",
         "domain": "https://www.colapt.com/", "public": False,
         "parser": "mTorrent", "schema": "MTorrent", "language": "zh",
         "subtitles": True,
+    },
+    "uhddolby.com": {
+        "id": "hddolby", "name": "高清杜比", "url": "https://www.uhddolby.com/",
+        "domain": "https://www.uhddolby.com/", "public": False,
+        "parser": "HDDolby", "schema": "HDDolby", "language": "zh",
+        "subtitles": True,
+        "alias_of": "hddolby.com",
     },
 }
 
@@ -38,8 +55,17 @@ class SitesHelper:
         return {**supplements, **sites}
 
     @staticmethod
-    def _build_indexer(domain: str, site: Optional[Site] = None) -> dict:
+    def _build_indexer(
+        domain: str,
+        site: Optional[Site] = None,
+        base: Optional[dict] = None,
+    ) -> dict:
         entry = deepcopy(SITE_SUPPLEMENTS[domain])
+        entry.pop("alias_of", None)
+        if isinstance(base, dict):
+            for key in _TEMPLATE_KEYS:
+                if base.get(key):
+                    entry[key] = deepcopy(base[key])
         if site:
             entry.update(site.to_dict())
             # 搜索器的 domain 是完整站点地址，数据库 domain 则是注册域名。
@@ -54,7 +80,9 @@ class SitesHelper:
         domain = StringUtils.get_url_domain(domain)
         if self._resource.auth_level < 2 or domain not in SITE_SUPPLEMENTS:
             return {}
-        return self._build_indexer(domain, SiteOper().get_by_domain(domain))
+        alias_of = SITE_SUPPLEMENTS[domain].get("alias_of")
+        base = self._resource.get_indexer(alias_of) if alias_of else None
+        return self._build_indexer(domain, SiteOper().get_by_domain(domain), base=base)
 
     async def async_get_indexer(self, domain: str) -> dict:
         """异步获取站点定义及实时配置。"""
@@ -64,12 +92,22 @@ class SitesHelper:
         domain = StringUtils.get_url_domain(domain)
         if self._resource.auth_level < 2 or domain not in SITE_SUPPLEMENTS:
             return {}
-        return self._build_indexer(domain, await SiteOper().async_get_by_domain(domain))
+        alias_of = SITE_SUPPLEMENTS[domain].get("alias_of")
+        base = await self._resource.async_get_indexer(alias_of) if alias_of else None
+        return self._build_indexer(domain, await SiteOper().async_get_by_domain(domain), base=base)
 
-    def _merge_indexers(self, indexers: list[dict], sites: list[Site]) -> list[dict]:
+    def _merge_indexers(
+        self,
+        indexers: list[dict],
+        sites: list[Site],
+        bases: Optional[dict[str, dict]] = None,
+    ) -> list[dict]:
         domains = {StringUtils.get_url_domain(item.get("domain") or item.get("url")) for item in indexers}
-        supplements = [self._build_indexer(site.domain, site) for site in sites
-                       if site.domain in SITE_SUPPLEMENTS and site.domain not in domains and site.is_active]
+        supplements = [
+            self._build_indexer(site.domain, site, base=(bases or {}).get(site.domain))
+            for site in sites
+            if site.domain in SITE_SUPPLEMENTS and site.domain not in domains and site.is_active
+        ]
         return sorted([*indexers, *supplements], key=lambda item: item.get("pri") or 0)
 
     def get_indexers(self) -> list[dict]:
@@ -77,11 +115,23 @@ class SitesHelper:
         indexers = self._resource.get_indexers()
         if self._resource.auth_level < 2:
             return indexers
-        return self._merge_indexers(indexers, SiteOper().list_active())
+        sites = SiteOper().list_active()
+        bases = {
+            site.domain: self._resource.get_indexer(SITE_SUPPLEMENTS[site.domain]["alias_of"])
+            for site in sites
+            if site.domain in SITE_SUPPLEMENTS and SITE_SUPPLEMENTS[site.domain].get("alias_of")
+        }
+        return self._merge_indexers(indexers, sites, bases=bases)
 
     async def async_get_indexers(self) -> list[dict]:
         """异步返回已启用站点。"""
         indexers = await self._resource.async_get_indexers()
         if self._resource.auth_level < 2:
             return indexers
-        return self._merge_indexers(indexers, await SiteOper().async_list_active())
+        sites = await SiteOper().async_list_active()
+        bases = {
+            site.domain: await self._resource.async_get_indexer(SITE_SUPPLEMENTS[site.domain]["alias_of"])
+            for site in sites
+            if site.domain in SITE_SUPPLEMENTS and SITE_SUPPLEMENTS[site.domain].get("alias_of")
+        }
+        return self._merge_indexers(indexers, sites, bases=bases)

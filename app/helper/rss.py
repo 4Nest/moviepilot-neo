@@ -149,6 +149,17 @@ class RssHelper:
                 "exp": 180
             }
         },
+        "uhddolby.com": {
+            "xpath": "//a[@class='faqlink']/@href",
+            "url": "getrss.php",
+            "params": {
+                "inclbookmarked": 0,
+                "itemsmalldescr": 1,
+                "showrows": 50,
+                "search_mode": 1,
+                "exp": 180
+            }
+        },
         "hdhome.org": {
             "xpath": "//a[@class='faqlink']/@href",
             "url": "getrss.php",

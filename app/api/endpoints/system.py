@@ -458,14 +458,6 @@ def _build_nettest_rules() -> list[dict[str, Any]]:
             ],
         },
         {
-            "id": "tmdb_web",
-            "name": "www.themoviedb.org",
-            "icon": "tmdb",
-            "url": "https://www.themoviedb.org",
-            "proxy": True,
-            "allowed_redirect_prefixes": ["https://www.themoviedb.org/"],
-        },
-        {
             "id": "tvdb_api",
             "name": "api.thetvdb.com",
             "icon": "tvdb",

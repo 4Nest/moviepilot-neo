@@ -60,6 +60,7 @@ class SiteChain(ChainBase):
             "star-space.net": self.__indexphp_test,
             "yemapt.org": self.__yema_test,
             "hddolby.com": self.__hddolby_test,
+            "uhddolby.com": self.__hddolby_test,
             "rousi.pro": self.__rousi_test,
             "sunnypt.top": self.__sunnypt_test,
         }

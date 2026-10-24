@@ -98,11 +98,16 @@ async def update_site(
     site = await Site.async_get(db, site_in.id)
     if not site:
         return schemas.Response(success=False, message="站点不存在")
+    old_domain = site.domain
     # 校正地址格式
     _scheme, _netloc = StringUtils.get_url_netloc(site_in.url)
     site_in.url = f"{_scheme}://{_netloc}/"
     site_in.domain = StringUtils.get_url_domain(site_in.url)
     await site.async_update(db, site_in.model_dump())
+    if old_domain and site_in.domain and old_domain != site_in.domain:
+        await SiteOper(db).async_migrate_domain(
+            old_domain=old_domain, new_domain=site_in.domain
+        )
     # 通知站点更新
     await eventmanager.async_send_event(
         EventType.SiteUpdated,

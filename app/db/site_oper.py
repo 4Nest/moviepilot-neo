@@ -88,6 +88,38 @@ class SiteOper(DbOper):
             await site.async_update(self._db, payload)
         return site
 
+    async def async_migrate_domain(self, old_domain: str, new_domain: str) -> None:
+        """
+        当站点变更域名时，同步迁移历史图标、访问统计与用户数据记录。
+        """
+        if not old_domain or not new_domain or old_domain == new_domain:
+            return
+
+        old_icon = await SiteIcon.async_get_by_domain(self._db, old_domain)
+        if old_icon:
+            if await SiteIcon.async_get_by_domain(self._db, new_domain):
+                await SiteIcon.async_delete(self._db, old_icon.id)
+            else:
+                await old_icon.async_update(self._db, {"domain": new_domain})
+
+        old_stat = await SiteStatistic.async_get_by_domain(self._db, old_domain)
+        if old_stat:
+            if await SiteStatistic.async_get_by_domain(self._db, new_domain):
+                await SiteStatistic.async_delete(self._db, old_stat.id)
+            else:
+                await old_stat.async_update(self._db, {"domain": new_domain})
+
+        old_userdata = await SiteUserData.async_get_by_domain(self._db, old_domain)
+        if old_userdata:
+            new_userdata = await SiteUserData.async_get_by_domain(self._db, new_domain)
+            existing_days = {row.updated_day for row in (new_userdata or [])}
+            for row in old_userdata:
+                if row.updated_day in existing_days:
+                    await SiteUserData.async_delete(self._db, row.id)
+                else:
+                    await row.async_update(self._db, {"domain": new_domain})
+                    existing_days.add(row.updated_day)
+
     def get_by_domain(self, domain: str) -> Site:
         """
         按域名获取站点
