@@ -51,10 +51,14 @@ def test_hddolby_parse_user_base_info_reads_unread_count():
     parser._parse_site_page("")
     parser._parse_user_base_info(USER_DATA_JSON)
 
-    assert parser._base_url == "https://api.uhddolby.com"
+    assert parser._base_url == "https://www.uhddolby.com"
     assert parser.userid == "41088"
     assert parser.username == "g0m3e"
     assert parser.message_unread == 1
+
+    legacy_parser = _build_parser(url="https://www.hddolby.com/")
+    legacy_parser._parse_site_page("")
+    assert legacy_parser._base_url == "https://api.hddolby.com"
 
 
 def test_hddolby_skips_message_body_without_cookie():
@@ -142,7 +146,7 @@ def test_uhddolby_directory_inherits_template_and_supports_spider(monkeypatch):
     assert asyncio.run(helper.async_get_indexers()) == [entry]
 
     spider = HddolbySpider(entry)
-    assert spider._searchurl == "https://api.uhddolby.com/api/v1/torrent/search"
+    assert spider._searchurl == "https://www.uhddolby.com/api/v1/torrent/search"
     assert spider._pageurl == "https://www.uhddolby.com/details.php?id=%s&hit=1"
 
 

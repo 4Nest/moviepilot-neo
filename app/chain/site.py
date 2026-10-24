@@ -335,7 +335,9 @@ class SiteChain(ChainBase):
         """
         判断站点是否已经登陆：hddolby
         """
-        url = f"{site.url}api/v1/user/data"
+        domain = StringUtils.get_url_domain(site.url)
+        base_url = "https://www.uhddolby.com/" if domain == "uhddolby.com" else site.url
+        url = f"{base_url}api/v1/user/data"
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/plain, */*",

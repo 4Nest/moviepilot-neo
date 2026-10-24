@@ -77,7 +77,10 @@ class HddolbySpider:
             self._ua = indexer.get('ua')
             self._apikey = indexer.get('apikey')
             self._timeout = indexer.get('timeout') or 15
-            self._searchurl = f"https://api.{self._domain_host}/api/v1/torrent/search"
+            if self._domain_host == "uhddolby.com":
+                self._searchurl = "https://www.uhddolby.com/api/v1/torrent/search"
+            else:
+                self._searchurl = f"https://api.{self._domain_host}/api/v1/torrent/search"
             self._pageurl = f"{self._domain}details.php?id=%s&hit=1"
 
     def __get_params(self, keyword: str, mtype: MediaType = None, page: Optional[int] = 0) -> dict:
