@@ -548,3 +548,271 @@ def test_recommend_episode_format_accepts_fileitems_without_fileitem(monkeypatch
     assert [item.path for item in captured["fileitems"]] == [
         item["path"] for item in selected_fileitems
     ]
+
+
+def _make_history(index: int, *, status=0, mode="copy", with_dest=False, **extra):
+    """构造用于批量历史整理测试的历史记录。"""
+    values = dict(
+        status=status,
+        mode=mode,
+        src_fileitem={
+            "storage": "local",
+            "path": f"/downloads/Show.S01E0{index}.mkv",
+            "name": f"Show.S01E0{index}.mkv",
+            "type": "file",
+        },
+        dest_fileitem={
+            "storage": "local",
+            "path": f"/library/Show.S01E0{index}.mkv",
+            "name": f"Show.S01E0{index}.mkv",
+            "type": "file",
+        }
+        if with_dest
+        else None,
+        downloader=f"downloader-{index}",
+        download_hash=f"hash-{index}",
+        type="电视剧",
+        tmdbid=str(100 + index),
+        doubanid=None,
+        bangumiid=None,
+        anilistid=None,
+        media_source="themoviedb",
+        media_id=str(100 + index),
+        seasons="S01",
+        episodes=f"E0{index}",
+        episode_group=None,
+    )
+    values.update(extra)
+    return SimpleNamespace(**values)
+
+
+def test_manual_transfer_logids_runs_each_history_with_own_context(monkeypatch):
+    """多个历史ID应一次请求处理，并分别保留各自的识别与下载上下文。"""
+    histories = {1: _make_history(1), 2: _make_history(2, episodes="E02-E03")}
+    calls = []
+
+    class FakeTransferChain:
+        def manual_transfer(self, **kwargs):
+            calls.append(kwargs)
+            return True, ""
+
+    monkeypatch.setattr(
+        "app.api.endpoints.transfer.TransferHistory.get",
+        lambda _db, logid: histories.get(logid),
+    )
+    monkeypatch.setattr("app.api.endpoints.transfer.TransferChain", FakeTransferChain)
+
+    resp = manual_transfer(
+        transer_item=ManualTransferItem(logids=[1, 2], from_history=True),
+        background=True,
+        db=object(),
+        _="token",
+    )
+
+    assert resp.success is True
+    assert [call["fileitem"].path for call in calls] == [
+        "/downloads/Show.S01E01.mkv",
+        "/downloads/Show.S01E02.mkv",
+    ]
+    assert [call["tmdbid"] for call in calls] == [101, 102]
+    assert [call["download_hash"] for call in calls] == ["hash-1", "hash-2"]
+    assert [call["downloader"] for call in calls] == ["downloader-1", "downloader-2"]
+    assert [call["epformat"].detail for call in calls] == ["01", "2,3"]
+    assert all(call["force"] is True for call in calls)
+    assert all(call["sync_extra_files"] is True for call in calls)
+
+
+def test_manual_transfer_logids_without_history_recognition_ignores_old_context(monkeypatch):
+    """不复用历史识别信息时，批量历史整理不应带入旧识别与下载上下文。"""
+    histories = {1: _make_history(1), 2: _make_history(2)}
+    calls = []
+
+    class FakeTransferChain:
+        def manual_transfer(self, **kwargs):
+            calls.append(kwargs)
+            return True, ""
+
+    monkeypatch.setattr(
+        "app.api.endpoints.transfer.TransferHistory.get",
+        lambda _db, logid: histories.get(logid),
+    )
+    monkeypatch.setattr("app.api.endpoints.transfer.TransferChain", FakeTransferChain)
+
+    resp = manual_transfer(
+        transer_item=ManualTransferItem(logids=[1, 2], reorganize=True),
+        background=True,
+        db=object(),
+        _="token",
+    )
+
+    assert resp.success is True
+    assert len(calls) == 2
+    assert all(call["tmdbid"] is None for call in calls)
+    assert all(call["downloader"] is None for call in calls)
+    assert all(call["download_hash"] is None for call in calls)
+    assert all(call["epformat"] is None for call in calls)
+    assert all(call["reorganize"] is True for call in calls)
+
+
+def test_manual_transfer_logids_uses_dest_for_moved_history_and_cleans_old_dest(monkeypatch):
+    """成功移动的历史应以目的文件重新整理，其余历史在非重整时清理旧目的文件。"""
+    histories = {
+        1: _make_history(1, status=1, mode="move", with_dest=True),
+        2: _make_history(2, with_dest=True),
+    }
+    calls = []
+
+    class FakeTransferChain:
+        def manual_transfer(self, **kwargs):
+            calls.append(kwargs)
+            return True, ""
+
+    monkeypatch.setattr(
+        "app.api.endpoints.transfer.TransferHistory.get",
+        lambda _db, logid: histories.get(logid),
+    )
+    monkeypatch.setattr("app.api.endpoints.transfer.TransferChain", FakeTransferChain)
+
+    resp = manual_transfer(
+        transer_item=ManualTransferItem(logids=[1, 2]),
+        background=False,
+        db=object(),
+        _="token",
+    )
+
+    assert resp.success is True
+    assert calls[0]["fileitem"].path == "/library/Show.S01E01.mkv"
+    assert calls[0]["cleanup_dest_fileitem"] is None
+    assert calls[1]["fileitem"].path == "/downloads/Show.S01E02.mkv"
+    assert calls[1]["cleanup_dest_fileitem"].path == "/library/Show.S01E02.mkv"
+
+
+def test_manual_transfer_logids_preview_merges_results_and_failures(monkeypatch):
+    """批量历史预览应合并各记录的预览项，并保留失败项。"""
+    histories = {1: _make_history(1), 2: _make_history(2)}
+
+    class FakeTransferChain:
+        def manual_transfer(self, **kwargs):
+            fileitem = kwargs["fileitem"]
+            if fileitem.path.endswith("E02.mkv"):
+                return False, "没有找到可整理的媒体文件"
+            return True, {
+                "summary": {"total": 1, "success": 1, "failed": 0},
+                "items": [{"source": fileitem.path, "success": True}],
+                "message": "",
+            }
+
+    monkeypatch.setattr(
+        "app.api.endpoints.transfer.TransferHistory.get",
+        lambda _db, logid: histories.get(logid),
+    )
+    monkeypatch.setattr("app.api.endpoints.transfer.TransferChain", FakeTransferChain)
+
+    resp = manual_transfer(
+        transer_item=ManualTransferItem(logids=[1, 2], preview=True),
+        background=False,
+        db=object(),
+        _="token",
+    )
+
+    assert resp.success is True
+    assert resp.data["summary"] == {"total": 2, "success": 1, "failed": 1}
+    assert [item["source"] for item in resp.data["items"]] == [
+        "/downloads/Show.S01E01.mkv",
+        "/downloads/Show.S01E02.mkv",
+    ]
+
+
+def test_manual_transfer_logids_execution_failure_returns_error(monkeypatch):
+    """批量历史执行中任一记录失败时应返回失败响应。"""
+    histories = {1: _make_history(1), 2: _make_history(2)}
+
+    class FakeTransferChain:
+        def manual_transfer(self, **kwargs):
+            if kwargs["fileitem"].path.endswith("E02.mkv"):
+                return False, "整理失败"
+            return True, ""
+
+    monkeypatch.setattr(
+        "app.api.endpoints.transfer.TransferHistory.get",
+        lambda _db, logid: histories.get(logid),
+    )
+    monkeypatch.setattr("app.api.endpoints.transfer.TransferChain", FakeTransferChain)
+
+    resp = manual_transfer(
+        transer_item=ManualTransferItem(logids=[1, 2]),
+        background=False,
+        db=object(),
+        _="token",
+    )
+
+    assert resp.success is False
+    assert resp.message == "整理失败"
+
+
+def test_manual_transfer_logids_reports_missing_history(monkeypatch):
+    """批量历史中存在无效ID时应返回标准失败响应且不执行整理。"""
+    histories = {1: _make_history(1)}
+    calls = []
+
+    class FakeTransferChain:
+        def manual_transfer(self, **kwargs):
+            calls.append(kwargs)
+            return True, ""
+
+    monkeypatch.setattr(
+        "app.api.endpoints.transfer.TransferHistory.get",
+        lambda _db, logid: histories.get(logid),
+    )
+    monkeypatch.setattr("app.api.endpoints.transfer.TransferChain", FakeTransferChain)
+
+    resp = manual_transfer(
+        transer_item=ManualTransferItem(logids=[1, 99]),
+        background=False,
+        db=object(),
+        _="token",
+    )
+
+    assert resp.success is False
+    assert resp.message == "整理记录不存在，ID：99"
+    assert calls == []
+
+
+def test_manual_transfer_empty_logids_reports_missing_parameter(monkeypatch):
+    """空 logids 且无其他来源时应返回缺少参数。"""
+    resp = manual_transfer(
+        transer_item=ManualTransferItem(logids=[]),
+        background=False,
+        db=object(),
+        _="token",
+    )
+
+    assert resp.success is False
+    assert resp.message == "缺少参数"
+
+
+def test_manual_transfer_logids_deduplicates_same_source(monkeypatch):
+    """多个历史指向同一源文件时只整理一次。"""
+    histories = {1: _make_history(1), 2: _make_history(1)}
+    calls = []
+
+    class FakeTransferChain:
+        def manual_transfer(self, **kwargs):
+            calls.append(kwargs)
+            return True, ""
+
+    monkeypatch.setattr(
+        "app.api.endpoints.transfer.TransferHistory.get",
+        lambda _db, logid: histories.get(logid),
+    )
+    monkeypatch.setattr("app.api.endpoints.transfer.TransferChain", FakeTransferChain)
+
+    resp = manual_transfer(
+        transer_item=ManualTransferItem(logids=[1, 2]),
+        background=False,
+        db=object(),
+        _="token",
+    )
+
+    assert resp.success is True
+    assert len(calls) == 1

@@ -13,7 +13,7 @@ from app.db.site_oper import SiteOper
 from app.db.systemconfig_oper import SystemConfigOper
 from app.db.user_oper import get_current_admin
 from app.helper.directory import DirectoryHelper
-from app.schemas.types import SystemConfigKey
+from app.schemas.types import MediaType, SystemConfigKey
 from app.utils.security import SecurityUtils
 
 router = APIRouter()
@@ -43,6 +43,27 @@ def _prepare_subtitle_download(subtitle: SubtitleInfo) -> tuple[bool, str]:
     subtitle.site_ua = site.ua
     subtitle.site_proxy = bool(site.proxy)
     return True, ""
+
+
+def _build_unrecognized_mediainfo(metainfo: MetaInfo, torrent: schemas.TorrentInfo) -> MediaInfo:
+    """
+    基于种子标题解析结果构造未识别资源的最小媒体信息。
+
+    仅使用标题解析得到的名称、年份和可用的电影/电视剧类型，不携带任何数据源身份。
+
+    :param metainfo: 种子标题解析出的元数据
+    :param torrent: 请求中的种子信息
+    :return: 可用于下载上下文的最小媒体信息
+    """
+    mediainfo = MediaInfo()
+    mediainfo.title = metainfo.name or torrent.title
+    mediainfo.year = metainfo.year
+    mediainfo.type = (
+        metainfo.type
+        if metainfo.type in (MediaType.MOVIE, MediaType.TV)
+        else MediaType.UNKNOWN
+    )
+    return mediainfo
 
 
 @router.get("/", summary="正在下载", response_model=List[schemas.DownloaderTorrent])
@@ -105,10 +126,16 @@ def add(
     downloader: Annotated[str | None, Body()] = None,
     # 保存路径, 支持<storage>:<path>, 如rclone:/MP, smb:/server/share/Movies等
     save_path: Annotated[str | None, Body()] = None,
+    allow_unrecognized: Annotated[bool, Body()] = False,
     current_user: User = Depends(get_current_admin),
 ) -> Any:
     """
-    添加下载任务（不含媒体信息）
+    添加下载任务（不含媒体信息）。
+
+    媒体识别失败且 allow_unrecognized 为 False 时，返回 success=false 并附带
+    data.requires_confirmation=true，调用方确认后携带 allow_unrecognized=true 重试同一请求；
+    此时基于种子标题解析结果（名称、年份、电影/电视剧类型）构造最小媒体信息继续下载。
+    其他业务失败不携带确认标记。
     """
     # 元数据
     metainfo = MetaInfo(title=torrent_in.title, subtitle=torrent_in.description)
@@ -130,7 +157,13 @@ def add(
             obtain_images=False,
         )
     if not mediainfo:
-        return schemas.Response(success=False, message="无法识别媒体信息")
+        if not allow_unrecognized:
+            return schemas.Response(
+                success=False,
+                message="无法识别媒体信息",
+                data={"requires_confirmation": True},
+            )
+        mediainfo = _build_unrecognized_mediainfo(metainfo, torrent_in)
     # 种子信息
     torrentinfo = TorrentInfo()
     torrentinfo.from_dict(torrent_in.model_dump())

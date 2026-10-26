@@ -116,3 +116,153 @@ def test_subtitle_download_passes_generic_media_source(monkeypatch) -> None:
     assert response.success is True
     assert captured["media_source"] == "anilist"
     assert captured["media_id"] == "154587"
+
+
+class _UnrecognizedMediaChain:
+    """模拟按标题识别失败的媒体链。"""
+
+    def recognize_by_meta(self, metainfo, **kwargs):
+        """始终返回未识别。"""
+        return None
+
+    def recognize_media(self, **kwargs):
+        """始终返回未识别。"""
+        return None
+
+
+def _patch_unrecognized_download(monkeypatch, captured: dict, did="download-9"):
+    """安装未识别媒体链与记录下载上下文的下载链。"""
+
+    class FakeDownloadChain:
+        """记录下载上下文并返回任务ID。"""
+
+        def download_single(self, **kwargs):
+            """保存下载参数。"""
+            captured["download"] = kwargs
+            return did
+
+    monkeypatch.setattr(download_endpoint, "MediaChain", _UnrecognizedMediaChain)
+    monkeypatch.setattr(download_endpoint, "DownloadChain", FakeDownloadChain)
+
+
+def test_download_add_requires_confirmation_when_unrecognized(monkeypatch) -> None:
+    """未识别且未确认时只返回确认标记，不得创建下载任务。"""
+    captured = {}
+    _patch_unrecognized_download(monkeypatch, captured)
+
+    response = download_endpoint.add(
+        torrent_in=schemas.TorrentInfo(title="未知合集 2020 1080p"),
+        current_user=SimpleNamespace(name="tester"),
+    )
+
+    assert response.success is False
+    assert response.data == {"requires_confirmation": True}
+    assert "download" not in captured
+
+
+def test_download_add_requires_confirmation_for_explicit_media_id(monkeypatch) -> None:
+    """显式媒体ID识别失败同样需要确认，而不是直接失败。"""
+    captured = {}
+    _patch_unrecognized_download(monkeypatch, captured)
+
+    response = download_endpoint.add(
+        torrent_in=schemas.TorrentInfo(title="未知合集 2020 1080p"),
+        media_source="themoviedb",
+        media_id="1",
+        current_user=SimpleNamespace(name="tester"),
+    )
+
+    assert response.success is False
+    assert response.data == {"requires_confirmation": True}
+    assert "download" not in captured
+
+
+def test_download_add_downloads_unrecognized_after_confirmation(monkeypatch) -> None:
+    """确认后使用同一种子、下载器与路径，基于标题解析结果构造最小媒体信息。"""
+    captured = {}
+    _patch_unrecognized_download(monkeypatch, captured)
+
+    response = download_endpoint.add(
+        torrent_in=schemas.TorrentInfo(
+            title="Unknown Movie 2020 1080p BluRay",
+            enclosure="https://example.com/a.torrent",
+        ),
+        downloader="qb",
+        save_path="/downloads/manual",
+        allow_unrecognized=True,
+        current_user=SimpleNamespace(name="tester"),
+    )
+
+    assert response.success is True
+    assert response.data == {"download_id": "download-9"}
+    download = captured["download"]
+    context = download["context"]
+    assert context.torrent_info.enclosure == "https://example.com/a.torrent"
+    assert context.torrent_info.title == "Unknown Movie 2020 1080p BluRay"
+    assert "Unknown Movie" in context.media_info.title
+    assert context.media_info.year == "2020"
+    assert context.media_info.type in (MediaType.MOVIE, MediaType.UNKNOWN)
+    assert context.media_info.tmdb_id is None
+    assert download["downloader"] == "qb"
+    assert download["save_path"] == "/downloads/manual"
+    assert download["source"] == "Manual"
+
+
+def test_download_add_confirmed_tv_keeps_tv_type(monkeypatch) -> None:
+    """标题明确为剧集时，最小媒体信息保留电视剧类型。"""
+    captured = {}
+    _patch_unrecognized_download(monkeypatch, captured)
+
+    response = download_endpoint.add(
+        torrent_in=schemas.TorrentInfo(title="Unknown Show S01E02 1080p"),
+        allow_unrecognized=True,
+        current_user=SimpleNamespace(name="tester"),
+    )
+
+    assert response.success is True
+    assert captured["download"]["context"].media_info.type == MediaType.TV
+
+
+def test_download_add_confirmed_failure_has_no_confirmation_marker(monkeypatch) -> None:
+    """确认后下载器失败属于普通业务失败，不再要求确认。"""
+    captured = {}
+    _patch_unrecognized_download(monkeypatch, captured, did=None)
+
+    response = download_endpoint.add(
+        torrent_in=schemas.TorrentInfo(title="Unknown Movie 2020"),
+        allow_unrecognized=True,
+        current_user=SimpleNamespace(name="tester"),
+    )
+
+    assert response.success is False
+    assert response.message == "任务添加失败"
+    assert not response.data or response.data.get("requires_confirmation") is not True
+
+
+def test_download_add_recognized_failure_has_no_confirmation_marker(monkeypatch) -> None:
+    """已识别资源的下载失败不得携带确认标记。"""
+
+    class FakeMediaChain:
+        """返回固定媒体信息。"""
+
+        def recognize_by_meta(self, metainfo, **kwargs):
+            """返回已识别媒体。"""
+            return MediaInfo(title="测试电影", type=MediaType.MOVIE)
+
+    class FakeDownloadChain:
+        """模拟下载失败。"""
+
+        def download_single(self, **kwargs):
+            """返回空任务ID。"""
+            return None
+
+    monkeypatch.setattr(download_endpoint, "MediaChain", FakeMediaChain)
+    monkeypatch.setattr(download_endpoint, "DownloadChain", FakeDownloadChain)
+
+    response = download_endpoint.add(
+        torrent_in=schemas.TorrentInfo(title="测试电影 2020"),
+        current_user=SimpleNamespace(name="tester"),
+    )
+
+    assert response.success is False
+    assert not response.data or response.data.get("requires_confirmation") is not True

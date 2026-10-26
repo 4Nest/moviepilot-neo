@@ -91,6 +91,15 @@ async def remove_queue(
     return schemas.Response(success=True)
 
 
+def _get_history_source_fileitem(history: TransferHistory) -> FileItem:
+    """
+    根据整理历史推导重新整理的源文件项：成功移动的记录使用目的文件，其余使用原始源文件。
+    """
+    if history.status and ("move" in history.mode):
+        return FileItem(**history.dest_fileitem)
+    return FileItem(**history.src_fileitem)
+
+
 def _resolve_manual_transfer_source_fileitems(
     transer_item: ManualTransferItem, db: Session
 ) -> tuple[List[FileItem], Optional[str]]:
@@ -103,25 +112,109 @@ def _resolve_manual_transfer_source_fileitems(
             history: TransferHistory = TransferHistory.get(db, logid)
             if not history:
                 return [], f"整理记录不存在，ID：{logid}"
-            if history.status and ("move" in history.mode):
-                fileitems.append(FileItem(**history.dest_fileitem))
-            else:
-                fileitems.append(FileItem(**history.src_fileitem))
+            fileitems.append(_get_history_source_fileitem(history))
         return fileitems, None
 
     if transer_item.logid:
         history: TransferHistory = TransferHistory.get(db, transer_item.logid)
         if not history:
             return [], f"整理记录不存在，ID：{transer_item.logid}"
-        if history.status and ("move" in history.mode):
-            return [FileItem(**history.dest_fileitem)], None
-        return [FileItem(**history.src_fileitem)], None
+        return [_get_history_source_fileitem(history)], None
 
     if transer_item.fileitems:
         return [fileitem for fileitem in transer_item.fileitems if fileitem], None
     if transer_item.fileitem:
         return [transer_item.fileitem], None
     return [], None
+
+
+def _get_manual_transfer_histories(
+    transer_item: ManualTransferItem, db: Session
+) -> tuple[List[TransferHistory], Optional[str]]:
+    """
+    按请求中的 logids（优先）或 logid 批量查询整理历史记录，任一记录不存在时返回错误信息。
+    """
+    logids = transer_item.logids or ([transer_item.logid] if transer_item.logid else [])
+    histories: List[TransferHistory] = []
+    for logid in logids:
+        history: TransferHistory = TransferHistory.get(db, logid)
+        if not history:
+            return [], f"整理记录不存在，ID：{logid}"
+        histories.append(history)
+    return histories, None
+
+
+def _build_manual_transfer_options(
+    transer_item: ManualTransferItem, history: Optional[TransferHistory] = None
+) -> dict:
+    """
+    生成单个整理源的识别与下载上下文。
+
+    未携带历史记录时直接使用请求参数；携带历史记录时，只在复用历史识别信息的情况下
+    用历史记录覆盖媒体、季集与下载器信息，并在非预览、非重新整理时记录需清理的旧目的文件。
+    """
+    options: dict = {
+        "downloader": None,
+        "download_hash": None,
+        "cleanup_dest_fileitem": None,
+        "type_name": transer_item.type_name,
+        "tmdbid": transer_item.tmdbid,
+        "doubanid": transer_item.doubanid,
+        "bangumiid": transer_item.bangumiid,
+        "anilistid": transer_item.anilistid,
+        "media_source": transer_item.media_source,
+        "media_id": transer_item.media_id,
+        "season": transer_item.season,
+        "episode_group": transer_item.episode_group,
+        "episode_detail": transer_item.episode_detail,
+    }
+    if history is None:
+        return options
+
+    if (
+        not (history.status and ("move" in history.mode))
+        and history.dest_fileitem
+        and not transer_item.preview
+        and not transer_item.reorganize
+    ):
+        options["cleanup_dest_fileitem"] = FileItem(**history.dest_fileitem)
+
+    if not transer_item.from_history:
+        return options
+
+    # 下载器与 Hash 是同一组下载上下文，重新识别时由当前文件路径重新匹配。
+    options["downloader"] = history.downloader
+    options["download_hash"] = history.download_hash
+    options["type_name"] = history.type if history.type else transer_item.type_name
+    options["tmdbid"] = int(history.tmdbid) if history.tmdbid else transer_item.tmdbid
+    options["doubanid"] = (
+        str(history.doubanid) if history.doubanid else transer_item.doubanid
+    )
+    options["bangumiid"] = history.bangumiid or transer_item.bangumiid
+    options["anilistid"] = history.anilistid or transer_item.anilistid
+    options["media_source"] = history.media_source or transer_item.media_source
+    options["media_id"] = history.media_id or transer_item.media_id
+    options["season"] = (
+        int(str(history.seasons).replace("S", ""))
+        if history.seasons
+        else transer_item.season
+    )
+    options["episode_group"] = history.episode_group or transer_item.episode_group
+    if history.episodes:
+        if "-" in str(history.episodes):
+            # E01-E03多集合并
+            episode_start, episode_end = str(history.episodes).split("-")
+            episode_list: list[int] = list(
+                range(
+                    int(episode_start.replace("E", "")),
+                    int(episode_end.replace("E", "")) + 1,
+                )
+            )
+            options["episode_detail"] = ",".join(str(e) for e in episode_list)
+        else:
+            # E01单集
+            options["episode_detail"] = str(history.episodes).replace("E", "")
+    return options
 
 
 def _deduplicate_fileitems(fileitems: List[FileItem]) -> List[FileItem]:
@@ -285,89 +378,41 @@ def manual_transfer(
     :param db: 数据库
     :param _: Token校验
     """
-    force = False
-    downloader = None
-    download_hash = None
-    src_fileitems: List[FileItem] = []
-    cleanup_dest_fileitem: Optional[FileItem] = None
     target_path = Path(transer_item.target_path) if transer_item.target_path else None
-    if transer_item.logid:
-        # 查询历史记录
-        history: TransferHistory = TransferHistory.get(db, transer_item.logid)
-        if not history:
-            return schemas.Response(
-                success=False, message=f"整理记录不存在，ID：{transer_item.logid}"
-            )
-        # 强制转移
-        force = True
-        # 下载器与 Hash 是同一组下载上下文，重新识别时由当前文件路径重新匹配。
-        downloader = history.downloader if transer_item.from_history else None
-        download_hash = history.download_hash if transer_item.from_history else None
-        if history.status and ("move" in history.mode):
-            # 重新整理成功的转移，则使用成功的 dest 做 in_path
-            src_fileitems = [FileItem(**history.dest_fileitem)]
-        else:
-            # 源路径
-            src_fileitems = [FileItem(**history.src_fileitem)]
-            if (
-                history.dest_fileitem
-                and not transer_item.preview
-                and not transer_item.reorganize
-            ):
-                cleanup_dest_fileitem = FileItem(**history.dest_fileitem)
 
-        # 从历史数据获取信息
-        if transer_item.from_history:
-            transer_item.type_name = (
-                history.type if history.type else transer_item.type_name
+    # 每个整理源携带各自的识别上下文（历史记录来源会带上自己的媒体、季集与下载信息）
+    sources: List[dict] = []
+    if transer_item.logids or transer_item.logid:
+        histories, error_message = _get_manual_transfer_histories(transer_item, db)
+        if error_message:
+            return schemas.Response(success=False, message=error_message)
+        for history in histories:
+            sources.append(
+                {
+                    "fileitem": _get_history_source_fileitem(history),
+                    # 历史记录来源强制转移
+                    "force": True,
+                    "options": _build_manual_transfer_options(transer_item, history),
+                }
             )
-            transer_item.tmdbid = (
-                int(history.tmdbid) if history.tmdbid else transer_item.tmdbid
-            )
-            transer_item.doubanid = (
-                str(history.doubanid) if history.doubanid else transer_item.doubanid
-            )
-            transer_item.bangumiid = history.bangumiid or transer_item.bangumiid
-            transer_item.anilistid = history.anilistid or transer_item.anilistid
-            transer_item.media_source = (
-                history.media_source or transer_item.media_source
-            )
-            transer_item.media_id = (
-                history.media_id or transer_item.media_id
-            )
-            transer_item.season = (
-                int(str(history.seasons).replace("S", ""))
-                if history.seasons
-                else transer_item.season
-            )
-            transer_item.episode_group = (
-                history.episode_group or transer_item.episode_group
-            )
-            if history.episodes:
-                if "-" in str(history.episodes):
-                    # E01-E03多集合并
-                    episode_start, episode_end = str(history.episodes).split("-")
-                    episode_list: list[int] = []
-                    for i in range(
-                        int(episode_start.replace("E", "")),
-                        int(episode_end.replace("E", "")) + 1,
-                    ):
-                        episode_list.append(i)
-                    transer_item.episode_detail = ",".join(str(e) for e in episode_list)
-                else:
-                    # E01单集
-                    transer_item.episode_detail = str(history.episodes).replace("E", "")
-
-    elif transer_item.fileitems:
-        src_fileitems = [fileitem for fileitem in transer_item.fileitems if fileitem]
-    elif transer_item.fileitem:
-        src_fileitems = [transer_item.fileitem]
     else:
-        return schemas.Response(success=False, message=f"缺少参数")
+        src_fileitems, _error = _resolve_manual_transfer_source_fileitems(
+            transer_item=transer_item, db=db
+        )
+        for src_fileitem in src_fileitems:
+            sources.append(
+                {
+                    "fileitem": src_fileitem,
+                    "force": False,
+                    "options": _build_manual_transfer_options(transer_item),
+                }
+            )
 
-    dedup_fileitems: List[FileItem] = []
+    # 按存储和路径去重，保留首次出现的整理源
+    dedup_sources: List[dict] = []
     seen_paths = set()
-    for current_fileitem in src_fileitems:
+    for source in sources:
+        current_fileitem = source["fileitem"]
         storage = current_fileitem.storage or "local"
         path = current_fileitem.path
         if not path:
@@ -376,36 +421,78 @@ def manual_transfer(
         if key in seen_paths:
             continue
         seen_paths.add(key)
-        dedup_fileitems.append(current_fileitem)
-    src_fileitems = dedup_fileitems
-    if not src_fileitems:
+        dedup_sources.append(source)
+    sources = dedup_sources
+    if not sources:
         return schemas.Response(success=False, message="缺少参数")
 
-    # 类型（“自动/auto/none”按未指定处理）
-    mtype = None
-    type_name = str(transer_item.type_name).strip() if transer_item.type_name else ""
-    if type_name and type_name.lower() not in {"自动", "auto", "none"}:
-        try:
-            mtype = MediaType(type_name)
-        except ValueError:
-            return schemas.Response(
-                success=False, message=f"不支持的媒体类型：{type_name}"
+    # 逐个整理源解析媒体类型与自定义格式，发现非法参数时在执行任何整理前返回
+    for source in sources:
+        options = source["options"]
+        # 类型（“自动/auto/none”按未指定处理）
+        mtype = None
+        type_name = str(options["type_name"]).strip() if options["type_name"] else ""
+        if type_name and type_name.lower() not in {"自动", "auto", "none"}:
+            try:
+                mtype = MediaType(type_name)
+            except ValueError:
+                return schemas.Response(
+                    success=False, message=f"不支持的媒体类型：{type_name}"
+                )
+        # 自定义格式
+        epformat = None
+        if (
+            transer_item.episode_offset
+            or transer_item.episode_part
+            or options["episode_detail"]
+            or transer_item.episode_format
+        ):
+            epformat = schemas.EpisodeFormat(
+                format=transer_item.episode_format,
+                detail=options["episode_detail"],
+                part=transer_item.episode_part,
+                offset=transer_item.episode_offset,
             )
-    # 自定义格式
-    epformat = None
-    if (
-        transer_item.episode_offset
-        or transer_item.episode_part
-        or transer_item.episode_detail
-        or transer_item.episode_format
-    ):
-        epformat = schemas.EpisodeFormat(
-            format=transer_item.episode_format,
-            detail=transer_item.episode_detail,
-            part=transer_item.episode_part,
-            offset=transer_item.episode_offset,
+        source["mtype"] = mtype
+        source["epformat"] = epformat
+
+    def _run_chain_manual_transfer(source: dict, sync_extra_files: bool):
+        """
+        按整理源自身的上下文调用整理链手动整理。
+        """
+        options = source["options"]
+        return TransferChain().manual_transfer(
+            fileitem=source["fileitem"],
+            target_storage=transer_item.target_storage,
+            target_path=target_path,
+            tmdbid=options["tmdbid"],
+            doubanid=options["doubanid"],
+            bangumiid=options["bangumiid"],
+            anilistid=options["anilistid"],
+            media_source=options["media_source"],
+            media_id=options["media_id"],
+            mtype=source["mtype"],
+            season=options["season"],
+            episode_group=options["episode_group"],
+            transfer_type=transer_item.transfer_type,
+            epformat=source["epformat"],
+            min_filesize=transer_item.min_filesize,
+            scrape=transer_item.scrape,
+            library_type_folder=transer_item.library_type_folder,
+            library_category_folder=transer_item.library_category_folder,
+            force=source["force"],
+            background=background,
+            downloader=options["downloader"],
+            download_hash=options["download_hash"],
+            preview=transer_item.preview,
+            reorganize=transer_item.reorganize,
+            sync_extra_files=sync_extra_files,
+            cleanup_dest_fileitem=options["cleanup_dest_fileitem"],
         )
+
     explicit_selected_files = bool(transer_item.fileitems)
+    # 前端显式选择的文件或多条历史记录需要逐个处理并汇总结果
+    batch_mode = explicit_selected_files or len(sources) > 1
 
     def _build_failure_preview_item(file_item: FileItem, message: str) -> dict:
         """
@@ -440,39 +527,15 @@ def manual_transfer(
             f"，等{len(valid_messages)}条消息" if len(valid_messages) > 2 else ""
         )
 
-    # 前端显式传入文件列表时，按选中的文件逐个处理，避免将目录整体展开。
-    if explicit_selected_files:
+    # 批量处理：显式文件列表按选中的文件逐个处理，避免将目录整体展开；历史记录按各自上下文逐条处理。
+    if batch_mode:
         preview_items: List[dict] = []
         error_messages: List[str] = []
         all_success = True
-        for src_fileitem in src_fileitems:
-            state, errormsg = TransferChain().manual_transfer(
-                fileitem=src_fileitem,
-                target_storage=transer_item.target_storage,
-                target_path=target_path,
-                tmdbid=transer_item.tmdbid,
-                doubanid=transer_item.doubanid,
-                bangumiid=transer_item.bangumiid,
-                anilistid=transer_item.anilistid,
-                media_source=transer_item.media_source,
-                media_id=transer_item.media_id,
-                mtype=mtype,
-                season=transer_item.season,
-                episode_group=transer_item.episode_group,
-                transfer_type=transer_item.transfer_type,
-                epformat=epformat,
-                min_filesize=transer_item.min_filesize,
-                scrape=transer_item.scrape,
-                library_type_folder=transer_item.library_type_folder,
-                library_category_folder=transer_item.library_category_folder,
-                force=force,
-                background=background,
-                downloader=downloader,
-                download_hash=download_hash,
-                preview=transer_item.preview,
-                reorganize=transer_item.reorganize,
-                sync_extra_files=False,
-                cleanup_dest_fileitem=cleanup_dest_fileitem,
+        for source in sources:
+            src_fileitem = source["fileitem"]
+            state, errormsg = _run_chain_manual_transfer(
+                source, sync_extra_files=not explicit_selected_files
             )
             if transer_item.preview:
                 if isinstance(errormsg, dict):
@@ -499,10 +562,10 @@ def manual_transfer(
             merged_preview_items: List[dict] = []
             seen_sources = set()
             for preview_item in preview_items:
-                source = preview_item.get("source")
-                if source in seen_sources:
+                source_path = preview_item.get("source")
+                if source_path in seen_sources:
                     continue
-                seen_sources.add(source)
+                seen_sources.add(source_path)
                 merged_preview_items.append(preview_item)
             merged_message = _merge_messages(error_messages)
             preview_data = {
@@ -531,36 +594,8 @@ def manual_transfer(
             )
         return schemas.Response(success=True)
 
-    src_fileitem = src_fileitems[0]
     # 开始转移
-    state, errormsg = TransferChain().manual_transfer(
-        fileitem=src_fileitem,
-        target_storage=transer_item.target_storage,
-        target_path=target_path,
-        tmdbid=transer_item.tmdbid,
-        doubanid=transer_item.doubanid,
-        bangumiid=transer_item.bangumiid,
-        anilistid=transer_item.anilistid,
-        media_source=transer_item.media_source,
-        media_id=transer_item.media_id,
-        mtype=mtype,
-        season=transer_item.season,
-        episode_group=transer_item.episode_group,
-        transfer_type=transer_item.transfer_type,
-        epformat=epformat,
-        min_filesize=transer_item.min_filesize,
-        scrape=transer_item.scrape,
-        library_type_folder=transer_item.library_type_folder,
-        library_category_folder=transer_item.library_category_folder,
-        force=force,
-        background=background,
-        downloader=downloader,
-        download_hash=download_hash,
-        preview=transer_item.preview,
-        reorganize=transer_item.reorganize,
-        sync_extra_files=True,
-        cleanup_dest_fileitem=cleanup_dest_fileitem,
-    )
+    state, errormsg = _run_chain_manual_transfer(sources[0], sync_extra_files=True)
     # 失败
     if not state:
         if isinstance(errormsg, list):
