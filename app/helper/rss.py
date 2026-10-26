@@ -446,16 +446,32 @@ class RssHelper:
                             desc_nodes = item.xpath('.//description | .//summary')
                             description = desc_nodes[0].text if desc_nodes and desc_nodes[0].text else ""
 
-                            # 种子页面
+                            # 种子页面；Atom 详情与下载链接可能同时存在，不能按标签顺序覆盖
                             link_nodes = item.xpath('.//link')
-                            if link_nodes:
-                                link = link_nodes[0].text if hasattr(link_nodes[0], 'text') and link_nodes[0].text else link_nodes[0].get('href', '')
-                            else:
-                                link = ""
+                            link = ""
+                            atom_enclosure = ""
+                            atom_size = 0
+                            for link_node in link_nodes:
+                                href = link_node.get('href', '')
+                                if not href:
+                                    if not link:
+                                        link = link_node.text or ""
+                                    continue
+                                relation = link_node.get('rel', '').strip().lower()
+                                if relation == 'enclosure':
+                                    if not atom_enclosure:
+                                        atom_enclosure = href
+                                        length = link_node.get('length', '0')
+                                        if length and length.isdigit():
+                                            atom_size = int(length)
+                                elif not link and relation in ('', 'alternate'):
+                                    link = href
 
                             # 种子链接
                             enclosure_nodes = item.xpath('.//enclosure')
-                            enclosure = enclosure_nodes[0].get('url', '') if enclosure_nodes else ""
+                            enclosure = atom_enclosure
+                            if not enclosure and enclosure_nodes:
+                                enclosure = enclosure_nodes[0].get('url', '')
                             if not enclosure and not link:
                                 continue
                             # 部分RSS只有link没有enclosure
@@ -463,8 +479,8 @@ class RssHelper:
                                 enclosure = link
 
                             # 大小
-                            size = 0
-                            if enclosure_nodes:
+                            size = atom_size
+                            if not atom_enclosure and enclosure_nodes:
                                 size_attr = enclosure_nodes[0].get('length', '0')
                                 if size_attr and str(size_attr).isdigit():
                                     size = int(size_attr)

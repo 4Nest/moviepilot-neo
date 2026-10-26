@@ -274,6 +274,71 @@ def test_rust_metainfo_parser_handles_subtitle_episode_range_fin():
     assert result["total_episode"] == 26
 
 
+
+@pytest.mark.parametrize("subtitle", [
+    "【赛博朋克：边缘行者】 转载 不包含 第二季",
+    "【赛博朋克：边缘行者】 转载 不包括第二季",
+    "【赛博朋克：边缘行者】 转载 不含 第2集",
+])
+def test_rust_subtitle_ignores_negated_season_and_episode(subtitle):
+    """真实 Rust 解析器不能把被否定的季集号写入当前资源。"""
+    result = rust_accel.parse_metainfo(
+        "[喵萌奶茶屋&VCB-Studio] 赛博朋克：边缘行者 "
+        "Cyberpunk Edgerunners 10-bit 1080p HEVC",
+        subtitle=subtitle,
+        options=_metainfo_options(),
+    )
+
+    assert result["begin_season"] is None
+    assert result["begin_episode"] is None
+
+
+def test_rust_subtitle_preserves_positive_season_before_negation():
+    """真实 Rust 解析器应保留否定说明之前的肯定季号。"""
+    result = rust_accel.parse_metainfo(
+        "Cyberpunk Edgerunners 10-bit 1080p HEVC",
+        subtitle="第一季 不包含第二季",
+        options=_metainfo_options(),
+    )
+
+    assert result["begin_season"] == 1
+
+
+@pytest.mark.parametrize("tag", ["tmdb-727340", "tmdbid=727340"])
+def test_rust_parenthesized_tmdb_id_from_title_and_path(tag):
+    """真实 Rust 入口应支持圆括号 TMDB 标签并清理识别标题。"""
+    title = f"狩猎 (2022) ({tag})"
+    found = rust_accel.find_metainfo(title)
+    parsed = rust_accel.parse_metainfo_path(
+        f"/movies/{title}/狩猎.mkv", options=_metainfo_options(),
+    )
+
+    assert found["title"] == "狩猎 (2022)"
+    assert found["metainfo"]["tmdbid"] == "727340"
+    assert found["metainfo"]["media_source"] == "themoviedb"
+    assert found["metainfo"]["media_id"] == "727340"
+    assert parsed["tmdbid"] == 727340
+
+
+@pytest.mark.parametrize("brackets", [("[", "]"), ("【", "】")])
+@pytest.mark.parametrize("resolution", ["720p", "1080p", "1080i", "2160P", "1080I"])
+def test_rust_resolution_tags_do_not_select_anime_parser(brackets, resolution):
+    """真实 Rust 标题与路径入口不能把分辨率标签当成动漫集号。"""
+    left, right = brackets
+    title = f"某片名 2026-{left}{resolution}{right}{left}BDRIP{right}AV1.OPUS.mkv"
+    parsed_title = rust_accel.parse_metainfo(title, options=_metainfo_options())
+    parsed_path = rust_accel.parse_metainfo_path(
+        f"/movies/{title}", options=_metainfo_options(),
+    )
+
+    for parsed in (parsed_title, parsed_path):
+        assert parsed["kind"] == "video"
+        assert parsed["year"] == "2026"
+        assert parsed["begin_episode"] is None
+        assert parsed["resource_pix"] == resolution.lower()
+        assert parsed["resource_type"] == "BDRIP"
+
+
 def test_rust_metainfo_path_parser_merges_parent_title():
     """
     Rust MetaInfoPath 入口应在 Rust 内完成父目录标题合并。
@@ -788,3 +853,97 @@ def test_rust_indexer_parser_does_not_use_invalid_date_as_pubdate():
     )
 
     assert "pubdate" not in result[0]
+
+
+@pytest.mark.parametrize("entry", ["parse_indexer_torrents", "parse_indexer_subtitles"])
+@pytest.mark.parametrize("unsupported", ["field", "remove", "case"])
+def test_rust_unsupported_indexer_selector_requests_complete_fallback(entry, unsupported):
+    """任一字段、移除或倍率选择器不支持时，真实扩展必须整批回退。"""
+    fields = {
+        "title": {"selector": "a"},
+        "download": {"selector": "a", "attribute": "href"},
+    }
+    if unsupported == "field":
+        fields["title"]["selector"] = "a:first"
+    elif unsupported == "remove":
+        fields["title"]["remove"] = "span:eq(0)"
+    else:
+        fields["downloadvolumefactor"] = {"case": {"img:eq(0)": 0, "*": 1}}
+
+    result = getattr(rust_accel, entry)(
+        '<table><tr><td><a href="/download/1">Review<span>Ad</span></a></td></tr></table>',
+        "https://example.com/", {"selector": "tr"}, fields,
+    )
+
+    assert result is None
+
+
+def test_rust_indexer_static_and_nonmatching_fields_keep_acceleration():
+    """合法静态字段和未匹配选择器不应被误当成不支持配置。"""
+    result = rust_accel.parse_indexer_torrents(
+        '<table><tr><td><a href="/download/1">Link</a></td></tr></table>',
+        "https://example.com/",
+        {"selector": "tr"},
+        {
+            "title": {"text": "Review"},
+            "description": {"selector": "a.missing"},
+            "download": {"selector": "a", "attribute": "href"},
+        },
+    )
+
+    assert result[0]["title"] == "Review"
+
+
+def _unsupported_selector_indexer(search_type: str, unsupported: str) -> dict:
+    """构造含 PyQuery 专属选择器的 torrents 或 subtitles 站点配置。"""
+    fields = {
+        "title": {"selector": "a"},
+        "download": {"selector": "a", "attribute": "href"},
+    }
+    if unsupported == "field":
+        fields["title"]["selector"] = "a:first"
+    elif unsupported == "remove":
+        fields["title"]["remove"] = "span:eq(0)"
+    else:
+        fields["downloadvolumefactor"] = {"case": {"img:eq(0)": 0, "*": 1}}
+    return {
+        "id": "unit",
+        "name": "Unit",
+        "domain": "https://example.com/",
+        "search": {"paths": [{"path": "torrents.php"}]},
+        search_type: {"list": {"selector": "tr"}, "fields": fields},
+    }
+
+
+@pytest.mark.parametrize("search_type", ["torrents", "subtitles"])
+@pytest.mark.parametrize("unsupported", ["field", "remove", "case"])
+def test_site_spider_unsupported_selector_matches_python_fallback(
+        monkeypatch, search_type, unsupported):
+    """真实 Rust 自然回退与显式 Python 回退，经 SiteSpider 必须得到完整一致的行。"""
+    html = ('<table><tr><td><a href="/download/1">Review<span>Ad</span></a></td></tr></table>')
+    indexer = _unsupported_selector_indexer(search_type, unsupported)
+    entry = f"parse_indexer_{search_type}"
+    original_entry = getattr(rust_accel, entry)
+    rust_returns = []
+
+    def spy_real_rust(*args, **kwargs):
+        """调用真实 Rust 入口并记录其返回值，不改写结果。"""
+        result = original_entry(*args, **kwargs)
+        rust_returns.append(result)
+        return result
+
+    monkeypatch.setattr(settings, "RUST_ACCEL", True)
+    with monkeypatch.context() as patch_context:
+        patch_context.setattr(rust_accel, entry, spy_real_rust)
+        natural_rows = SiteSpider(indexer, search_type=search_type).parse(html)
+    with monkeypatch.context() as patch_context:
+        patch_context.setattr(rust_accel, entry, lambda *_args, **_kwargs: None)
+        python_rows = SiteSpider(indexer, search_type=search_type).parse(html)
+
+    assert rust_returns == [None]
+    assert natural_rows == python_rows
+    assert len(python_rows) == 1
+    assert python_rows[0]["title"].startswith("Review")
+    assert python_rows[0]["enclosure"] == "https://example.com/download/1"
+    if unsupported == "remove":
+        assert python_rows[0]["title"] == "Review"

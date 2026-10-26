@@ -27,14 +27,19 @@ from app.schemas.types import MediaType
 from app.utils import rust_accel
 
 
-_ANIME_BRACKET_RE = re.compile(r'【[+0-9XVPI-]+】\s*【', re.IGNORECASE)
+_ANIME_BRACKET_RE = re.compile(r'【(?!\d+[PI]】)[+0-9XVPI-]+】\s*【', re.IGNORECASE)
+_ANIME_STANDALONE_EPISODE_BRACKET_RE = re.compile(
+    r'[\]】]\s*[\[【](?!(?:(?:19|20)\d{2}|480|576|720|1080|1440|2160|4320)[\]】])'
+    r'\d{1,4}(?:-\d{1,4}|v\d+)?[\]】]',
+    re.IGNORECASE,
+)
 _ANIME_DASH_EPISODE_RE = re.compile(r'\s+-\s+[\dv]{1,4}\s+', re.IGNORECASE)
 _VIDEO_SEASON_EPISODE_RE = re.compile(
     r"S\d{2}\s*-\s*S\d{2}|S\d{2}|\s+S\d{1,2}|"
     r"EP?\d{2,4}\s*-\s*EP?\d{2,4}|EP?\d{2,4}|\s+EP?\d{1,4}",
     re.IGNORECASE,
 )
-_ANIME_SQUARE_BRACKET_RE = re.compile(r'\[[+0-9XVPI-]+]\s*\[', re.IGNORECASE)
+_ANIME_SQUARE_BRACKET_RE = re.compile(r'\[(?!\d+[PI]])[+0-9XVPI-]+]\s*\[', re.IGNORECASE)
 
 _BRACED_METAINFO_RE = re.compile(r'(?<={\[)[\W\w]+(?=]})')
 _BRACED_TMDBID_RE = re.compile(r'(?<=tmdbid=)\d+')
@@ -52,6 +57,8 @@ _EMBY_TMDB_RE_LIST = (
     re.compile(r'\[tmdb[=\-](\d+)\]'),
     re.compile(r'\{tmdbid[=\-](\d+)\}'),
     re.compile(r'\{tmdb[=\-](\d+)\}'),
+    re.compile(r'(?i)\(tmdbid[=\-]\s*(\d+)\s*\)'),
+    re.compile(r'(?i)\(tmdb[=\-]\s*(\d+)\s*\)'),
 )
 _EXTENDED_MEDIA_ID_RE_LIST = {
     "bangumi": (
@@ -204,7 +211,7 @@ def _find_metainfo_python(title: str) -> Tuple[str, dict]:
         metainfo['tmdbid'] = tmdb_match.group(1)
         title = _EMBY_TMDB_RE_LIST[0].sub('', title).strip()
     elif not metainfo['tmdbid']:
-        # 保持原有优先级：[tmdbid] > [tmdb] > {tmdbid} > {tmdb}
+        # 保持原有优先级：[tmdbid] > [tmdb] > {tmdbid} > {tmdb} > 圆括号标签
         for tmdb_re in _EMBY_TMDB_RE_LIST[1:]:
             tmdb_match = tmdb_re.search(title)
             if tmdb_match:
@@ -564,9 +571,9 @@ def is_anime(name: str) -> bool:
     # 必须在普通影视 S03 判断之前识别，否则会被错误分流到 MetaVideo。
     if has_versioned_anime_episode(name):
         return True
-    if _ANIME_BRACKET_RE.search(name):
-        return True
-    if _ANIME_DASH_EPISODE_RE.search(name):
+    if _ANIME_BRACKET_RE.search(name) \
+            or _ANIME_STANDALONE_EPISODE_BRACKET_RE.search(name) \
+            or _ANIME_DASH_EPISODE_RE.search(name):
         return True
     if _VIDEO_SEASON_EPISODE_RE.search(name):
         return False

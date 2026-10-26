@@ -80,6 +80,32 @@ def test_emby_format_ids():
         )
 
 
+@pytest.mark.parametrize("tag", ["tmdb-727340", "tmdbid=727340"])
+def test_python_find_metainfo_supports_parenthesized_tmdb_id(tag):
+    """Python 兜底应提取并移除圆括号 TMDB 标签。"""
+    with patch("app.core.metainfo.rust_accel.find_metainfo", return_value=None):
+        title, metainfo = find_metainfo(f"狩猎 (2022) ({tag})")
+
+    assert title == "狩猎 (2022)"
+    assert metainfo["tmdbid"] == "727340"
+    assert metainfo["media_source"] == "themoviedb"
+    assert metainfo["media_id"] == "727340"
+
+
+def test_python_metainfo_path_supports_parenthesized_tmdb_id():
+    """Python 路径兜底应从父目录提取圆括号 TMDB ID。"""
+    with (
+        patch("app.core.metainfo.rust_accel.parse_metainfo_path", return_value=None),
+        patch("app.core.metainfo.rust_accel.parse_metainfo", return_value=None),
+        patch("app.core.metainfo.rust_accel.find_metainfo", return_value=None),
+    ):
+        meta = MetaInfoPath(Path("/movies/狩猎 (2022) (tmdb-727340)/狩猎.mkv"))
+
+    assert meta.tmdbid == 727340
+    assert meta.cn_name == "狩猎"
+    assert meta.year == "2022"
+
+
 def test_metainfopath_with_custom_words():
     """测试 MetaInfoPath 使用自定义识别词。"""
     custom_words = ["测试替换 => "]
@@ -195,6 +221,35 @@ def test_python_subtitle_episode_range_fin_with_chinese_season():
     assert meta.end_episode == 26
     assert meta.total_episode == 26
 
+
+
+@pytest.mark.parametrize("subtitle", [
+    "【赛博朋克：边缘行者】 转载 不包含 第二季",
+    "【赛博朋克：边缘行者】 转载 不包括第二季",
+    "【赛博朋克：边缘行者】 转载 不含 第2集",
+])
+def test_python_subtitle_ignores_negated_season_and_episode(subtitle):
+    """副标题明确排除的季集号不能成为当前资源的季集。"""
+    with patch("app.core.metainfo.rust_accel.parse_metainfo", return_value=None):
+        meta = MetaInfo(
+            title="[喵萌奶茶屋&VCB-Studio] 赛博朋克：边缘行者 "
+                  "Cyberpunk Edgerunners 10-bit 1080p HEVC",
+            subtitle=subtitle,
+        )
+
+    assert meta.begin_season is None
+    assert meta.begin_episode is None
+
+
+def test_python_subtitle_preserves_positive_season_before_negation():
+    """肯定季号后跟否定说明时仍保留肯定季号。"""
+    with patch("app.core.metainfo.rust_accel.parse_metainfo", return_value=None):
+        meta = MetaInfo(
+            title="Cyberpunk Edgerunners 10-bit 1080p HEVC",
+            subtitle="第一季 不包含第二季",
+        )
+
+    assert meta.begin_season == 1
 
 def test_subtitle_episode_range_fin_with_default_parser():
     """默认解析路径应识别副标题中 [01-26Fin] 格式的集数范围（#6103）。"""
@@ -486,6 +541,31 @@ def test_v2_in_movie_title_does_not_trigger_anime_parser():
     assert not isinstance(meta, MetaAnime)
     assert meta.name == "V2 Escape From Hell"
     assert meta.year == "2021"
+
+
+@pytest.mark.parametrize("brackets", [("[", "]"), ("【", "】")])
+@pytest.mark.parametrize("resolution", ["720p", "1080p", "1080i", "2160P", "1080I"])
+def test_python_resolution_tags_do_not_select_anime_parser(brackets, resolution):
+    """分辨率规格标签不能作为选择动漫解析器的集数证据。"""
+    left, right = brackets
+    title = f"某片名 2026-{left}{resolution}{right}{left}BDRIP{right}"
+    with patch("app.core.metainfo.rust_accel.parse_metainfo", return_value=None):
+        meta = MetaInfo(title)
+
+    assert isinstance(meta, MetaVideo)
+    assert meta.year == "2026"
+    assert meta.begin_episode is None
+    assert meta.resource_pix == resolution.lower()
+    assert meta.resource_type == "BDRIP"
+
+
+def test_python_episode_tag_still_selects_anime_parser():
+    """排除分辨率标签后真实动漫集号仍应选择动漫解析器。"""
+    with patch("app.core.metainfo.rust_accel.parse_metainfo", return_value=None):
+        meta = MetaInfo("[字幕组] 某番剧 [01][1080p][BDRIP]")
+
+    assert isinstance(meta, MetaAnime)
+    assert meta.begin_episode == 1
 
 
 def test_hdr_vivid_effect_extracted_for_video_title():

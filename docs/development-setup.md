@@ -11,18 +11,18 @@
 - **Git** (用于版本控制)
 - **RAR 解压工具**：本地开发如需测试或使用 `.rar` 字幕包解压，请安装 `unar`、`unrar`、`7z` 或 `bsdtar` 之一；Docker 镜像会内置 `unar`。
 
-Rust 加速扩展通过 `requirements.in` 中固定的 `moviepilot-rust==0.2.9+neo.4` 安装，
+Rust 加速扩展通过 `requirements.in` 中固定的 `moviepilot-rust==0.2.9+neo.5` 安装，
 `--find-links` 指向 `4Nest/MoviePilot-Rust` 的对应 GitHub Release。pip 与 uv 会选择当前平台的 wheel，
 主项目本地开发无需 Rust toolchain。需要修改或发布扩展时，在 `MoviePilot-Rust` 仓库构建并先发布制品。
 
-BT/PT 识别改进配套扩展 `0.2.9+neo.4`（基于上游 `v0.2.9`，兼容 Python 3.11+）。
+BT/PT 识别改进配套扩展 `0.2.9+neo.5`（基于上游 `v0.2.9`，兼容 Python 3.11+）。
 它通过 `ANIME_EPISODE_REVISION=1` 声明修订集号能力，`BT_PT_RECOGNITION_REVISION=4`
 标识标题、文件名及副标题语料验证后的修复。通过每次解析结果的
 `anime_names_resolved` 标记告知后端别名已处理，减少重复 Python 解析。
 旧扩展继续保留原来的 Python 回退。仅更新后端代码不会获得新的 Rust 识别规则；
 应在 Rust 仓库构建目标平台 wheel，安装到实际运行后端的环境，并重启对应进程。
 此定制版本通过 GitHub Release 分发，不发布到上游 PyPI 项目；镜像构建会检查万条识别能力标记，
-缺少新版扩展时直接失败。前后端版本统一为 `v2.15.15`。
+缺少新版扩展时直接失败。
 
 站点语料及完整回归保存在 Rust 仓库 `tests/metainfo/site_samples.json`、
 `expanded_samples.json`、`volume_samples.json`、`diverse_samples.json` 和
@@ -31,7 +31,7 @@ BT/PT 识别改进配套扩展 `0.2.9+neo.4`（基于上游 `v0.2.9`，兼容 Py
 生成脚本、来源统计和 SHA-256 清单均随语料保存；测试核对去重数量和校验和。
 样本口径、修复行为和验证结果见 `docs/rust-bt-pt-recognition.md`。
 
-副标题专项随 `0.2.9+neo.4` 提供，安装该 wheel 后可运行
+副标题专项随 `0.2.9+neo.5` 提供，安装该 wheel 后可运行
 `tests/test_subtitle_recognition.py` 的完整一万条 Rust 入口测试。
 未安装 revision 4 时这部分测试会明确跳过，485 条 Python 回退用例仍可独立运行。
 正式发布时先发布 Rust 制品，再更新上述固定依赖和镜像能力门禁，避免引用尚不存在的下载地址。
@@ -147,8 +147,8 @@ chmod +x scripts/start-local.sh
 4. **插件依赖**：由插件声明并在插件安装阶段处理，不直接并入主程序 `requirements.in`。
 
 插件安装会生成主程序依赖约束：核心包和带本地版本标记的定制包（如
-`moviepilot-rust==0.2.9+neo.4`）使用 `==` 精确锁定，其他主程序依赖只允许升级。
-不要为包含 `+neo.4` 等本地版本标记的版本生成 `>=` 约束，pip 和 uv 都会拒绝解析。
+`moviepilot-rust==0.2.9+neo.5`）使用 `==` 精确锁定，其他主程序依赖只允许升级。
+不要为包含 `+neo.5` 等本地版本标记的版本生成 `>=` 约束，pip 和 uv 都会拒绝解析。
 
 ### 4. 准备资源与插件目录
 

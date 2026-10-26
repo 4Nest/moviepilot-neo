@@ -186,6 +186,7 @@ meta_cases = [{
         "fps": None
     }
 }, {
+    # 资源规格走影视解析，独立声道数不作为音频编码。
     "title": "Thor Love and Thunder (2022) [1080p] [WEBRip] [5.1]",
     "subtitle": "",
     "target": {
@@ -199,7 +200,7 @@ meta_cases = [{
         "restype": "WebRip",
         "pix": "1080p",
         "video_codec": "",
-        "audio_codec": "5.1",
+        "audio_codec": "",
         "fps": None
     }
 }, {

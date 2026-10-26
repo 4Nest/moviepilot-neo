@@ -5,6 +5,7 @@ import pytest
 
 from app.helper import rss as rss_module
 from app.helper.rss import RssHelper
+from app.utils import rust_accel
 from app.utils.http import RequestUtils
 
 
@@ -173,3 +174,48 @@ def test_rss_helper_decodes_utf8_xml_before_python_parser(monkeypatch):
 
     assert result[0]["title"] == "警察故事4：简单任务 2160p"
     assert result[0]["description"] == "中文简介"
+
+
+@pytest.mark.skipif(
+    not rust_accel.is_available(),
+    reason="moviepilot_rust 扩展未安装",
+)
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("closed", [False, True])
+def test_atom_enclosure_matches_between_rust_and_python(monkeypatch, reverse, closed):
+    """真实 Rust 与 Python 兜底经 RssHelper 应得到相同的 Atom 详情、下载链接和大小。"""
+    alternate = '<link rel="alternate" href="https://example.com/details/1"/>'
+    enclosure = '<link rel="enclosure" href="https://example.com/file.torrent" length="1234"/>'
+    links = [enclosure, alternate] if reverse else [alternate, enclosure]
+    if closed:
+        links = [link.replace('/>', '></link>') for link in links]
+    xml = '<feed><entry><title>Review</title>' + ''.join(links) + '</entry></feed>'
+    response = SimpleNamespace(status_code=200, content=xml.encode(), text=xml)
+    monkeypatch.setattr(rss_module.RequestUtils, "get_res", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(rss_module.settings, "RUST_ACCEL", True)
+    original_parse = rss_module.rust_accel.parse_rss_items
+    rust_returns = []
+
+    def spy_real_rust(*args, **kwargs):
+        """调用真实 Rust RSS 入口并记录返回值，不改写结果。"""
+        result = original_parse(*args, **kwargs)
+        rust_returns.append(result)
+        return result
+
+    with monkeypatch.context() as patch_context:
+        patch_context.setattr(rss_module.rust_accel, "parse_rss_items", spy_real_rust)
+        rust_result = RssHelper().parse("https://example.com/rss")
+    with monkeypatch.context() as patch_context:
+        patch_context.setattr(rss_module.rust_accel, "parse_rss_items", lambda *_args, **_kwargs: None)
+        python_result = RssHelper().parse("https://example.com/rss")
+
+    assert len(rust_returns) == 1 and rust_returns[0] is not None
+    assert rust_result == python_result
+    assert python_result == [{
+        "title": "Review",
+        "enclosure": "https://example.com/file.torrent",
+        "size": 1234,
+        "description": "",
+        "link": "https://example.com/details/1",
+        "pubdate": "",
+    }]
