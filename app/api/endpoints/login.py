@@ -34,11 +34,16 @@ def login_access_token(
     if not success:
         # 只有密码已经验证通过时才返回 MFA 方法，避免泄露账号安全配置。
         if isinstance(user_or_message, MfaRequired):
+            methods = list(user_or_message.methods)
             return JSONResponse(
                 status_code=401,
                 content={
+                    "success": False,
                     "detail": "需要二次验证",
-                    "mfa_methods": list(user_or_message.methods),
+                    "mfa_methods": methods,
+                    "data": {
+                        "mfa_methods": methods,
+                    },
                 },
                 headers={"X-MFA-Required": "true"},
             )

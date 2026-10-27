@@ -67,10 +67,17 @@ def test_login_mfa_response_contains_methods_after_password_verification(monkeyp
 
     assert response.status_code == 401
     assert response.headers["x-mfa-required"] == "true"
-    assert json.loads(response.body) == {
+    body = json.loads(response.body)
+    assert body == {
+        "success": False,
         "detail": "需要二次验证",
         "mfa_methods": ["otp"],
+        "data": {
+            "mfa_methods": ["otp"],
+        },
     }
+    # 兼容 MoviePilot-App 客户端读取 data.mfa_methods 的契约
+    assert body["data"]["mfa_methods"] == ["otp"]
 
 
 def test_login_invalid_password_does_not_expose_mfa_methods(monkeypatch):
