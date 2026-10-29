@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/4Nest/moviepilot-neo/actions/workflows/build-custom.yml"><img src="https://github.com/4Nest/moviepilot-neo/actions/workflows/build-custom.yml/badge.svg?branch=neo" alt="Build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue.svg" alt="GPL-3.0" /></a>
-  <img src="https://img.shields.io/badge/image-linux%2Famd64-2496ED.svg" alt="linux/amd64" />
+  <img src="https://img.shields.io/badge/image-linux%2Famd64%20%7C%20linux%2Farm64-2496ED.svg" alt="linux/amd64 | linux/arm64" />
 </p>
 
 > [!NOTE]
@@ -19,18 +19,18 @@
 
 ### Docker
 
-当前镜像面向 **x86-64** 主机，仅提供 `linux/amd64` 架构。
-
-开发测试版（跟随 `neo` 分支更新）：
+`latest` 为正式稳定版，发布到 Docker Hub 与 GHCR，支持 `linux/amd64`、`linux/arm64`：
 
 ```bash
-docker pull ghcr.io/4nest/moviepilot-neo:neo
+docker pull 4nest/moviepilot-neo:latest
+# 或
+docker pull ghcr.io/4nest/moviepilot-neo:latest
 ```
 
-正式稳定版（GitHub Release 版本标签）：
+`beta` 为开发测试版（跟随 `neo` 分支更新），仅发布于 GHCR，仅提供 `linux/amd64`：
 
 ```bash
-docker pull ghcr.io/4nest/moviepilot-neo:latest
+docker pull ghcr.io/4nest/moviepilot-neo:beta
 ```
 
 
