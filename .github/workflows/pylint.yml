@@ -2,9 +2,9 @@ name: Pylint Code Quality Check
 
 on:
   pull_request:
-    branches: [neo]
+    branches: [beta]
   push:
-    branches: [neo]
+    branches: [beta]
   workflow_dispatch:
 
 jobs:

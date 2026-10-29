@@ -46,7 +46,7 @@ Release 说明统一从 `.github/release-notes/<tag>.md` 读取，格式见该�
 超过 6 项或正文超过 1200 个 UTF-16 代码单元时折叠列表，底部提供完整更新日志和项目主页按钮。
 HTML 格式只用于排版，版本与改动内容统一转义；按实际显示文本计算长度，
 超过 Telegram 长度限制时保留完整条目，其余改动通过按钮查看。
-普通 neo 构建和失败的正式发布不会发送公告，同版本的 latest 补充发布也会通知。
+普通 beta 构建和失败的正式发布不会发送公告，同版本的 latest 补充发布也会通知。
 
 首次启用需在 `4Nest/moviepilot-neo` 的 **Settings → Environments** 中创建
 `TELEGRAM_RELEASE_BOT_TOKEN` 环境，并在其中设置同名 Secret；通知任务绑定该环境。

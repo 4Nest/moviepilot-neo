@@ -72,7 +72,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 手动发送读取已发布的正式版，避免将 neo 尚未发布的改动写入公告。
+          # 手动发送读取已发布的正式版，避免将 beta 尚未发布的改动写入公告。
           gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > "$RUNNER_TEMP/telegram-published-release.json"
           app_version=$(jq -er '.tag_name' "$RUNNER_TEMP/telegram-published-release.json")
           jq -er '.body' "$RUNNER_TEMP/telegram-published-release.json" > "$RUNNER_TEMP/telegram-release-notes.md"

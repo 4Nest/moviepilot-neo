@@ -71,7 +71,7 @@ ci: improve docker build cache
 - 同版本补充改动合并进已有列表，不追加章节，不写测试日志、安装命令或构建信息；缺少说明文件时停止发布。
 - 按用户要求仅更新 `latest` 时，保留前后端版本号及现有版本标签，通过 `build-custom.yml` 的 `publish_latest=true` 发布并更新对应 Release 说明。
 - 正式镜像与 Release 更新成功后，由工作流通知 `@MoviePilot_NEO`；通知任务绑定 `TELEGRAM_RELEASE_BOT_TOKEN` Environment，使用其中的同名 Secret 和同一份中文改动说明。`beta` 开发镜像构建不通知，通知失败单独重试。`check-telegram.yml` 默认只读检查；用户要求试发或补发时可启用 `send_announcement`，发送已发布的当前正式版说明。
-- `latest` 为正式稳定版，同时发布到 Docker Hub 与 GHCR，支持 `linux/amd64`、`linux/arm64`；`beta` 跟随 `neo` 分支构建，仅发布到 GHCR，仅 `linux/amd64`。
+- `latest` 为正式稳定版，同时发布到 Docker Hub 与 GHCR，支持 `linux/amd64`、`linux/arm64`；`beta` 跟随 `beta` 分支构建，仅发布到 GHCR，仅 `linux/amd64`。
 
 - The primary Docker image bundles the backend (Python app), frontend static files (from `public/`), and resource data.
 - Docker build and release are managed by CI. Do not manually trigger or alter the Docker release flow unless the task explicitly requires it.
