@@ -399,6 +399,10 @@
       "target": "取得工具 Schema 失敗: {reason}"
     },
     {
+      "source": "调用工具失败: {reason}",
+      "target": "呼叫工具失敗: {reason}"
+    },
+    {
       "source": "插件 {plugin} 不存在或未安装",
       "target": "插件 {plugin} 不存在或未安裝"
     },

@@ -413,6 +413,10 @@
       "target": "Failed to get tool schema: {reason}"
     },
     {
+      "source": "调用工具失败: {reason}",
+      "target": "Tool call failed: {reason}"
+    },
+    {
       "source": "插件 {plugin} 不存在或未安装",
       "target": "Plugin {plugin} does not exist or is not installed"
     },
