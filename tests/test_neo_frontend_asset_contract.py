@@ -7,10 +7,10 @@ DOCKERFILE = ROOT / "docker/Dockerfile"
 
 
 def test_neo_image_waits_for_commit_pinned_frontend_asset() -> None:
-    """NEO 镜像必须等待并绑定前端 neo 当前提交的不可变资产。"""
+    """NEO 镜像必须等待并绑定前端 beta 当前提交的不可变资产。"""
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    assert 'gh api "repos/${FRONTEND_REPO}/commits/neo"' in workflow
+    assert 'gh api "repos/${FRONTEND_REPO}/commits/beta"' in workflow
     assert 'frontend_asset="dist-${frontend_sha}.zip"' in workflow
     # 必须跟随 302 校验最终 CDN 地址,否则资产已建立但 CDN 未同步时会误判就绪
     assert 'curl -fsSIL "$frontend_asset_url"' in workflow

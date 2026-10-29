@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/4Nest/moviepilot-neo-frontend/neo/docs/neo-icon.png" width="104" alt="MoviePilot NEO Logo" />
+  <img src="https://raw.githubusercontent.com/4Nest/moviepilot-neo-frontend/beta/docs/neo-icon.png" width="104" alt="MoviePilot NEO Logo" />
 </p>
 
 <h1 align="center">MoviePilot NEO</h1>
