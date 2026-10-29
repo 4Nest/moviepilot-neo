@@ -62,7 +62,7 @@ ci: improve docker build cache
 - Do not casually change version numbers in `version.py` or related files.
 - Version changes are part of the release workflow and are only made when the task explicitly involves a release.
 - The `FRONTEND_VERSION` field in `version.py` controls which frontend release the CLI and Docker build will download. Only update it as part of a coordinated frontend release.
-- 版本号只按修订号逐次加一：每次发布在上一个正式版基础上递增最后一位（如 `v2.17.0` → `v2.17.1`），不做 minor 跳变；前端版本同理，需与前端 Release 对齐。
+- 版本号只按修订号逐次加一：每次发布在上一个正式版基础上递增最后一位（如 `v2.17.0` → `v2.17.1`），不做 minor 跳变；前后端版本号必须保持一致，发布时同步修改后端 `version.py` 的 `APP_VERSION` / `FRONTEND_VERSION` 与前端 `package.json` 的 `version`。
 
 ---
 
