@@ -167,8 +167,6 @@ class SystemChain(ChainBase):
         获取版本信息文本
         """
         server_release_version = self.__get_server_release_version()
-        if server_release_version:
-            server_release_version = server_release_version.removeprefix("neo-")
         front_release_version = self.__get_front_release_version()
         server_local_version = self.get_server_local_version()
         front_local_version = self.get_frontend_version()
@@ -230,7 +228,7 @@ class SystemChain(ChainBase):
             ).get_res("https://api.github.com/repos/4Nest/moviepilot-neo/releases")
             if response:
                 releases = [release['tag_name'] for release in response.json()]
-                neo_releases = [tag for tag in releases if re.match(r"^neo-v2\.", tag)]
+                neo_releases = [tag for tag in releases if re.match(r"^v2\.", tag)]
                 if not neo_releases:
                     logger.warn("获取 Neo 后端最新版本出错！")
                 else:

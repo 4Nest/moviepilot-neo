@@ -119,7 +119,7 @@ function install_backend_and_download_resources() {
     fi
     
     # 开发分支更新时使用 NEO 前端最新 v2 Release。
-    if [[ "${1}" == "heads/neo.zip" ]]; then
+    if [[ "${1}" == "heads/beta.zip" ]]; then
         INFO "→ 正在获取前端最新版本号..."
         releases=$(curl ${CURL_OPTIONS} "https://api.github.com/repos/4Nest/moviepilot-neo-frontend/releases" ${CURL_HEADERS} | jq -r '.[].tag_name' | grep "^v2\.")
         if [ -z "$releases" ]; then
@@ -241,7 +241,7 @@ function test_connectivity_github() {
     case "$1" in
     0)
         if [[ -n "${GITHUB_PROXY}" ]]; then
-            if curl -sL "${GITHUB_PROXY}https://raw.githubusercontent.com/4Nest/moviepilot-neo/neo/README.md" > /dev/null 2>&1; then
+            if curl -sL "${GITHUB_PROXY}https://raw.githubusercontent.com/4Nest/moviepilot-neo/beta/README.md" > /dev/null 2>&1; then
                 CURL_OPTIONS="-sL"
                 GITHUB_LOG="镜像代理模式"
                 return 0
@@ -251,7 +251,7 @@ function test_connectivity_github() {
         ;;
     1)
         if [[ -n "${PROXY_HOST}" ]]; then
-            if curl -sL -x ${PROXY_HOST} https://raw.githubusercontent.com/4Nest/moviepilot-neo/neo/README.md > /dev/null 2>&1; then
+            if curl -sL -x ${PROXY_HOST} https://raw.githubusercontent.com/4Nest/moviepilot-neo/beta/README.md > /dev/null 2>&1; then
                 CURL_OPTIONS="-sL -x ${PROXY_HOST}"
                 GITHUB_LOG="全局代理模式"
                 return 0
@@ -368,19 +368,19 @@ if [[ "${MOVIEPILOT_AUTO_UPDATE}" = "true" ]] || [[ "${MOVIEPILOT_AUTO_UPDATE}" 
     fi
     if [ "${MOVIEPILOT_AUTO_UPDATE}" = "dev" ]; then
         INFO "Dev 更新模式"
-        install_backend_and_download_resources "heads/neo.zip"
+        install_backend_and_download_resources "heads/beta.zip"
     else
         INFO "Release 更新模式"
         old_version=$(grep -m -1 "^\s*APP_VERSION\s*=\s*" /app/version.py | tr -d '\r\n' | awk -F'#' '{print $1}' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
         if [[ "${old_version}" == *APP_VERSION* ]]; then
             current_version=$(echo "${old_version}" | sed -rn "s/APP_VERSION\s*=\s*['\"](.*)['\"]/\1/gp")
             INFO "当前版本号：${current_version}"
-            releases=$(curl ${CURL_OPTIONS} "https://api.github.com/repos/4Nest/moviepilot-neo/releases" ${CURL_HEADERS} | jq -r '.[].tag_name' | grep "^neo-v2\.")
+            releases=$(curl ${CURL_OPTIONS} "https://api.github.com/repos/4Nest/moviepilot-neo/releases" ${CURL_HEADERS} | jq -r '.[].tag_name' | grep "^v2\.")
             if [ -z "$releases" ]; then
                 WARN "未找到任何 Neo v2 后端版本，继续启动..."
             else
                 latest_release=$(echo "$releases" | sort -V | tail -n 1)
-                latest_version=${latest_release#neo-}
+                latest_version=${latest_release}
                 compare_versions "${current_version}" "${latest_version}" "${latest_release}"
             fi
         else

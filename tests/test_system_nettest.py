@@ -325,7 +325,7 @@ class NettestSecurityTest(unittest.TestCase):
         self.assertTrue(resp.success)
         self.assertEqual(
             captured["url"],
-            "https://ghproxy.example/https://github.com/4Nest/moviepilot-neo/blob/neo/README.md",
+            "https://ghproxy.example/https://github.com/4Nest/moviepilot-neo/blob/beta/README.md",
         )
         self.assertFalse(captured["allow_redirects"])
         self.assertTrue(captured["init_kwargs"]["verify"])
