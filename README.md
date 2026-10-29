@@ -44,6 +44,7 @@ docker pull ghcr.io/4nest/moviepilot-neo:latest
 | CLI 使用 | [docs/cli.md](docs/cli.md) |
 | 环境诊断 | [docs/doctor.md](docs/doctor.md) |
 | 订阅生命周期 | [docs/subscribe-lifecycle.md](docs/subscribe-lifecycle.md) |
+| MCP 接入 | [docs/mcp-api.md](docs/mcp-api.md) |
 | 问题反馈 | [Issues](https://github.com/4Nest/moviepilot-neo/issues) |
 
 ## License
