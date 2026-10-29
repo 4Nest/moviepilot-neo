@@ -19,19 +19,20 @@ def _display_text(markup: str) -> str:
 
 
 def test_announcement_preserves_notes_with_readable_layout() -> None:
-    """公告具有标题、条目间距、等宽镜像和链接按钮，资源标签仍按原文显示。"""
+    """公告具有标题、条目间距、等宽镜像命令和链接按钮，资源标签仍按原文显示。"""
     notes = '- 修复 <CHS>、A&B 和 [资源] 识别。\n- 支持 "引号" 与 `latest`。\n'
     payload = build_release_payload("v2.15.15", notes, "4Nest/moviepilot-neo")
     assert payload["chat_id"] == "@MoviePilot_NEO"
-    assert payload["text"].startswith("🚀 <b>MoviePilot NEO</b>\n<code>v2.15.15</code> · 正式版更新\n\n")
+    assert payload["text"].startswith("🎬 <b>MoviePilot NEO</b> <code>v2.15.15</code>\n<b>正式版发布</b>\n\n")
     assert '• 修复 <CHS>、A&B 和 [资源] 识别。\n\n• 支持 "引号" 与 `latest`。' in _display_text(payload["text"])
     assert "<CHS>" not in payload["text"]
-    assert "<code>ghcr.io/4nest/moviepilot-neo:latest</code>" in payload["text"]
+    assert "<code>docker pull 4nest/moviepilot-neo:latest</code>" in payload["text"]
     assert payload["parse_mode"] == "HTML"
     assert payload["link_preview_options"] == {"is_disabled": True}
     assert payload["reply_markup"]["inline_keyboard"] == [[
-        {"text": "完整更新日志", "url": "https://github.com/4Nest/moviepilot-neo/releases/tag/v2.15.15"},
-        {"text": "项目主页", "url": "https://github.com/4Nest/moviepilot-neo"},
+        {"text": "📄 完整更新日志", "url": "https://github.com/4Nest/moviepilot-neo/releases/tag/v2.15.15"},
+        {"text": "🐳 Docker Hub", "url": "https://hub.docker.com/r/4nest/moviepilot-neo"},
+        {"text": "🏠 项目主页", "url": "https://github.com/4Nest/moviepilot-neo"},
     ]]
 
 
@@ -124,7 +125,7 @@ def test_prepare_cli_writes_utf8_json(tmp_path: Path) -> None:
         "--notes-file", str(notes_file), "--output", str(output),
     ]) == 0
     payload = json.loads(output.read_text(encoding="utf-8"))
-    assert _display_text(payload["text"]).startswith("🚀 MoviePilot NEO")
+    assert _display_text(payload["text"]).startswith("🎬 MoviePilot NEO")
     assert payload["parse_mode"] == "HTML"
 
 

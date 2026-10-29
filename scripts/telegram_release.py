@@ -13,7 +13,8 @@ RELEASE_CHANNEL = "@MoviePilot_NEO"
 MAX_MESSAGE_LENGTH = 4096
 COLLAPSE_AFTER_ITEMS = 6
 COLLAPSE_AFTER_LENGTH = 1200
-RELEASE_IMAGE = "ghcr.io/4nest/moviepilot-neo:latest"
+DOCKER_HUB_IMAGE = "4nest/moviepilot-neo"
+GHCR_IMAGE = "ghcr.io/4nest/moviepilot-neo"
 
 
 def _text_length(text: str) -> int:
@@ -26,29 +27,40 @@ def build_release_payload(version: str, notes: str, repository: str) -> dict[str
     if not lines or any(not line.startswith("- ") for line in lines):
         raise ValueError("发布说明必须是非空的中文无序列表")
     entries = [f"• {line[2:]}" for line in lines]
-    header = f"🚀 MoviePilot NEO\n{version} · 正式版更新\n\n更新内容\n"
-    footer = f"\n\n更新镜像\n{RELEASE_IMAGE}"
+    # Docker 镜像标签不带 v 前缀，与发布工作流保持一致。
+    image_tag = version.lstrip("vV")
+    header = f"🎬 MoviePilot NEO {version}\n正式版发布"
+    footer = (
+        f"\n\n🐳 镜像更新\n"
+        f"docker pull {DOCKER_HUB_IMAGE}:latest\n"
+        f"docker pull {GHCR_IMAGE}:latest\n\n"
+        f"🏷 标签 latest · {image_tag} · amd64 / arm64"
+    )
     summary = "…更多改动请查看完整更新日志。"
     selected = entries
     # Telegram 限制的是解析格式后的文本，不能把 HTML 标签或转义字符重复计数。
-    if _text_length(header + "\n\n".join(entries) + footer) > MAX_MESSAGE_LENGTH:
+    if _text_length(header + "\n\n" + "\n\n".join(entries) + footer) > MAX_MESSAGE_LENGTH:
         selected = []
         for entry in entries:
-            candidate = header + "\n\n".join([*selected, entry, summary]) + footer
+            candidate = header + "\n\n" + "\n\n".join([*selected, entry, summary]) + footer
             if _text_length(candidate) > MAX_MESSAGE_LENGTH:
                 break
             selected.append(entry)
         selected.append(summary)
     body = "\n\n".join(selected)
-    if _text_length(header + body + footer) > MAX_MESSAGE_LENGTH:
+    if _text_length(header + "\n\n" + body + footer) > MAX_MESSAGE_LENGTH:
         raise ValueError("版本号过长")
     formatted_body = html.escape(body)
     if len(selected) > COLLAPSE_AFTER_ITEMS or _text_length(body) > COLLAPSE_AFTER_LENGTH:
         formatted_body = f"<blockquote expandable>{formatted_body}</blockquote>"
     text = (
-        f"🚀 <b>MoviePilot NEO</b>\n<code>{html.escape(version)}</code> · 正式版更新\n\n"
-        f"<b>更新内容</b>\n{formatted_body}\n\n"
-        f"<b>更新镜像</b>\n<code>{RELEASE_IMAGE}</code>"
+        f"🎬 <b>MoviePilot NEO</b> <code>{html.escape(version)}</code>\n"
+        f"<b>正式版发布</b>\n\n"
+        f"<b>✨ 更新内容</b>\n{formatted_body}\n\n"
+        f"<b>🐳 镜像更新</b>\n"
+        f"<code>docker pull {DOCKER_HUB_IMAGE}:latest</code>\n"
+        f"<code>docker pull {GHCR_IMAGE}:latest</code>\n\n"
+        f"<b>🏷 标签</b> <code>latest</code> · <code>{html.escape(image_tag)}</code> · amd64 / arm64"
     )
     repository_url = f"https://github.com/{quote(repository, safe='/')}"
     return {
@@ -58,8 +70,9 @@ def build_release_payload(version: str, notes: str, repository: str) -> dict[str
         "link_preview_options": {"is_disabled": True},
         "reply_markup": {
             "inline_keyboard": [[
-                {"text": "完整更新日志", "url": f"{repository_url}/releases/tag/{quote(version, safe='')}"},
-                {"text": "项目主页", "url": repository_url},
+                {"text": "📄 完整更新日志", "url": f"{repository_url}/releases/tag/{quote(version, safe='')}"},
+                {"text": "🐳 Docker Hub", "url": f"https://hub.docker.com/r/{DOCKER_HUB_IMAGE}"},
+                {"text": "🏠 项目主页", "url": repository_url},
             ]],
         },
     }

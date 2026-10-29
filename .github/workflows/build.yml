@@ -139,3 +139,14 @@ jobs:
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # tag 由 GITHUB_TOKEN 推送不会触发 build-custom 的通知任务，正式发布后显式补发公告。
+      - name: Trigger Telegram release announcement
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run check-telegram.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref beta \
+            -f send_announcement=true
