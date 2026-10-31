@@ -10,6 +10,7 @@ from app.log import logger
 from app.modules import _ModuleBase
 from app.modules.filter.RuleParser import RuleParser
 from app.modules.filter.builtin_rules import BUILTIN_RULE_SET
+from app.modules.filter.trusted import build_trusted_rule
 from app.schemas.types import ModuleType, OtherModulesType, SystemConfigKey
 from app.utils import rust_accel
 from app.utils.string import StringUtils
@@ -67,6 +68,7 @@ class FilterModule(_ModuleBase):
 
     CONFIG_WATCH = {
         SystemConfigKey.CustomFilterRules.value,
+        SystemConfigKey.TrustedReleaseGroups.value,
         SystemConfigKey.CustomIdentifiers.value,
         SystemConfigKey.CustomReleaseGroups.value,
         SystemConfigKey.Customization.value,
@@ -93,6 +95,8 @@ class FilterModule(_ModuleBase):
         """
         # 每次重载都先恢复为纯内置规则，避免旧的自定义规则残留在内存里。
         self.rule_set = deepcopy(self.builtin_rule_set)
+        # TRUSTED 由可信组名单动态生成，同名自定义规则随后覆盖它。
+        self.rule_set["TRUSTED"] = build_trusted_rule(self.rulehelper.get_trusted_release_groups())
         self.__init_custom_rules()
 
     def __init_custom_rules(self):

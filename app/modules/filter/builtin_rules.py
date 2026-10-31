@@ -128,4 +128,12 @@ BUILTIN_RULE_SET: Dict[str, dict] = {
         "include": [r"3D"],
         "exclude": [],
     },
+    # 枪版/抢先版：TS、TC、SCR 只认大写独立标记，避免误伤 DTS 音轨与 .ts 录制文件
+    "CAM": {
+        "include": [
+            r"(?:^|[^A-Za-z0-9])(?:(?i:(?:HD)?CAM(?:Rip)?|TELESYNC|TELECINE|PDVD|PreDVD|SCREENER|DVDSCR)"
+            r"|(?-i:(?:HD)?TS|(?:HD)?TC|SCR))(?:$|[^A-Za-z0-9])|枪版|抢先版"
+        ],
+        "exclude": [],
+    },
 }

@@ -264,6 +264,7 @@ _SETTING_VALUE_ADAPTERS = {
     SystemConfigKey.MediaServers.value: TypeAdapter(list[schemas.MediaServerConf]),
     SystemConfigKey.Storages.value: TypeAdapter(list[schemas.StorageConf]),
     SystemConfigKey.Directories.value: TypeAdapter(list[schemas.TransferDirectoryConf]),
+    SystemConfigKey.TrustedReleaseGroups.value: TypeAdapter(list[str]),
 }
 
 
@@ -1110,6 +1111,9 @@ async def get_setting(
     """查询系统设置（仅管理员）。"""
     if hasattr(settings, key):
         value = getattr(settings, key)
+    elif key == SystemConfigKey.TrustedReleaseGroups.value:
+        # 未保存过名单时展示内置默认名单，与过滤器实际生效内容一致。
+        value = RuleHelper.get_trusted_release_groups()
     else:
         value = SystemConfigOper().get(key)
     if key == SystemConfigKey.Notifications.value:

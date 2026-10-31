@@ -238,6 +238,8 @@ class SystemConfigKey(Enum):
     TorrentsPriority = "TorrentsPriority"
     # 用户自定义规则
     CustomFilterRules = "CustomFilterRules"
+    # 可信制作组/字幕组名单（内置 TRUSTED 规则使用）
+    TrustedReleaseGroups = "TrustedReleaseGroups"
     # 用户规则组
     UserFilterRuleGroups = "UserFilterRuleGroups"
     # 搜索默认过滤规则组
