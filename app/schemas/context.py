@@ -226,6 +226,8 @@ class TorrentInfo(BaseModel):
     imdbid: Optional[str] = None
     # 种子链接
     enclosure: Optional[str] = None
+    # Base64 编码的种子文件内容（手动上传 .torrent 文件时使用）
+    torrent_content: Optional[str] = None
     # 详情页面
     page_url: Optional[str] = None
     # 种子大小

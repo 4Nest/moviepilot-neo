@@ -1,3 +1,4 @@
+import base64
 from types import SimpleNamespace
 
 from app import schemas
@@ -266,3 +267,71 @@ def test_download_add_recognized_failure_has_no_confirmation_marker(monkeypatch)
 
     assert response.success is False
     assert not response.data or response.data.get("requires_confirmation") is not True
+
+
+def _patch_manual_download(monkeypatch, captured: dict) -> None:
+    """安装记录识别元数据与下载参数的模拟链。"""
+
+    class FakeMediaChain:
+        """返回固定剧集媒体信息。"""
+
+        def recognize_by_meta(self, metainfo, **kwargs):
+            """保存自动提取的识别标题。"""
+            captured["metainfo"] = metainfo
+            return MediaInfo(title="Frieren", type=MediaType.TV)
+
+    class FakeDownloadChain:
+        """记录手动下载任务参数。"""
+
+        def download_single(self, **kwargs):
+            """保存种子内容与保存路径。"""
+            captured["download"] = kwargs
+            return "download-manual"
+
+    monkeypatch.setattr(download_endpoint, "MediaChain", FakeMediaChain)
+    monkeypatch.setattr(download_endpoint, "DownloadChain", FakeDownloadChain)
+
+
+def test_download_add_extracts_torrent_name_and_passes_content(monkeypatch) -> None:
+    """上传种子文件时应提取内部名称与大小并直接传递文件内容。"""
+    captured = {}
+    _patch_manual_download(monkeypatch, captured)
+    torrent_bytes = (
+        b"d4:infod6:lengthi4e4:name20:Frieren.S01E01.1080p"
+        b"12:piece lengthi16384e6:pieces20:01234567890123456789ee"
+    )
+
+    response = download_endpoint.add(
+        torrent_in=schemas.TorrentInfo(
+            torrent_content=base64.b64encode(torrent_bytes).decode("ascii")
+        ),
+        current_user=SimpleNamespace(name="tester"),
+    )
+
+    assert response.success is True
+    assert captured["metainfo"].org_string == "Frieren.S01E01.1080p"
+    assert captured["download"]["torrent_content"] == torrent_bytes
+    assert captured["download"]["save_path"] is None
+    context = captured["download"]["context"]
+    assert context.torrent_info.title == "Frieren.S01E01.1080p"
+    assert context.torrent_info.size == 4.0
+
+
+def test_download_add_extracts_magnet_display_name(monkeypatch) -> None:
+    """磁力链接未指定标题时应使用 dn 参数识别媒体。"""
+    captured = {}
+    _patch_manual_download(monkeypatch, captured)
+    magnet = (
+        "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"
+        "&dn=Frieren.S01E01.1080p"
+    )
+
+    response = download_endpoint.add(
+        torrent_in=schemas.TorrentInfo(enclosure=magnet),
+        current_user=SimpleNamespace(name="tester"),
+    )
+
+    assert response.success is True
+    assert captured["metainfo"].org_string == "Frieren.S01E01.1080p"
+    assert captured["download"]["torrent_content"] is None
+    assert captured["download"]["context"].torrent_info.enclosure == magnet

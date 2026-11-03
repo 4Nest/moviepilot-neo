@@ -4,6 +4,7 @@
 
 import json
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Annotated, Any, Awaitable, Callable, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -11,6 +12,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 
 from app import schemas
+from app.api.endpoints import download as download_endpoint
 from app.chain.download import DownloadChain
 from app.chain.media import MediaChain
 from app.chain.subscribe import SubscribeChain
@@ -199,6 +201,44 @@ async def _tool_download_control(arguments: Dict[str, Any]) -> str:
     return _dumps({"success": bool(ret), "hash": hash_str, "action": action})
 
 
+async def _tool_download_add(arguments: Dict[str, Any]) -> str:
+    """
+    手动添加种子或磁力链接下载并自动识别媒体。
+
+    :param arguments: 种子链接或 Base64 内容，以及可选的识别和下载参数
+    :return: 下载任务 ID 与结果消息的 JSON 文本
+    """
+    enclosure = arguments.get("enclosure")
+    torrent_content = arguments.get("torrent_content")
+    has_enclosure = isinstance(enclosure, str) and bool(enclosure.strip())
+    has_torrent_content = isinstance(torrent_content, str) and bool(torrent_content.strip())
+    if not has_enclosure and not has_torrent_content:
+        raise ValueError("enclosure 与 torrent_content 至少提供一个")
+
+    torrent_in = schemas.TorrentInfo(
+        title=arguments.get("title"),
+        description=arguments.get("description"),
+        enclosure=enclosure,
+        torrent_content=torrent_content,
+    )
+    response = await run_in_threadpool(
+        download_endpoint.add,
+        torrent_in=torrent_in,
+        tmdbid=arguments.get("tmdbid"),
+        media_source=arguments.get("media_source"),
+        media_id=arguments.get("media_id"),
+        downloader=arguments.get("downloader"),
+        save_path=arguments.get("save_path"),
+        allow_unrecognized=arguments.get("allow_unrecognized", False),
+        current_user=SimpleNamespace(name=settings.SUPERUSER),
+    )
+    return _dumps({
+        "success": response.success,
+        "message": response.message,
+        "data": response.data,
+    })
+
+
 async def _tool_system_status(arguments: Dict[str, Any]) -> str:
     """
     查询系统运行状态摘要
@@ -295,6 +335,34 @@ MCP_TOOLS: List[McpTool] = [
             "required": ["hash", "action"],
         },
         handler=_tool_download_control,
+    ),
+    McpTool(
+        name="download.add",
+        description="手动添加种子或磁力链接下载，自动识别媒体信息并分配下载目录",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "enclosure": {"type": "string", "description": "磁力链接或 .torrent HTTP(S) URL"},
+                "torrent_content": {"type": "string", "description": "Base64 编码的 .torrent 文件内容"},
+                "title": {"type": "string", "description": "自定义识别标题，省略时自动提取"},
+                "description": {"type": "string", "description": "种子副标题"},
+                "downloader": {"type": "string", "description": "指定下载器名称，省略时使用默认下载器"},
+                "save_path": {"type": "string", "description": "保存目录，省略时按识别结果自动分配"},
+                "tmdbid": {"type": "integer", "description": "TMDB ID"},
+                "media_source": {
+                    "type": "string",
+                    "enum": ["themoviedb", "douban", "bangumi", "anilist"],
+                    "description": "媒体识别来源",
+                },
+                "media_id": {"type": "string", "description": "来源对应的媒体 ID"},
+                "allow_unrecognized": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "无法识别媒体时是否仍按种子标题下载",
+                },
+            },
+        },
+        handler=_tool_download_add,
     ),
     McpTool(
         name="system.status",

@@ -5,12 +5,15 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from app.api.endpoints import download as download_endpoint
 from app.api.endpoints import mcp as mcp_endpoint
 from app.chain.download import DownloadChain
 from app.chain.subscribe import SubscribeChain
 from app.core.config import settings
+from app.core.context import MediaInfo
 from app.core.event import eventmanager
 from app.db.subscribe_oper import SubscribeOper
+from app.schemas.types import MediaType
 from app.schemas.transfer import DownloaderTorrent
 
 pytestmark = pytest.mark.anyio
@@ -213,6 +216,68 @@ async def test_tools_call_download_control_validates_action(mcp_app, auth_header
         )
     assert response.status_code == 400
     assert response.json()["error"]["code"] == -32602
+
+
+async def test_tools_call_download_add(mcp_app, auth_headers, monkeypatch):
+    captured = {}
+
+    class FakeMediaChain:
+        """返回固定剧集识别结果。"""
+
+        def recognize_by_meta(self, metainfo, **kwargs):
+            """记录自动提取的磁力链标题。"""
+            captured["metainfo"] = metainfo
+            return MediaInfo(title="Frieren", type=MediaType.TV)
+
+    class FakeDownloadChain:
+        """模拟 MCP 手动下载任务提交。"""
+
+        def download_single(self, **kwargs):
+            """记录下载用户并返回任务ID。"""
+            captured["download"] = kwargs
+            return "download-mcp"
+
+    monkeypatch.setattr(download_endpoint, "MediaChain", FakeMediaChain)
+    monkeypatch.setattr(download_endpoint, "DownloadChain", FakeDownloadChain)
+    magnet = (
+        "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"
+        "&dn=Frieren.S01E01.1080p"
+    )
+    async with make_client(mcp_app) as client:
+        response = await client.post(
+            "/mcp",
+            headers=auth_headers,
+            json=make_rpc("tools/call", {
+                "name": "download.add",
+                "arguments": {"enclosure": magnet},
+            }),
+        )
+
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert "isError" not in result
+    payload = json.loads(result["content"][0]["text"])
+    assert payload == {
+        "success": True,
+        "message": None,
+        "data": {"download_id": "download-mcp"},
+    }
+    assert captured["metainfo"].org_string == "Frieren.S01E01.1080p"
+    assert captured["download"]["username"] == settings.SUPERUSER
+
+
+async def test_tools_call_download_add_requires_content(mcp_app, auth_headers):
+    async with make_client(mcp_app) as client:
+        response = await client.post(
+            "/mcp",
+            headers=auth_headers,
+            json=make_rpc("tools/call", {"name": "download.add", "arguments": {}}),
+        )
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == -32602
+    assert "enclosure 与 torrent_content 至少提供一个" in error["data"]
 
 
 async def test_tools_call_unknown_tool_returns_invalid_params(mcp_app, auth_headers):

@@ -26,6 +26,7 @@ JSON-RPC 2.0 over Streamable HTTP 调用媒体搜索、订阅与下载能力。
 | `subscribe.delete` | `id`（必填） | 删除订阅并广播 `SubscribeDeleted` 事件 |
 | `download.list` | `name` | 正在下载的任务列表 |
 | `download.control` | `hash`、`action`（start/stop/delete） | 控制下载任务 |
+| `download.add` | `enclosure` 或 `torrent_content`（至少一项）、`title`、`description`、`downloader`、`save_path`、`tmdbid`、`media_source`、`media_id`、`allow_unrecognized` | 手动添加种子或磁力链接，自动识别媒体并分配下载目录 |
 | `system.status` | 无 | 版本、订阅数、下载中任务数 |
 
 工具结果以 JSON 文本形式放在 `result.content[].text`；参数错误返回 JSON-RPC `-32602`，

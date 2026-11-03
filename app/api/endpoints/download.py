@@ -1,6 +1,9 @@
-from typing import Any, List, Annotated, Literal, Optional
+import base64
+from typing import Any, List, Annotated, Literal, Optional, Tuple
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from fastapi import APIRouter, Depends, Body
+from torrentool.api import Torrent
 
 from app import schemas
 from app.chain.download import DownloadChain
@@ -13,11 +16,74 @@ from app.db.site_oper import SiteOper
 from app.db.systemconfig_oper import SystemConfigOper
 from app.db.user_oper import get_current_admin
 from app.helper.directory import DirectoryHelper
+from app.log import logger
 from app.schemas.types import MediaType, SystemConfigKey
 from app.utils.security import SecurityUtils
 
 router = APIRouter()
 MediaSource = Literal["themoviedb", "douban", "bangumi", "anilist"]
+
+
+def _prepare_manual_torrent(
+    torrent_in: schemas.TorrentInfo,
+) -> Tuple[Optional[bytes], Optional[str]]:
+    """
+    解码手动上传的种子并补全识别标题与文件大小。
+
+    :param torrent_in: 请求中的种子信息，处理成功后原地补全
+    :return: 种子文件内容与错误消息，无需解码时文件内容为 None
+    """
+    torrent_bytes = None
+    if torrent_in.torrent_content:
+        encoded_content = torrent_in.torrent_content
+        if encoded_content.startswith("data:") and ";base64," in encoded_content:
+            encoded_content = encoded_content.split(";base64,", 1)[1]
+        try:
+            torrent_bytes = base64.b64decode(encoded_content, validate=True)
+            parsed_torrent = Torrent.from_string(torrent_bytes)
+        except Exception as err:
+            logger.warning(f"手动种子内容解析失败：{str(err)}")
+            return None, "种子数据有误，请确认链接是否正确"
+        if not (torrent_in.title and torrent_in.title.strip()):
+            torrent_in.title = parsed_torrent.name
+        if not torrent_in.size and parsed_torrent.total_size:
+            torrent_in.size = float(parsed_torrent.total_size)
+
+    if torrent_bytes is None and torrent_in.enclosure:
+        enclosure = torrent_in.enclosure.strip()
+        torrent_in.enclosure = enclosure
+        has_title = bool(torrent_in.title and torrent_in.title.strip())
+        if enclosure.startswith("magnet:") and not has_title:
+            query = parse_qs(urlsplit(enclosure).query)
+            display_name = next(
+                (name.strip() for name in query.get("dn", []) if name.strip()),
+                "",
+            )
+            if display_name:
+                torrent_in.title = display_name
+            else:
+                infohash = next(
+                    (
+                        value.removeprefix("urn:btih:")
+                        for value in query.get("xt", [])
+                        if value.startswith("urn:btih:")
+                        and value.removeprefix("urn:btih:")
+                    ),
+                    "",
+                )
+                torrent_in.title = infohash or enclosure
+        elif enclosure.startswith(("http://", "https://")) and not has_title:
+            filename = unquote(urlsplit(enclosure).path.rsplit("/", 1)[-1])
+            title = filename.removesuffix(".torrent") if filename.endswith(".torrent") else ""
+            torrent_in.title = title or enclosure
+
+    if (
+        torrent_bytes is None
+        and not (torrent_in.enclosure and torrent_in.enclosure.strip())
+        and not (torrent_in.title and torrent_in.title.strip())
+    ):
+        return None, "下载内容为空"
+    return torrent_bytes, None
 
 
 def _prepare_subtitle_download(subtitle: SubtitleInfo) -> tuple[bool, str]:
@@ -137,6 +203,9 @@ def add(
     此时基于种子标题解析结果（名称、年份、电影/电视剧类型）构造最小媒体信息继续下载。
     其他业务失败不携带确认标记。
     """
+    torrent_bytes, err_msg = _prepare_manual_torrent(torrent_in)
+    if err_msg:
+        return schemas.Response(success=False, message=err_msg)
     # 元数据
     metainfo = MetaInfo(title=torrent_in.title, subtitle=torrent_in.description)
     # 媒体信息
@@ -178,6 +247,7 @@ def add(
         downloader=downloader,
         save_path=save_path,
         source="Manual",
+        torrent_content=torrent_bytes,
     )
     if not did:
         return schemas.Response(success=False, message="任务添加失败")
