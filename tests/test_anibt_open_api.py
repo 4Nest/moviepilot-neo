@@ -156,7 +156,7 @@ def test_anibt_async_search_uses_same_public_contract(monkeypatch):
     assert recorder.calls[0]["cookies"] is None
 
 
-def test_anibt_movie_and_later_page_skip_network(monkeypatch):
+def test_anibt_later_page_skips_network(monkeypatch):
     def fail_request(*_args, **_kwargs):
         raise AssertionError("不应请求 AniBT")
 
@@ -166,8 +166,35 @@ def test_anibt_movie_and_later_page_skip_network(monkeypatch):
     )
     spider = AniBTSpider(_indexer())
 
-    assert spider.search("Movie", mtype=MediaType.MOVIE, page=0) == (False, [])
     assert spider.search("Anime", mtype=MediaType.TV, page=1) == (False, [])
+
+
+def test_anibt_movie_search_uses_rss(monkeypatch):
+    recorder = _RequestRecorder()
+    monkeypatch.setattr(
+        "app.modules.indexer.spider.anibt.RequestUtils.get_res",
+        lambda request, **kwargs: recorder.get_res(request, **kwargs),
+    )
+    error, torrents = AniBTSpider(_indexer()).search("GROTESQQQUE", mtype=MediaType.MOVIE, page=0)
+
+    assert error is False
+    assert recorder.calls, "电影类型也应请求 RSS"
+    assert len(torrents) == 1
+
+
+def test_anibt_async_movie_search_uses_rss(monkeypatch):
+    recorder = _RequestRecorder()
+    monkeypatch.setattr(
+        "app.modules.indexer.spider.anibt.AsyncRequestUtils.get_res",
+        lambda request, **kwargs: recorder.async_get_res(request, **kwargs),
+    )
+    error, torrents = asyncio.run(
+        AniBTSpider(_indexer()).async_search("GROTESQQQUE", mtype=MediaType.MOVIE, page=0)
+    )
+
+    assert error is False
+    assert recorder.calls, "异步电影搜索也应请求 RSS"
+    assert len(torrents) == 1
 
 
 def test_indexer_module_dispatches_anibt_by_domain(monkeypatch):

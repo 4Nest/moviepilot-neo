@@ -177,7 +177,8 @@ class AniBTSpider:
         page: Optional[int] = 0,
     ) -> Tuple[bool, List[dict]]:
         """同步搜索 AniBT 动漫资源。"""
-        if mtype == MediaType.MOVIE or int(page or 0) > 0:
+        # RSS 同时收录剧集与剧场版，电影类型不再跳过；无分页游标，后续页仍直接返回空。
+        if int(page or 0) > 0:
             return False, []
         response = RequestUtils(
             headers=self._request_headers(),
@@ -194,7 +195,8 @@ class AniBTSpider:
         page: Optional[int] = 0,
     ) -> Tuple[bool, List[dict]]:
         """异步搜索 AniBT 动漫资源。"""
-        if mtype == MediaType.MOVIE or int(page or 0) > 0:
+        # 与同步搜索一致：RSS 覆盖剧场版，仅跳过分页。
+        if int(page or 0) > 0:
             return False, []
         response = await AsyncRequestUtils(
             headers=self._request_headers(),
