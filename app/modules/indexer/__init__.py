@@ -10,6 +10,7 @@ from app.modules import _ModuleBase
 from app.modules.indexer.parser import SiteParserBase
 from app.modules.indexer.spider import SiteSpider
 from app.modules.indexer.spider.anibt import AniBTSpider
+from app.modules.indexer.spider.mikan import MikanSpider
 from app.modules.indexer.spider.haidan import HaiDanSpider
 from app.modules.indexer.spider.hddolby import HddolbySpider
 from app.modules.indexer.spider.mtorrent import MTorrentSpider
@@ -157,7 +158,7 @@ class IndexerModule(_ModuleBase):
             return []
         logger.info(
             f"{site.get('name')} 搜索完成，耗时 {seconds} 秒，返回数据：{len(result_array)}")
-        site_cookie = None if AniBTSpider.matches(site) else site.get("cookie")
+        site_cookie = None if (AniBTSpider.matches(site) or MikanSpider.matches(site)) else site.get("cookie")
         for result in result_array:
             if result.get("description"):
                 result["description"] = StringUtils.strip_html(result["description"])
@@ -198,6 +199,8 @@ class IndexerModule(_ModuleBase):
         site = site or {}
         if AniBTSpider.matches(site):
             return AniBTSpider.get_search_page_size(keyword=keyword)
+        if MikanSpider.matches(site):
+            return MikanSpider.get_search_page_size(keyword=keyword)
         site_parser = site.get("parser")
         if site_parser in SPIDER_PARSER_CLASSES:
             return SPIDER_PARSER_CLASSES[site_parser].get_search_page_size(keyword=keyword)
@@ -240,6 +243,13 @@ class IndexerModule(_ModuleBase):
         try:
             if AniBTSpider.matches(site):
                 error_flag, result = AniBTSpider(site).search(
+                    keyword=search_word,
+                    mtype=mtype,
+                    cat=cat,
+                    page=page,
+                )
+            elif MikanSpider.matches(site):
+                error_flag, result = MikanSpider(site).search(
                     keyword=search_word,
                     mtype=mtype,
                     cat=cat,
@@ -390,6 +400,13 @@ class IndexerModule(_ModuleBase):
         try:
             if AniBTSpider.matches(site):
                 error_flag, result = await AniBTSpider(site).async_search(
+                    keyword=search_word,
+                    mtype=mtype,
+                    cat=cat,
+                    page=page,
+                )
+            elif MikanSpider.matches(site):
+                error_flag, result = await MikanSpider(site).async_search(
                     keyword=search_word,
                     mtype=mtype,
                     cat=cat,
