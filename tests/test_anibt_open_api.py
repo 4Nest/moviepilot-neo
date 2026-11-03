@@ -156,6 +156,12 @@ def test_anibt_async_search_uses_same_public_contract(monkeypatch):
     assert recorder.calls[0]["cookies"] is None
 
 
+def test_anibt_parse_marks_movie_category_from_title():
+    content = RSS_XML.replace(b"[1080p]", b"[Movie][WebRip]")
+    assert AniBTSpider._parse_xml(content)[0]["category"] == MediaType.MOVIE.value
+    assert AniBTSpider._parse_xml(RSS_XML)[0]["category"] == MediaType.TV.value
+
+
 def test_anibt_later_page_skips_network(monkeypatch):
     def fail_request(*_args, **_kwargs):
         raise AssertionError("不应请求 AniBT")

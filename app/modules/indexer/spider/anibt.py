@@ -141,7 +141,7 @@ class AniBTSpider:
                 "uploadvolumefactor": 1,
                 "labels": labels,
                 "hit_and_run": False,
-                "category": MediaType.TV.value,
+                "category": MediaType.MOVIE.value if "[movie]" in title.lower() else MediaType.TV.value,
             })
         return torrents
 
