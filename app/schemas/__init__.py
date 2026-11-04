@@ -11,6 +11,7 @@ from .monitoring import *
 from .plugin import *
 from .response import *
 from .rule import *
+from .search import *
 from .servarr import *
 from .servcookie import *
 from .site import *

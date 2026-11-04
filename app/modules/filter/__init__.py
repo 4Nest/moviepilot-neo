@@ -1,7 +1,7 @@
 import re
 from copy import deepcopy
 from functools import lru_cache
-from typing import List, Tuple, Union, Dict, Optional
+from typing import Iterator, List, Tuple, Union, Dict, Optional
 
 from app.core.context import TorrentInfo, MediaInfo
 from app.core.metainfo import MetaInfo, clear_rust_parse_options_cache, _rust_parse_options
@@ -150,12 +150,14 @@ class FilterModule(_ModuleBase):
 
     def filter_torrents(self, rule_groups: List[str],
                         torrent_list: List[TorrentInfo],
-                        mediainfo: MediaInfo = None) -> List[TorrentInfo]:
+                        mediainfo: MediaInfo = None,
+                        rejection_details: Optional[List[dict]] = None) -> List[TorrentInfo]:
         """
         过滤种子资源
         :param rule_groups:  过滤规则组名称列表
         :param torrent_list:  资源列表
         :param mediainfo:  媒体信息
+        :param rejection_details:  可选的具体排除原因收集列表
         :return: 过滤后的资源列表，添加资源优先级
         """
         if not rule_groups:
@@ -175,7 +177,8 @@ class FilterModule(_ModuleBase):
                 return self.__filter_torrents_with_python(
                     groups=group_defs,
                     torrent_list=torrent_list,
-                    mediainfo=mediainfo
+                    mediainfo=mediainfo,
+                    rejection_details=rejection_details,
                 )
             matched_orders, traces = self.__parse_rust_filter_result(matched_orders)
             self.__log_rust_filter_traces(traces)
@@ -184,6 +187,20 @@ class FilterModule(_ModuleBase):
                 torrent = torrent_list[index]
                 torrent.pri_order = pri_order
                 ret_torrents.append(torrent)
+            if rejection_details is not None and len(ret_torrents) < len(torrent_list):
+                matched_indices = {index for index, _ in matched_orders}
+                parser = RuleParser()
+                parsed_rule_cache = {}
+                for index, torrent in enumerate(torrent_list):
+                    if index not in matched_indices:
+                        self.__collect_rejection_details(
+                            groups=group_defs,
+                            torrent=torrent,
+                            mediainfo=mediainfo,
+                            parser=parser,
+                            parsed_rule_cache=parsed_rule_cache,
+                            rejection_details=rejection_details,
+                        )
             return ret_torrents
         return torrent_list
 
@@ -210,7 +227,8 @@ class FilterModule(_ModuleBase):
 
     def __filter_torrents_with_python(self, groups: List[dict],
                                       torrent_list: List[TorrentInfo],
-                                      mediainfo: MediaInfo = None) -> List[TorrentInfo]:
+                                      mediainfo: MediaInfo = None,
+                                      rejection_details: Optional[List[dict]] = None) -> List[TorrentInfo]:
         """
         使用 Python 旧路径过滤种子，供 Rust 加速关闭或不可用时兜底。
         """
@@ -228,6 +246,7 @@ class FilterModule(_ModuleBase):
                 mediainfo=mediainfo,
                 parser=parser,
                 parsed_rule_cache=parsed_rule_cache,
+                rejection_details=rejection_details,
             )
             if not ret_torrents:
                 break
@@ -249,7 +268,8 @@ class FilterModule(_ModuleBase):
                           torrent_list: List[TorrentInfo],
                           mediainfo: MediaInfo,
                           parser: RuleParser,
-                          parsed_rule_cache: Dict[str, Union[list, str]]) -> List[TorrentInfo]:
+                          parsed_rule_cache: Dict[str, Union[list, str]],
+                          rejection_details: Optional[List[dict]] = None) -> List[TorrentInfo]:
         """
         过滤种子
         """
@@ -264,10 +284,104 @@ class FilterModule(_ModuleBase):
             if not self.__get_order(torrent, rule_groups, mediainfo, parser, parsed_rule_cache):
                 logger.debug(f"种子 {torrent.site_name} - {torrent.title} {torrent.description or ''} "
                              f"不匹配 {rule_name} 过滤规则")
+                if rejection_details is not None:
+                    rejection_details.extend(self.__explain_rule_group(
+                        rule_groups=rule_groups,
+                        rule_name=rule_name,
+                        torrent=torrent,
+                        mediainfo=mediainfo,
+                        parser=parser,
+                        parsed_rule_cache=parsed_rule_cache,
+                    ))
                 continue
             ret_torrents.append(torrent)
 
         return ret_torrents
+
+    def __collect_rejection_details(
+            self,
+            groups: List[dict],
+            torrent: TorrentInfo,
+            mediainfo: MediaInfo,
+            parser: RuleParser,
+            parsed_rule_cache: Dict[str, Union[list, str]],
+            rejection_details: List[dict],
+    ) -> None:
+        """按规则组顺序找到实际排除资源的规则组并收集明细。"""
+
+        for group in groups:
+            rule_string = group.get("rule_string")
+            if not rule_string:
+                continue
+            rule_name = group.get("name") or rule_string
+            rule_groups = [rule_group.strip() for rule_group in rule_string.split('>')]
+            if self.__get_order(torrent, rule_groups, mediainfo, parser, parsed_rule_cache):
+                continue
+            rejection_details.extend(self.__explain_rule_group(
+                rule_groups=rule_groups,
+                rule_name=rule_name,
+                torrent=torrent,
+                mediainfo=mediainfo,
+                parser=parser,
+                parsed_rule_cache=parsed_rule_cache,
+            ))
+            break
+
+    def __explain_rule_group(
+            self,
+            rule_groups: List[str],
+            rule_name: str,
+            torrent: TorrentInfo,
+            mediainfo: MediaInfo,
+            parser: RuleParser,
+            parsed_rule_cache: Dict[str, Union[list, str]],
+    ) -> List[dict]:
+        """解释资源未命中规则组任何优先级的具体条件。"""
+
+        details = []
+        for rule_group in rule_groups:
+            parsed_group = self.__parse_rule_group(rule_group, parser, parsed_rule_cache)
+            if self.__match_group(torrent, parsed_group, mediainfo):
+                continue
+            group_details = self.__explain_group(
+                torrent=torrent,
+                rule_group=parsed_group,
+                mediainfo=mediainfo,
+                expected=True,
+            )
+            if not group_details:
+                group_details = [{"code": "no_priority_match"}]
+            for detail in group_details:
+                detail.update({"stage": "filter_rules", "rule_group": rule_name, "torrent": torrent})
+            details.extend(group_details)
+        return details
+
+    def __explain_group(
+            self,
+            torrent: TorrentInfo,
+            rule_group: Union[list, str],
+            mediainfo: MediaInfo,
+            expected: bool,
+    ) -> List[dict]:
+        """按布尔表达式语义收集导致表达式不满足期望的规则明细。"""
+
+        if not isinstance(rule_group, list):
+            matched = self.__match_rule(torrent, rule_group, mediainfo)
+            if matched == expected:
+                return []
+            if not expected:
+                return [{"code": "negated_rule_matched", "rule": rule_group}]
+            return self.__explain_rule_mismatches(torrent, rule_group, mediainfo)
+        if len(rule_group) == 1:
+            return self.__explain_group(torrent, rule_group[0], mediainfo, expected)
+        if rule_group[0] == "not":
+            return self.__explain_group(torrent, rule_group[1:], mediainfo, not expected)
+        if rule_group[1] in {"and", "or"}:
+            return [
+                *self.__explain_group(torrent, rule_group[0], mediainfo, expected),
+                *self.__explain_group(torrent, rule_group[2:], mediainfo, expected),
+            ]
+        return []
 
     def __get_order(self, torrent: TorrentInfo, rule_groups: List[str],
                     mediainfo: MediaInfo, parser: RuleParser,
@@ -333,96 +447,106 @@ class FilterModule(_ModuleBase):
         """
         判断种子是否匹配规则项
         """
+        mismatch = next(self.__iter_rule_mismatches(torrent, rule_name, mediainfo), None)
+        if mismatch:
+            logger.debug(f"种子 {torrent.site_name} - {torrent.title} 未通过 {rule_name}：{mismatch['code']}")
+            return False
+        return True
+
+    def __explain_rule_mismatches(
+            self,
+            torrent: TorrentInfo,
+            rule_name: str,
+            mediainfo: MediaInfo,
+    ) -> List[dict]:
+        """列出规则项未满足的全部具体条件。"""
+
+        return [
+            {"rule": rule_name, **detail}
+            for detail in self.__iter_rule_mismatches(torrent, rule_name, mediainfo)
+        ]
+
+    def __iter_rule_mismatches(
+            self,
+            torrent: TorrentInfo,
+            rule_name: str,
+            mediainfo: MediaInfo,
+    ) -> Iterator[dict]:
+        """按需生成规则未匹配项，正常过滤仍在首个失败条件处停止。"""
+
         rule = self.rule_set.get(rule_name)
         if not rule:
-            # 规则不存在
-            logger.debug(f"规则 {rule_name} 不存在")
-            return False
-        # TMDB规则
+            yield {"code": "rule_missing"}
+            return
         tmdb = rule.get("tmdb")
-        # 符合TMDB规则的直接返回True，即不过滤
         if tmdb and self.__match_tmdb(tmdb, mediainfo):
             logger.debug(f"种子 {torrent.site_name} - {torrent.title} 符合 {rule_name} 的TMDB规则，匹配成功")
-            return True
-        # 匹配项：标题、副标题、标签
+            return
+
         content = f"{torrent.title} {torrent.description} {' '.join(torrent.labels or [])}"
-        # 只匹配指定关键字
         match_content = []
-        matchs = rule.get("match") or []
-        if matchs:
-            for match in matchs:
-                if not hasattr(torrent, match):
-                    continue
-                match_value = getattr(torrent, match)
-                if not match_value:
-                    continue
-                if isinstance(match_value, list):
-                    match_content.extend(match_value)
-                else:
-                    match_content.append(match_value)
+        for match in rule.get("match") or []:
+            if not hasattr(torrent, match):
+                continue
+            match_value = getattr(torrent, match)
+            if not match_value:
+                continue
+            if isinstance(match_value, list):
+                match_content.extend(match_value)
+            else:
+                match_content.append(match_value)
         if match_content:
             content = " ".join(match_content)
-        # 包含规则项
+
         includes = rule.get("include") or []
         if not isinstance(includes, list):
             includes = [includes]
-        # 排除规则项
         excludes = rule.get("exclude") or []
         if not isinstance(excludes, list):
             excludes = [excludes]
-        # 大小范围规则项
         size_range = rule.get("size_range")
-        # 做种人数规则项
         seeders = rule.get("seeders")
-        # FREE规则
         downloadvolumefactor = rule.get("downloadvolumefactor")
-        # 发布时间规则
         pubdate: str = rule.get("publish_time")
+
         if includes and not any(_regex_search(include, content) for include in includes):
-            # 未发现任何包含项
-            logger.debug(f"种子 {torrent.site_name} - {torrent.title} 不包含任何项 {includes}")
-            return False
+            yield {"code": "include_missed", "expected": "、".join(str(include) for include in includes)}
         for exclude in excludes:
             if _regex_search(exclude, content):
-                # 发现排除项
-                logger.debug(f"种子 {torrent.site_name} - {torrent.title} 包含 {exclude}")
-                return False
-        if size_range:
-            if not self.__match_size(torrent, size_range):
-                # 大小范围不匹配
-                logger.debug(f"种子 {torrent.site_name} - {torrent.title} 大小 "
-                             f"{StringUtils.str_filesize(torrent.size)} 不在范围 {size_range}MB")
-                return False
-        if seeders:
-            if torrent.seeders < int(seeders):
-                # 做种人数不匹配
-                logger.debug(f"种子 {torrent.site_name} - {torrent.title} 做种人数 {torrent.seeders} 小于 {seeders}")
-                return False
-        if downloadvolumefactor is not None:
-            if torrent.downloadvolumefactor != downloadvolumefactor:
-                # FREE规则不匹配
-                logger.debug(
-                    f"种子 {torrent.site_name} - {torrent.title} FREE值 {torrent.downloadvolumefactor} 不是 {downloadvolumefactor}")
-                return False
+                yield {"code": "exclude_matched", "expected": str(exclude)}
+        if size_range and not self.__match_size(torrent, size_range):
+            yield {
+                "code": "size_mismatch",
+                "expected": f"{size_range} MB",
+                "actual": StringUtils.str_filesize(torrent.size),
+            }
+        if seeders and torrent.seeders < int(seeders):
+            yield {
+                "code": "seeders_mismatch",
+                "expected": str(seeders),
+                "actual": str(torrent.seeders),
+            }
+        if downloadvolumefactor is not None and torrent.downloadvolumefactor != downloadvolumefactor:
+            yield {
+                "code": "free_mismatch",
+                "expected": str(downloadvolumefactor),
+                "actual": str(torrent.downloadvolumefactor),
+            }
         if pubdate:
-            # 种子发布时间
             pub_minutes = torrent.pub_minutes()
-            # 发布时间规则
             pub_times = _parse_publish_time(pubdate)
-            if len(pub_times) == 1:
-                # 发布时间小于规则
-                if pub_minutes < pub_times[0]:
-                    logger.debug(
-                        f"种子 {torrent.site_name} - {torrent.title} 发布时间 {pub_minutes} 小于 {pub_times[0]}")
-                    return False
-            else:
-                # 区间
-                if not (pub_times[0] <= pub_minutes <= pub_times[1]):
-                    logger.debug(
-                        f"种子 {torrent.site_name} - {torrent.title} 发布时间 {pub_minutes} 不在 {pub_times[0]}-{pub_times[1]} 时间区间")
-                    return False
-
-        return True
+            if len(pub_times) == 1 and pub_minutes < pub_times[0]:
+                yield {
+                    "code": "publish_time_mismatch",
+                    "expected": f">= {pub_times[0]} 分钟",
+                    "actual": f"{pub_minutes} 分钟",
+                }
+            elif len(pub_times) > 1 and not (pub_times[0] <= pub_minutes <= pub_times[1]):
+                yield {
+                    "code": "publish_time_mismatch",
+                    "expected": f"{pub_times[0]}-{pub_times[1]} 分钟",
+                    "actual": f"{pub_minutes} 分钟",
+                }
 
     @staticmethod
     def __match_tmdb(tmdb: dict, mediainfo: MediaInfo) -> bool:

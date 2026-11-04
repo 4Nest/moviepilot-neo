@@ -358,3 +358,82 @@ def test_filter_torrent_keeps_extra_filter_semantics():
         torrent_info=torrent,
         filter_params={"size": "<1000"},
     )
+
+
+def test_filter_torrents_explains_boolean_rule_rejections():
+    """排除明细应说明未满足的包含条件和命中的禁止规则。"""
+
+    module = _build_filter_module(
+        rule_string="1080P & !REMUX > 4K",
+        rule_set={
+            "1080P": {"include": "1080p"},
+            "REMUX": {"include": "REMUX"},
+            "4K": {"include": "2160p"},
+        },
+    )
+    keep = TorrentInfo(title="Movie 1080p", description="")
+    missing_resolution = TorrentInfo(title="Movie 720p", description="")
+    excluded_release = TorrentInfo(title="Movie 1080p REMUX", description="")
+    details = []
+
+    with patch("app.modules.filter.rust_accel.is_enabled", return_value=False):
+        filtered = module.filter_torrents(
+            rule_groups=["test"],
+            torrent_list=[keep, missing_resolution, excluded_release],
+            rejection_details=details,
+        )
+
+    assert filtered == [keep]
+    assert {detail["code"] for detail in details} == {"include_missed", "negated_rule_matched"}
+    assert {detail["rule"] for detail in details} == {"1080P", "REMUX", "4K"}
+    assert all(detail["stage"] == "filter_rules" for detail in details)
+    assert all(detail["rule_group"] == "test" for detail in details)
+    assert {id(detail["torrent"]) for detail in details} == {id(missing_resolution), id(excluded_release)}
+
+
+def test_filter_torrents_explains_rust_rejections_without_changing_results():
+    """Rust 判定排除后应补充同一规则语义的具体原因。"""
+
+    module = _build_filter_module(
+        rule_string="1080P",
+        rule_set={"1080P": {"include": "1080p"}},
+    )
+    dropped = TorrentInfo(title="Movie 720p", description="")
+    details = []
+
+    with patch("app.modules.filter.rust_accel.filter_torrents", return_value=[]):
+        filtered = module.filter_torrents(
+            rule_groups=["test"],
+            torrent_list=[dropped],
+            rejection_details=details,
+        )
+
+    assert filtered == []
+    assert details == [{
+        "stage": "filter_rules",
+        "rule_group": "test",
+        "rule": "1080P",
+        "code": "include_missed",
+        "expected": "1080p",
+        "torrent": dropped,
+    }]
+
+
+def test_filter_torrent_reports_parameter_rejection_details():
+    """搜索条件应报告具体排除表达式和实际体积。"""
+
+    torrent = TorrentInfo(title="Movie 1080p", description="", size=3 * 1024 * 1024 * 1024)
+    details = []
+
+    assert not TorrentHelper.filter_torrent(
+        torrent_info=torrent,
+        filter_params={"size": "<1000"},
+        rejection_details=details,
+    )
+    assert details == [{
+        "stage": "filter_params",
+        "code": "param_size_mismatch",
+        "expected": "<= 1000 MB",
+        "actual": "3.0G",
+        "torrent": torrent,
+    }]

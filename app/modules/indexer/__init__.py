@@ -19,7 +19,7 @@ from app.modules.indexer.spider.sunnypt import SunnyPTSpider
 from app.modules.indexer.spider.tnode import TNodeSpider
 from app.modules.indexer.spider.torrentleech import TorrentLeech
 from app.modules.indexer.spider.yema import YemaSpider
-from app.schemas import SiteUserData
+from app.schemas import SiteUserData, report_site_search_outcome
 from app.schemas.types import MediaType, ModuleType, OtherModulesType
 from app.utils.string import StringUtils
 
@@ -104,12 +104,14 @@ class IndexerModule(_ModuleBase):
                 and StringUtils.is_chinese(search_word):
             # 不支持中文
             logger.warn(f"{site.get('name')} 不支持中文搜索")
+            report_site_search_outcome(attempted=False, outcome="empty")
             return False
 
         # 站点流控
         state, msg = SitesHelper().check(StringUtils.get_url_domain(site.get("domain")))
         if state:
             logger.warn(msg)
+            report_site_search_outcome(attempted=False, outcome="cooldown")
             return False
 
         return True
@@ -311,6 +313,7 @@ class IndexerModule(_ModuleBase):
                     page=page
                 )
         except Exception as err:
+            error_flag = True
             logger.error(f"{site.get('name')} 搜索出错：{str(err)}")
 
         # 索引花费的时间
@@ -319,12 +322,17 @@ class IndexerModule(_ModuleBase):
         # 统计索引情况
         self.__indexer_statistic(site=site, error_flag=error_flag, seconds=seconds)
 
-        # 返回结果
-        return self.__parse_result(
+        torrents = self.__parse_result(
             site=site,
             result_array=result,
             seconds=seconds
         )
+        report_site_search_outcome(
+            attempted=True,
+            outcome="error" if error_flag else ("success" if torrents else "empty"),
+            raw_count=len(torrents),
+        )
+        return torrents
 
     def search_subtitles(self, site: dict,
                          keyword: str = None,
@@ -468,6 +476,7 @@ class IndexerModule(_ModuleBase):
                     page=page
                 )
         except Exception as err:
+            error_flag = True
             logger.error(f"{site.get('name')} 搜索出错：{str(err)}")
 
         # 索引花费的时间
@@ -476,12 +485,17 @@ class IndexerModule(_ModuleBase):
         # 统计索引情况
         await self.__async_indexer_statistic(site=site, error_flag=error_flag, seconds=seconds)
 
-        # 返回结果
-        return self.__parse_result(
+        torrents = self.__parse_result(
             site=site,
             result_array=result,
             seconds=seconds
         )
+        report_site_search_outcome(
+            attempted=True,
+            outcome="error" if error_flag else ("success" if torrents else "empty"),
+            raw_count=len(torrents),
+        )
+        return torrents
 
     async def async_search_subtitles(self, site: dict,
                                      keyword: str = None,

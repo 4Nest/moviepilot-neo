@@ -498,10 +498,24 @@ class TorrentHelper:
 
     @staticmethod
     def filter_torrent(torrent_info: TorrentInfo,
-                       filter_params: Dict[str, str]) -> bool:
+                       filter_params: Dict[str, str],
+                       rejection_details: Optional[List[dict]] = None) -> bool:
         """
-        检查种子是否匹配订阅过滤规则
+        检查种子是否匹配订阅过滤规则，并可收集具体排除条件。
         """
+
+        def reject(code: str, expected: str, actual: Optional[str] = None) -> bool:
+            detail = {
+                "stage": "filter_params",
+                "code": code,
+                "expected": expected,
+                "torrent": torrent_info,
+            }
+            if actual is not None:
+                detail["actual"] = actual
+            if rejection_details is not None:
+                rejection_details.append(detail)
+            return False
 
         if not filter_params:
             return True
@@ -517,31 +531,31 @@ class TorrentHelper:
         if include:
             if not _filter_pattern_search(include, content):
                 logger.info(f"{content} 不匹配包含规则 {include}")
-                return False
+                return reject("param_include_missed", include)
         # 排除
         exclude = filter_params.get("exclude")
         if exclude:
             if _filter_pattern_search(exclude, content):
                 logger.info(f"{content} 匹配排除规则 {exclude}")
-                return False
+                return reject("param_exclude_matched", exclude)
         # 质量
         quality = filter_params.get("quality")
         if quality:
             if not _filter_pattern_search(quality, torrent_info.title):
                 logger.info(f"{torrent_info.title} 不匹配质量规则 {quality}")
-                return False
+                return reject("param_quality_missed", quality)
         # 分辨率
         resolution = filter_params.get("resolution")
         if resolution:
             if not _filter_pattern_search(resolution, torrent_info.title):
                 logger.info(f"{torrent_info.title} 不匹配分辨率规则 {resolution}")
-                return False
+                return reject("param_resolution_missed", resolution)
         # 特效
         effect = filter_params.get("effect")
         if effect:
             if not _filter_pattern_search(effect, torrent_info.title):
                 logger.info(f"{torrent_info.title} 不匹配特效规则 {effect}")
-                return False
+                return reject("param_effect_missed", effect)
 
         # 大小
         size_range = filter_params.get("size")
@@ -550,15 +564,15 @@ class TorrentHelper:
             if size_rule == "between":
                 # 区间
                 if torrent_info.size < size_min or torrent_info.size > size_max:
-                    return False
+                    return reject("param_size_mismatch", f"{size_range} MB", StringUtils.str_filesize(torrent_info.size))
             elif size_rule == "gte":
                 # 大于
                 if torrent_info.size < size_min:
-                    return False
+                    return reject("param_size_mismatch", f">= {size_range[1:].strip()} MB", StringUtils.str_filesize(torrent_info.size))
             elif size_rule == "lte":
                 # 小于
                 if torrent_info.size > size_max:
-                    return False
+                    return reject("param_size_mismatch", f"<= {size_range[1:].strip()} MB", StringUtils.str_filesize(torrent_info.size))
 
         return True
 

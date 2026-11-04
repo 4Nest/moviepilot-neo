@@ -1324,6 +1324,7 @@ class ChainBase(metaclass=ABCMeta):
             rule_groups: List[str],
             torrent_list: List[TorrentInfo],
             mediainfo: MediaInfo = None,
+            rejection_details: Optional[List[dict]] = None,
     ) -> List[TorrentInfo]:
         """
         过滤种子资源
@@ -1337,6 +1338,7 @@ class ChainBase(metaclass=ABCMeta):
             rule_groups=rule_groups,
             torrent_list=torrent_list,
             mediainfo=mediainfo,
+            rejection_details=rejection_details,
         )
 
     def download(

@@ -2,7 +2,7 @@ from typing import List, Optional
 
 from app.core.context import MediaInfo
 from app.db.systemconfig_oper import SystemConfigOper
-from app.schemas import FilterRuleGroup, CustomRule
+from app.schemas import FilterRuleGroup, CustomRule, SearchDiagnosticRuleGroup
 from app.schemas.types import SystemConfigKey
 
 
@@ -42,11 +42,51 @@ class RuleHelper:
         for group in rule_groups:
             if not group.media_type:
                 ret_groups.append(group)
-            elif media and not group.category and group.media_type == media.type.value:
+            elif media and not group.category and media.type and group.media_type == media.type.value:
                 ret_groups.append(group)
             elif media and group.category == media.category:
                 ret_groups.append(group)
         return ret_groups
+
+    def explain_rule_groups(
+            self,
+            media: Optional[MediaInfo] = None,
+            group_names: Optional[List[str]] = None,
+    ) -> List[SearchDiagnosticRuleGroup]:
+        """
+        使用现有规则组选择策略说明所选规则组的适用范围，不执行资源过滤。
+
+        :param media: 当前媒体上下文
+        :param group_names: 本次搜索选择的规则组名称
+        :return: 按选择去重顺序排列的规则适用性诊断
+        """
+        if not group_names:
+            return []
+        configured = {group.name: group for group in self.get_rule_groups()}
+        effective = {
+            group.name
+            for group in self.get_rule_group_by_media(media=media, group_names=group_names)
+        }
+        diagnostics = []
+        for name in dict.fromkeys(group_names):
+            group = configured.get(name)
+            if group is None:
+                status = "skipped"
+                reason = "rule_group_missing"
+            elif name not in effective:
+                status = "skipped"
+                reason = "rule_group_not_applicable"
+            else:
+                status = "effective"
+                reason = None
+            diagnostics.append(SearchDiagnosticRuleGroup(
+                name=name,
+                status=status,
+                reason=reason,
+                media_type=group.media_type if group else None,
+                categories=[group.category] if group and group.category else [],
+            ))
+        return diagnostics
 
     @staticmethod
     def get_custom_rules() -> List[CustomRule]:

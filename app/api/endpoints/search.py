@@ -376,10 +376,22 @@ async def search_latest_context(_: schemas.TokenPayload = Depends(verify_token))
         results = await search_chain.async_last_subtitle_search_results() or []
     else:
         results = await search_chain.async_last_search_results() or []
+    diagnostics = (
+        None
+        if params.get("result_type") == "subtitle"
+        else await search_chain.async_last_search_diagnostics()
+    )
+    rejected_results = (
+        []
+        if params.get("result_type") == "subtitle"
+        else await search_chain.async_last_rejected_search_results()
+    )
     return schemas.Response(
         success=True,
         data={
             "params": params,
+            "diagnostics": diagnostics,
+            "rejected_results": rejected_results,
             "results": _serialize_signed_subtitle_results(results)
             if params.get("result_type") == "subtitle"
             else [result.to_dict() for result in results],

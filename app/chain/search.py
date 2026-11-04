@@ -1,9 +1,11 @@
 import asyncio
 import random
 import time
+from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime
 from typing import AsyncIterator, Any, Dict, Tuple, List, Optional
+from uuid import uuid4
 
 from fastapi.concurrency import run_in_threadpool
 
@@ -15,10 +17,21 @@ from app.core.event import eventmanager, Event
 from app.core.metainfo import MetaInfo
 from app.db.systemconfig_oper import SystemConfigOper
 from app.helper.progress import ProgressHelper
+from app.helper.rule import RuleHelper
 from app.helper.site import SitesHelper
 from app.helper.torrent import TorrentHelper
 from app.log import logger
-from app.schemas import NotExistMediaInfo
+from app.schemas import (
+    NotExistMediaInfo,
+    SearchDiagnosticCounts,
+    SearchDiagnosticRejection,
+    SearchDiagnosticRejectionDetail,
+    SearchDiagnosticRuleGroup,
+    SearchDiagnosticSite,
+    SearchDiagnosticWarning,
+    SearchDiagnostics,
+    capture_site_search_observation,
+)
 from app.schemas.types import MediaType, ProgressKey, SystemConfigKey, EventType
 from app.utils.media import build_media_key, resolve_media_identity
 from app.utils.string import StringUtils
@@ -30,8 +43,11 @@ class SearchChain(ChainBase):
     """
 
     __result_temp_file = "__search_result__"
+    __rejected_result_temp_file = "__search_rejected_result__"
     __subtitle_result_temp_file = "__subtitle_search_result__"
     __search_params_temp_file = "__search_params__"
+    __search_diagnostics_temp_file = "__search_diagnostics__"
+    _OUTCOME_PRIORITY = {"empty": 0, "success": 1, "unknown": 2, "cooldown": 3, "error": 4}
 
     @staticmethod
     def _get_search_resource_pages() -> int:
@@ -174,7 +190,8 @@ class SearchChain(ChainBase):
         )
         if params:
             self.save_cache(params, self.__search_params_temp_file)
-
+            self.save_cache(None, self.__search_diagnostics_temp_file)
+            self.save_cache(None, self.__rejected_result_temp_file)
     async def async_save_last_search_params(
             self,
             *,
@@ -206,6 +223,167 @@ class SearchChain(ChainBase):
         )
         if params:
             await self.async_save_cache(params, self.__search_params_temp_file)
+            await self.async_save_cache(None, self.__search_diagnostics_temp_file)
+            await self.async_save_cache(None, self.__rejected_result_temp_file)
+
+    async def async_save_last_search_diagnostics(self, diagnostics: Optional[SearchDiagnostics]) -> None:
+        """异步缓存最近一次完整搜索的诊断快照。"""
+
+        await self.async_save_cache(diagnostics, self.__search_diagnostics_temp_file)
+
+    async def async_last_search_diagnostics(self) -> Optional[Dict[str, Any]]:
+        """异步获取最近一次完整搜索的 JSON 诊断快照。"""
+
+        diagnostics = await self.async_load_cache(self.__search_diagnostics_temp_file)
+        if isinstance(diagnostics, SearchDiagnostics):
+            return diagnostics.model_dump(mode="json")
+        return diagnostics if isinstance(diagnostics, dict) else None
+
+    async def async_last_rejected_search_results(self) -> List[Dict[str, Any]]:
+        """异步获取最近一次资源搜索被过滤的资源及原因列表。"""
+
+        rejected = await self.async_load_cache(self.__rejected_result_temp_file)
+        return rejected if isinstance(rejected, list) else []
+
+    @staticmethod
+    def _serialize_rejection_details(details: List[dict]) -> List[Dict[str, Any]]:
+        """将原始排除原因明细转换为对外 JSON 结构，剥离内部种子对象。"""
+
+        return [
+            SearchDiagnosticRejectionDetail(
+                code=detail["code"],
+                count=1,
+                rule_group=detail.get("rule_group"),
+                rule=detail.get("rule"),
+                expected=detail.get("expected"),
+                actual=detail.get("actual"),
+            ).model_dump(mode="json")
+            for detail in details
+            if detail.get("code")
+        ]
+
+    @classmethod
+    def _collect_rejected_items(
+            cls,
+            *,
+            torrents: List[TorrentInfo],
+            retained_torrents: List[TorrentInfo],
+            rejection_details: List[dict],
+            rejected_items: List[dict],
+            mediainfo: Optional[MediaInfo] = None,
+    ) -> None:
+        """按种子对象身份收集未保留候选及其对应的排除原因。"""
+
+        retained_ids = {id(torrent) for torrent in retained_torrents}
+        details_by_torrent: Dict[int, List[dict]] = {}
+        for detail in rejection_details:
+            torrent = detail.get("torrent")
+            if torrent is not None:
+                details_by_torrent.setdefault(id(torrent), []).append(detail)
+
+        for torrent in torrents:
+            if id(torrent) in retained_ids:
+                continue
+            reasons = cls._serialize_rejection_details(details_by_torrent.get(id(torrent), []))
+            if not reasons:
+                continue
+            context = Context(
+                meta_info=MetaInfo(title=torrent.title, subtitle=torrent.description),
+                media_info=mediainfo,
+                torrent_info=torrent,
+                resource_source="search",
+                media_info_is_target=mediainfo is not None,
+            )
+            rejected_items.append({
+                "context": context.to_dict(),
+                "reasons": reasons,
+            })
+    @classmethod
+    def _build_search_diagnostics(
+            cls,
+            *,
+            observations: List[SearchDiagnosticSite],
+            candidates: int,
+            retained: int,
+            counts: Counter,
+            mediainfo: Optional[MediaInfo] = None,
+            rule_groups: Optional[List[str]] = None,
+            rejection_details: Optional[List[dict]] = None,
+    ) -> SearchDiagnostics:
+        """合并站点观察与过滤计数，构造完整搜索诊断。"""
+
+        sites: Dict[Optional[int], SearchDiagnosticSite] = {}
+        warning_codes = set()
+        for observation in observations:
+            if observation.outcome in {"error", "cooldown", "unknown"}:
+                warning_codes.add(
+                    "provider_outcome_unknown"
+                    if observation.outcome == "unknown"
+                    else f"provider_{observation.outcome}"
+                )
+            if observation.site_id not in sites:
+                sites[observation.site_id] = observation.model_copy(deep=True)
+                continue
+            site = sites[observation.site_id]
+            site.raw_count += observation.raw_count
+            site.attempted = site.attempted or observation.attempted
+            if cls._OUTCOME_PRIORITY[observation.outcome] > cls._OUTCOME_PRIORITY[site.outcome]:
+                site.outcome = observation.outcome
+
+        explained_rules: List[SearchDiagnosticRuleGroup] = RuleHelper().explain_rule_groups(
+            media=mediainfo,
+            group_names=rule_groups or [],
+        )
+        warnings = [
+            SearchDiagnosticWarning(code=rule.reason, rule_group=rule.name)
+            for rule in explained_rules
+            if rule.reason
+        ]
+        warnings.extend(SearchDiagnosticWarning(code=code) for code in sorted(warning_codes))
+        detail_counts = Counter()
+        for detail in rejection_details or []:
+            if not detail.get("stage"):
+                continue
+            key = (
+                detail.get("stage"),
+                detail.get("code"),
+                detail.get("rule_group"),
+                detail.get("rule"),
+                detail.get("expected"),
+                detail.get("actual"),
+            )
+            detail_counts[key] += 1
+        def build_details(stage: str) -> List[SearchDiagnosticRejectionDetail]:
+            return [
+                SearchDiagnosticRejectionDetail(
+                    code=key[1],
+                    count=count,
+                    rule_group=key[2],
+                    rule=key[3],
+                    expected=key[4],
+                    actual=key[5],
+                )
+                for key, count in sorted(
+                    detail_counts.items(),
+                    key=lambda item: tuple(str(value or "") for value in item[0]),
+                )
+                if key[0] == stage
+            ]
+
+        return SearchDiagnostics(
+            version=1,
+            search_id=uuid4().hex,
+            scope="search",
+            searched_sites=list(sites.values()),
+            stage_counts=SearchDiagnosticCounts(candidates=candidates, retained=retained),
+            rejection_reasons=[
+                SearchDiagnosticRejection(code=code, count=count, details=build_details(code))
+                for code, count in sorted(counts.items())
+                if count
+            ],
+            rule_groups=explained_rules,
+            warnings=warnings,
+        )
 
     def last_search_params(self) -> Optional[Dict[str, str]]:
         """
@@ -647,14 +825,41 @@ class SearchChain(ChainBase):
             logger.info(f'开始渐进式浏览资源，站点：{sites} ...')
 
         contexts: List[Context] = []
+        observations: List[SearchDiagnosticSite] = []
+        counts = Counter()
+        rejection_details = []
+        rejected_items: List[dict] = []
+        candidates = 0
         rule_groups: List[str] = SystemConfigOper().get(SystemConfigKey.SearchFilterRuleGroups) or []
         async for event in self.__async_search_all_sites_stream(keyword=title, sites=sites, page=page):
             result = event.pop("items", []) or []
-            result = await run_in_threadpool(
+            candidates += len(result)
+            site_diagnostic = event.pop("site_diagnostic", None)
+            if site_diagnostic is None and (event.get("site") is not None or event.get("site_id") is not None):
+                site_diagnostic = SearchDiagnosticSite(
+                    site_id=event.get("site_id"),
+                    site_name=event.get("site") or "未知站点",
+                    attempted=True,
+                    outcome="success" if result else "empty",
+                    raw_count=len(result),
+                )
+            if site_diagnostic is not None:
+                observations.append(site_diagnostic)
+            detail_offset = len(rejection_details)
+            filtered_result = await run_in_threadpool(
                 self.__filter_title_search_torrents,
                 torrents=result,
                 rule_groups=rule_groups,
+                rejection_details=rejection_details,
             )
+            counts["filter_rules"] += len(result) - len(filtered_result)
+            self._collect_rejected_items(
+                torrents=result,
+                retained_torrents=filtered_result,
+                rejection_details=rejection_details[detail_offset:],
+                rejected_items=rejected_items,
+            )
+            result = filtered_result
             batch_contexts = [
                 Context(
                     meta_info=MetaInfo(title=torrent.title, subtitle=torrent.description),
@@ -672,8 +877,18 @@ class SearchChain(ChainBase):
                 "total_items": len(contexts)
             }
 
+        diagnostics = self._build_search_diagnostics(
+            observations=observations,
+            candidates=candidates,
+            retained=len(contexts),
+            counts=counts,
+            rule_groups=rule_groups,
+            rejection_details=rejection_details,
+        )
         if cache_local:
             await self.async_save_cache(contexts, self.__result_temp_file)
+            await self.async_save_last_search_diagnostics(diagnostics)
+            await self.async_save_cache(rejected_items, self.__rejected_result_temp_file)
 
         if not contexts:
             logger.warn(f'{title} 未搜索到资源')
@@ -681,12 +896,15 @@ class SearchChain(ChainBase):
             "type": "done",
             "text": f"搜索完成，共 {len(contexts)} 个资源",
             "items": [context.to_dict() for context in contexts],
-            "total_items": len(contexts)
+            "total_items": len(contexts),
+            "diagnostics": diagnostics.model_dump(mode="json"),
+            "rejected_items": rejected_items,
         }
 
     def __filter_title_search_torrents(self,
                                        torrents: List[TorrentInfo],
-                                       rule_groups: Optional[List[str]] = None) -> List[TorrentInfo]:
+                                       rule_groups: Optional[List[str]] = None,
+                                       rejection_details: Optional[List[dict]] = None) -> List[TorrentInfo]:
         """
         对标题搜索结果应用默认搜索过滤规则，不执行媒体识别和标题精确匹配。
         """
@@ -703,6 +921,7 @@ class SearchChain(ChainBase):
             rule_groups=rule_groups,
             torrent_list=torrents,
             mediainfo=None,
+            rejection_details=rejection_details,
         ) or []
         logger.info(f'标题搜索过滤完成，剩余 {len(filtered_torrents)} 个资源')
         return filtered_torrents
@@ -757,6 +976,15 @@ class SearchChain(ChainBase):
         async for event in self.async_process_stream(mediainfo=mediainfo, sites=sites, area=area, no_exists=no_exists):
             if event.get("type") == "done":
                 contexts = event.get("contexts") or []
+                if cache_local:
+                    await self.async_save_cache(
+                        event.get("diagnostics"),
+                        self.__search_diagnostics_temp_file,
+                    )
+                    await self.async_save_cache(
+                        event.get("rejected_items") or [],
+                        self.__rejected_result_temp_file,
+                    )
                 event = {
                     key: value
                     for key, value in event.items()
@@ -766,7 +994,6 @@ class SearchChain(ChainBase):
 
         if cache_local:
             await self.async_save_cache(contexts, self.__result_temp_file)
-
     @staticmethod
     def __prepare_params(mediainfo: MediaInfo,
                          keyword: Optional[str] = None,
@@ -811,38 +1038,50 @@ class SearchChain(ChainBase):
                        rule_groups: List[str] = None,
                        season_episodes: Dict[int, List[int]] = None,
                        custom_words: List[str] = None,
-                       filter_params: Dict[str, str] = None) -> List[Context]:
+                       filter_params: Dict[str, str] = None,
+                       diagnostics: Optional[Counter] = None,
+                       rejection_details: Optional[List[dict]] = None,
+                       rejected_items: Optional[List[dict]] = None) -> List[Context]:
         """
         处理搜索结果
         """
-
-        def __do_filter(torrent_list: List[TorrentInfo]) -> List[TorrentInfo]:
+        if rejected_items is not None and rejection_details is None:
+            rejection_details = []
+        candidate_torrents = list(torrents) if rejected_items is not None else None
+        def __do_filter(torrent_list: List[TorrentInfo], site_details: List[dict]) -> List[TorrentInfo]:
             """
-            执行优先级过滤
+            执行优先级过滤并收集具体规则明细
             """
             return self.filter_torrents(rule_groups=rule_groups,
                                         torrent_list=torrent_list,
-                                        mediainfo=mediainfo) or []
+                                        mediainfo=mediainfo,
+                                        rejection_details=site_details) or []
 
-        def __do_site_filter(torrent_list: List[TorrentInfo]) -> List[TorrentInfo]:
+        def __do_site_filter(torrent_list: List[TorrentInfo]) -> Tuple[List[TorrentInfo], Counter, List[dict]]:
             """
-            执行单个站点的过滤流程
+            执行单个站点的过滤流程并返回本站点独立计数与明细。
             """
+            site_counts = Counter()
+            site_details = []
             if not torrent_list:
-                return []
+                return [], site_counts, site_details
 
             filtered_torrents = torrent_list
             if filter_params:
                 handler = TorrentHelper()
+                before_count = len(filtered_torrents)
                 filtered_torrents = [
                     t for t in filtered_torrents
-                    if handler.filter_torrent(t, filter_params)
+                    if handler.filter_torrent(t, filter_params, rejection_details=site_details)
                 ]
+                site_counts["filter_params"] += before_count - len(filtered_torrents)
 
             if rule_groups and filtered_torrents:
-                filtered_torrents = __do_filter(filtered_torrents)
+                before_count = len(filtered_torrents)
+                filtered_torrents = __do_filter(filtered_torrents, site_details)
+                site_counts["filter_rules"] += before_count - len(filtered_torrents)
 
-            return filtered_torrents
+            return filtered_torrents, site_counts, site_details
 
         def __do_parallel_filter(torrent_list: List[TorrentInfo]) -> List[TorrentInfo]:
             """
@@ -859,7 +1098,12 @@ class SearchChain(ChainBase):
                 site_torrents[site_key].append(t)
 
             if len(site_torrents) <= 1:
-                return __do_site_filter(torrent_list)
+                filtered_torrents, site_counts, site_details = __do_site_filter(torrent_list)
+                if diagnostics is not None:
+                    diagnostics.update(site_counts)
+                if rejection_details is not None:
+                    rejection_details.extend(site_details)
+                return filtered_torrents
 
             finished_count = 0
             filtered_by_site: Dict[Tuple[Optional[int], Optional[str]], List[TorrentInfo]] = {}
@@ -871,7 +1115,12 @@ class SearchChain(ChainBase):
                 }
                 for future in as_completed(all_tasks):
                     finished_count += 1
-                    filtered_by_site[all_tasks[future]] = future.result() or []
+                    filtered_torrents, site_counts, site_details = future.result()
+                    filtered_by_site[all_tasks[future]] = filtered_torrents
+                    if diagnostics is not None:
+                        diagnostics.update(site_counts)
+                    if rejection_details is not None:
+                        rejection_details.extend(site_details)
                     progress.update(
                         value=finished_count / len(site_torrents) * 50,
                         text=f'正在过滤，已完成 {finished_count} / {len(site_torrents)} 个站点 ...'
@@ -907,9 +1156,16 @@ class SearchChain(ChainBase):
         if rule_groups:
             if not torrents:
                 logger.warn(f'{keyword or mediainfo.title} 没有符合过滤规则的资源')
+                if rejected_items is not None:
+                    self._collect_rejected_items(
+                        torrents=candidate_torrents or [],
+                        retained_torrents=[],
+                        rejection_details=rejection_details or [],
+                        rejected_items=rejected_items,
+                        mediainfo=mediainfo,
+                    )
                 return []
             logger.info(f"过滤规则/剧集过滤完成，剩余 {len(torrents)} 个资源")
-
         # 过滤完成
         progress.update(value=50, text=f'过滤完成，剩余 {len(torrents)} 个资源')
 
@@ -931,6 +1187,10 @@ class SearchChain(ChainBase):
                 progress.update(value=(_count / _total) * 96,
                                 text=f'正在匹配 {torrent.site_name}，已完成 {_count} / {_total} ...')
                 if not torrent.title:
+                    if diagnostics is not None:
+                        diagnostics["title_missing"] += 1
+                    if rejected_items is not None:
+                        rejection_details.append({"code": "title_missing", "torrent": torrent})
                     continue
 
                 # 识别元数据
@@ -943,6 +1203,10 @@ class SearchChain(ChainBase):
                         and not TorrentHelper.match_season_episodes(torrent=torrent,
                                                                     meta=torrent_meta,
                                                                     season_episodes=season_episodes):
+                    if diagnostics is not None:
+                        diagnostics["scope_mismatch"] += 1
+                    if rejected_items is not None:
+                        rejection_details.append({"code": "scope_mismatch", "torrent": torrent})
                     continue
                 # 比对IMDBID
                 if torrent.imdbid \
@@ -959,8 +1223,10 @@ class SearchChain(ChainBase):
                     # 匹配成功
                     _match_torrents.append((torrent, torrent_meta, "title"))
                     continue
-            # 匹配完成
-            logger.info(f"匹配完成，共匹配到 {len(_match_torrents)} 个资源")
+                if diagnostics is not None:
+                    diagnostics["identity_mismatch"] += 1
+                if rejected_items is not None:
+                    rejection_details.append({"code": "identity_mismatch", "torrent": torrent})
             progress.update(value=97,
                             text=f'匹配完成，共匹配到 {len(_match_torrents)} 个资源')
 
@@ -996,7 +1262,25 @@ class SearchChain(ChainBase):
         progress.end()
 
         # 去重后返回
-        return self.__remove_duplicate(contexts)
+        before_dedup = len(contexts)
+        deduplicated_contexts = self.__remove_duplicate(contexts)
+        if rejected_items is not None and len(deduplicated_contexts) < before_dedup:
+            retained_ids = {id(context.torrent_info) for context in deduplicated_contexts}
+            for context in contexts:
+                if id(context.torrent_info) not in retained_ids:
+                    rejection_details.append({"code": "duplicate", "torrent": context.torrent_info})
+        contexts = deduplicated_contexts
+        if diagnostics is not None:
+            diagnostics["duplicate"] += before_dedup - len(contexts)
+        if rejected_items is not None:
+            self._collect_rejected_items(
+                torrents=candidate_torrents or [],
+                retained_torrents=[context.torrent_info for context in contexts],
+                rejection_details=rejection_details or [],
+                rejected_items=rejected_items,
+                mediainfo=mediainfo,
+            )
+        return contexts
 
     @staticmethod
     def __remove_duplicate(_torrents: List[Context]) -> List[Context]:
@@ -1216,6 +1500,10 @@ class SearchChain(ChainBase):
 
         torrents: List[TorrentInfo] = []
         candidate_contexts: List[Context] = []
+        observations: List[SearchDiagnosticSite] = []
+        counts = Counter()
+        rejection_details = []
+        rejected_items: List[dict] = []
         search_count = 0
 
         for search_word in keywords:
@@ -1229,6 +1517,17 @@ class SearchChain(ChainBase):
                     sites=sites,
                     area=area):
                 result = event.pop("items", []) or []
+                site_diagnostic = event.pop("site_diagnostic", None)
+                if site_diagnostic is None and (event.get("site") is not None or event.get("site_id") is not None):
+                    site_diagnostic = SearchDiagnosticSite(
+                        site_id=event.get("site_id"),
+                        site_name=event.get("site") or "未知站点",
+                        attempted=True,
+                        outcome="success" if result else "empty",
+                        raw_count=len(result),
+                    )
+                if site_diagnostic is not None:
+                    observations.append(site_diagnostic)
                 torrents.extend(result)
                 batch_contexts = [
                     Context(
@@ -1261,6 +1560,7 @@ class SearchChain(ChainBase):
             "text": f"正在过滤匹配 {len(torrents)} 个候选资源 ..."
         }
 
+        candidates = len(torrents)
         contexts = await run_in_threadpool(self.__parse_result,
                                            torrents=torrents,
                                            mediainfo=mediainfo,
@@ -1268,7 +1568,22 @@ class SearchChain(ChainBase):
                                            rule_groups=rule_groups,
                                            season_episodes=season_episodes,
                                            custom_words=custom_words,
-                                           filter_params=filter_params)
+                                           filter_params=filter_params,
+                                           diagnostics=counts,
+                                           rejection_details=rejection_details,
+                                           rejected_items=rejected_items)
+        diagnostics_rule_groups = rule_groups
+        if diagnostics_rule_groups is None:
+            diagnostics_rule_groups = SystemConfigOper().get(SystemConfigKey.SearchFilterRuleGroups)
+        diagnostics = self._build_search_diagnostics(
+            observations=observations,
+            candidates=candidates,
+            retained=len(contexts),
+            counts=counts,
+            mediainfo=mediainfo,
+            rule_groups=diagnostics_rule_groups,
+            rejection_details=rejection_details,
+        )
         final_items = [context.to_dict() for context in contexts]
         yield {
             "type": "replace",
@@ -1284,7 +1599,9 @@ class SearchChain(ChainBase):
             "text": f"搜索完成，共 {len(contexts)} 个资源",
             "items": final_items,
             "total_items": len(contexts),
-            "contexts": contexts
+            "contexts": contexts,
+            "diagnostics": diagnostics.model_dump(mode="json"),
+            "rejected_items": rejected_items,
         }
 
     @staticmethod
@@ -1912,22 +2229,40 @@ class SearchChain(ChainBase):
 
         semaphore = asyncio.Semaphore(settings.CONF.threadpool or total_num)
 
-        async def search_site(site: dict, search_page: int) -> List[TorrentInfo]:
+        async def search_site(site: dict, search_page: int) -> Tuple[List[TorrentInfo], SearchDiagnosticSite]:
             """
-            搜索单个站点页，用于渐进式返回入口。
+            搜索单个站点页，并返回本次请求的可信状态观察。
             """
             async with semaphore:
-                if area == "imdbid":
-                    site_result = await self.async_search_torrents(site=site,
-                                                                   keyword=mediainfo.imdb_id if mediainfo else None,
-                                                                   mtype=mediainfo.type if mediainfo else None,
-                                                                   page=search_page)
+                with capture_site_search_observation() as observation:
+                    if area == "imdbid":
+                        site_result = await self.async_search_torrents(site=site,
+                                                                       keyword=mediainfo.imdb_id if mediainfo else None,
+                                                                       mtype=mediainfo.type if mediainfo else None,
+                                                                       page=search_page)
+                    else:
+                        site_result = await self.async_search_torrents(site=site,
+                                                                       keyword=keyword,
+                                                                       mtype=mediainfo.type if mediainfo else None,
+                                                                       page=search_page)
+                site_result = site_result or []
+                if observation.reported:
+                    site_diagnostic = SearchDiagnosticSite(
+                        site_id=site.get("id"),
+                        site_name=site.get("name") or "未知站点",
+                        attempted=observation.attempted,
+                        outcome=observation.outcome,
+                        raw_count=observation.raw_count,
+                    )
                 else:
-                    site_result = await self.async_search_torrents(site=site,
-                                                                   keyword=keyword,
-                                                                   mtype=mediainfo.type if mediainfo else None,
-                                                                   page=search_page)
-                return site_result or []
+                    site_diagnostic = SearchDiagnosticSite(
+                        site_id=site.get("id"),
+                        site_name=site.get("name") or "未知站点",
+                        attempted=True,
+                        outcome="success" if site_result else "empty",
+                        raw_count=len(site_result),
+                    )
+                return site_result, site_diagnostic
 
         tasks = {}
 
@@ -1955,7 +2290,7 @@ class SearchChain(ChainBase):
                 for future in done_tasks:
                     site, page_index, search_page, search_keyword = tasks.pop(future)
                     finish_count += 1
-                    result = await future
+                    result, site_diagnostic = await future
                     results_count += len(result)
                     if (
                         self._should_continue_search_pages(
@@ -1980,6 +2315,7 @@ class SearchChain(ChainBase):
                         "items": result,
                         "site": site.get("name"),
                         "site_id": site.get("id"),
+                        "site_diagnostic": site_diagnostic,
                         "page": search_page,
                         "finished": finish_count,
                         "total": total_num,
