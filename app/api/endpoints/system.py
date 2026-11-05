@@ -90,6 +90,7 @@ _NOTIFICATION_SECRET_FIELDS = {
         "WECHAT_ENCODING_AESKEY",
         "WECHAT_BOT_SECRET",
     },
+    "apppush": {"PUSH_RELAY_KEY"},
 }
 _NOTIFICATION_TEST_COOLDOWN_SECONDS = 5.0
 _notification_test_slots = threading.BoundedSemaphore(3)
@@ -175,7 +176,7 @@ def _is_secret_field(field: Any) -> bool:
     if not isinstance(field, str):
         return False
     upper_field = field.upper()
-    return upper_field.endswith(("_TOKEN", "_SECRET", "_PASSWORD", "_API_KEY", "_AESKEY"))
+    return upper_field.endswith(("_TOKEN", "_SECRET", "_PASSWORD", "_API_KEY", "_AESKEY", "_KEY"))
 
 
 def _mask_notification_item(item: dict) -> dict:
@@ -357,6 +358,11 @@ def _send_test_notification(conf: schemas.NotificationConf) -> tuple[bool, Optio
         except (requests.RequestException, ValueError) as err:
             logger.warning(f"发送 Telegram 测试通知失败：{type(err).__name__}")
             return False, _classify_notification_test_error(err)
+
+    if conf.type == "apppush":
+        from app.modules.apppush import AppPushModule
+
+        return AppPushModule().send_test_with_config(conf)
 
     from app.modules.wechat.wechat import WeChat
     from app.modules.wechat.wechatbot import WeChatBot
@@ -1108,6 +1114,8 @@ async def get_setting(
     key: str, _: User = Depends(get_current_admin_async)
 ) -> schemas.Response:
     """查询系统设置（仅管理员）。"""
+    if key == SystemConfigKey.AppPushCredentials.value:
+        return schemas.Response(success=False, message="该内部凭据不支持直接读取")
     if hasattr(settings, key):
         value = getattr(settings, key)
     else:
@@ -1141,6 +1149,8 @@ async def set_setting(
     if key not in {item.value for item in SystemConfigKey}:
         return schemas.Response(success=False, message=f"配置项 '{key}' 不存在")
 
+    if key == SystemConfigKey.AppPushCredentials.value:
+        return schemas.Response(success=False, message="该内部凭据不支持直接修改")
     if key == SystemConfigKey.Notifications.value:
         saved_value = SystemConfigOper().get(key)
         value = _restore_notification_secrets(value, saved_value)

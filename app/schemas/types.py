@@ -288,6 +288,8 @@ class SystemConfigKey(Enum):
     WordsSyncSources = "WordsSyncSources"
     # 远程同步词表内容(按源分组,与本地词表追加合并)
     SyncedWords = "SyncedWords"
+    # AppPush 私有中转实例凭据
+    AppPushCredentials = "AppPushCredentials"
 
 
 # 处理进度Key字典
@@ -348,6 +350,7 @@ class MessageChannel(Enum):
     Wechat = "微信"
     Telegram = "Telegram"
     Web = "Web"
+    AppPush = "AppPush"
 
 
 # 下载器类型

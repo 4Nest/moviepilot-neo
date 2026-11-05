@@ -1656,6 +1656,8 @@ class ChainBase(metaclass=ABCMeta):
         if not message:
             logger.warning("消息为空，跳过发送")
             return
+        if not message.poster and mediainfo:
+            message.poster = mediainfo.get_poster_image() or None
         if message.save_history:
             self.messageoper.add(**message.model_dump())
         dispatch_message = self._normalize_notification_for_dispatch(message)
@@ -1679,6 +1681,7 @@ class ChainBase(metaclass=ABCMeta):
                         logger.info(f"{send_message.mtype} 的消息已设置发送给管理员")
                         # 读取管理员消息IDS
                         send_message.targets = useroper.get_settings(settings.SUPERUSER)
+                        send_message.set_notification_route_scope("admin")
                         admin_sended = True
                     elif action == "user" and send_message.username:
                         # 发送对应用户
@@ -1689,6 +1692,7 @@ class ChainBase(metaclass=ABCMeta):
                         send_message.targets = useroper.get_settings(
                             send_message.username
                         )
+                        send_message.set_notification_route_scope("user")
                         if send_message.targets is None:
                             # 没有找到用户
                             if not admin_sended:
@@ -1700,6 +1704,7 @@ class ChainBase(metaclass=ABCMeta):
                                 send_message.targets = useroper.get_settings(
                                     settings.SUPERUSER
                                 )
+                                send_message.set_notification_route_scope("admin")
                                 admin_sended = True
                             else:
                                 # 管理员发过了，此消息不发了
@@ -1725,6 +1730,8 @@ class ChainBase(metaclass=ABCMeta):
                     )
                 if not send_orignal:
                     return
+            if not dispatch_message.notification_route_scope:
+                dispatch_message.set_notification_route_scope("all")
         # 发送消息事件
         self.eventmanager.send_event(
             etype=EventType.NoticeMessage,
@@ -1772,6 +1779,8 @@ class ChainBase(metaclass=ABCMeta):
         if not message:
             logger.warning("消息为空，跳过发送")
             return
+        if not message.poster and mediainfo:
+            message.poster = mediainfo.get_poster_image() or None
         if message.save_history:
             await self.messageoper.async_add(**message.model_dump())
         dispatch_message = self._normalize_notification_for_dispatch(message)
@@ -1795,6 +1804,7 @@ class ChainBase(metaclass=ABCMeta):
                         logger.info(f"{send_message.mtype} 的消息已设置发送给管理员")
                         # 读取管理员消息IDS
                         send_message.targets = useroper.get_settings(settings.SUPERUSER)
+                        send_message.set_notification_route_scope("admin")
                         admin_sended = True
                     elif action == "user" and send_message.username:
                         # 发送对应用户
@@ -1805,6 +1815,7 @@ class ChainBase(metaclass=ABCMeta):
                         send_message.targets = useroper.get_settings(
                             send_message.username
                         )
+                        send_message.set_notification_route_scope("user")
                         if send_message.targets is None:
                             # 没有找到用户
                             if not admin_sended:
@@ -1816,6 +1827,7 @@ class ChainBase(metaclass=ABCMeta):
                                 send_message.targets = useroper.get_settings(
                                     settings.SUPERUSER
                                 )
+                                send_message.set_notification_route_scope("admin")
                                 admin_sended = True
                             else:
                                 # 管理员发过了，此消息不发了
@@ -1841,6 +1853,8 @@ class ChainBase(metaclass=ABCMeta):
                     )
                 if not send_orignal:
                     return
+            if not dispatch_message.notification_route_scope:
+                dispatch_message.set_notification_route_scope("all")
         # 发送消息事件
         await self.eventmanager.async_send_event(
             etype=EventType.NoticeMessage,

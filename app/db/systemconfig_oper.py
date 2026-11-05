@@ -1,7 +1,7 @@
 import asyncio
 import copy
 import threading
-from typing import Any, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 from app.db import DbOper
 from app.db.models.systemconfig import SystemConfig
@@ -113,6 +113,27 @@ class SystemConfigOper(DbOper, metaclass=Singleton):
             value = int(self.get(key) or 0) + step
             self.set(key, value)
             return value
+
+    def update_atomically(
+        self,
+        key: Union[str, SystemConfigKey],
+        mutation: Callable[[Any], tuple[Any, Any]],
+    ) -> Any:
+        """
+        在持久化写锁内读取旧值、提交新值并返回业务结果
+
+        :param key: 配置键
+        :param mutation: 根据最新值返回业务结果和新值的纯变更回调
+        :return: 变更回调返回的业务结果
+        """
+        if isinstance(key, SystemConfigKey):
+            key = key.value
+        with self._rlock:
+            conf = SystemConfig.get_by_key(self._db, key)
+            current = copy.deepcopy(conf.value if conf else self.__SYSTEMCONF.get(key))
+            result, value = mutation(current)
+            self.set(key, value)
+            return result
 
     def all(self):
         """

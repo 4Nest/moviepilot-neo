@@ -129,12 +129,21 @@ class WechatNotificationConfig(BaseModel):
         return self
 
 
+
+class AppPushNotificationConfig(BaseModel):
+    """App 私有推送通知渠道参数。"""
+
+    PUSH_SERVER_URL: Optional[str] = None
+    PUSH_RELAY_KEY: Optional[str] = None
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
 class NotificationConf(BaseModel):
     """可直接运行的通知渠道配置。"""
 
     id: Optional[str] = Field(default=None, min_length=1)
     name: str = Field(min_length=1)
-    type: Literal["telegram", "wechat"]
+    type: Literal["telegram", "wechat", "apppush"]
     config: dict = Field(default_factory=dict)
     switchs: list[Literal[
         "资源下载", "整理入库", "订阅", "站点", "媒体服务器", "手动处理", "插件", "其它"
@@ -145,7 +154,12 @@ class NotificationConf(BaseModel):
 
     @model_validator(mode="after")
     def validate_channel_config(self) -> "NotificationConf":
-        config_type = TelegramNotificationConfig if self.type == "telegram" else WechatNotificationConfig
+        if self.type == "telegram":
+            config_type = TelegramNotificationConfig
+        elif self.type == "wechat":
+            config_type = WechatNotificationConfig
+        else:
+            config_type = AppPushNotificationConfig
         self.config = config_type.model_validate(self.config).model_dump(exclude_none=True)
         return self
 

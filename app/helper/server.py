@@ -3,7 +3,7 @@ import platform
 from pathlib import Path
 from threading import Thread
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, quote, urlparse, urlsplit
+from urllib.parse import parse_qs, quote, urlparse, urlsplit, urlunsplit
 
 from app.core.cache import cached
 from app.core.config import settings
@@ -48,6 +48,80 @@ class MoviePilotServerHelper:
     _user_uid: Optional[str] = None
     _github_user: Optional[str] = None
 
+
+    @staticmethod
+    def normalize_relay_url(server: str) -> str:
+        """
+        校验中转地址并统一持久凭据的作用域，不允许凭据、查询参数或片段。
+
+        :param server: 管理员配置的 HTTPS 服务根地址，回环调试允许 HTTP
+        :return: 规范化且去除尾部斜线的地址
+        :raises ValueError: 地址不能安全接收实例凭据
+        """
+        target = urlsplit(server)
+        local = target.hostname in {"localhost", "127.0.0.1", "::1"}
+        if (
+            (target.scheme != "https" and not (local and target.scheme == "http"))
+            or not target.hostname
+            or target.username
+            or target.password
+            or target.query
+            or target.fragment
+        ):
+            raise ValueError("中转地址必须使用 HTTPS，本机回环调试除外")
+        return urlunsplit((target.scheme, target.netloc.lower(), target.path.rstrip("/"), "", ""))
+
+    @staticmethod
+    def relay_push(server: str, key: str, method: str, path: str, data: dict[str, Any]) -> dict[str, Any]:
+        """
+        向显式配置的私有 Server 转发通知，发送密钥只放请求头且不跟随重定向。
+
+        :param server: 管理员配置的 HTTPS 中转地址；本机联调允许回环 HTTP
+        :param key: 该实例专用的中转发送密钥
+        :param method: 内部限定的请求方法
+        :param path: 内部限定的 push 接口路径
+        :param data: 已绑定当前用户的注册或消息数据
+        :return: Server 返回的对象；失败抛出不含凭据或原始响应的 ValueError
+        """
+        server = MoviePilotServerHelper.normalize_relay_url(server)
+        allowed = {
+            ("GET", "devices"),
+            ("POST", "devices"),
+            ("DELETE", "devices"),
+            ("POST", "pairings"),
+            ("POST", "messages"),
+            ("POST", "instances"),
+            ("PUT", "instances/credentials"),
+            ("DELETE", "instances"),
+        }
+        if (method, path) not in allowed:
+            raise ValueError("不支持的通知接口")
+        if len(key) < 32:
+            raise ValueError("请配置至少 32 位的中转发送密钥")
+        response = RequestUtils(timeout=20, headers={"Authorization": f"Bearer {key}"}).request(
+            method,
+            f"{server.rstrip('/')}/push/{path}",
+            allow_redirects=False,
+            verify=True,
+            params=data if method == "GET" else None,
+            json=data if method != "GET" else None,
+        )
+        if response is None or response.status_code != 200:
+            code = response.status_code if response is not None else 0
+            if code == 403 and path == "instances":
+                raise ValueError("消息中心尚未开放自动接入，请联系中心运营者")
+            if code == 401:
+                raise ValueError("通知接入凭据无效或已停用，请联系中心运营者")
+            if code == 429:
+                raise ValueError("消息中心请求过于频繁，请稍后重试")
+            raise ValueError(f"私有通知服务请求失败（{code}）")
+        try:
+            payload = response.json()
+        except ValueError as error:
+            raise ValueError("私有通知服务响应无效") from error
+        if not isinstance(payload, dict):
+            raise ValueError("私有通知服务响应无效")
+        return payload
     @classmethod
     def get_user_uid(cls) -> Optional[str]:
         """

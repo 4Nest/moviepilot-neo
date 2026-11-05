@@ -94,8 +94,26 @@ class UserOper(DbOper):
         """
         user = User.get_by_name(self._db, name)
         if user:
-            return user.settings or {}
+            settings = dict(user.settings or {})
+            settings.pop("apppush", None)
+            if user.is_active and getattr(user, "notification_identity", None):
+                settings["apppush"] = user.notification_identity
+            return settings
         return None
+
+    def get_notification_broadcast_targets(self) -> dict[str, tuple[str, ...]]:
+        """
+        查询所有启用用户的逐账号通知目标，仅由所有用户范围使用。
+        """
+        users = self.list()
+        owners = tuple(
+            dict.fromkeys(
+                user.notification_identity
+                for user in users
+                if user and user.is_active and getattr(user, "notification_identity", None)
+            )
+        )
+        return {"apppush": owners} if owners else {}
 
     def get_setting(self, name: str, key: str) -> Optional[str]:
         """

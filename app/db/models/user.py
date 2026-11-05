@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 from sqlalchemy import Boolean, Column, JSON, String, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
@@ -29,6 +31,8 @@ class User(Base):
     otp_secret = Column(String, default=None)
     # 用户个性化设置 json
     settings = Column(JSON, default=dict)
+    # 通知使用不可变账号身份；主键复用、改名或删除重建不能继承旧设备
+    notification_identity = Column(String(32), default=lambda: uuid4().hex, nullable=False)
 
     @classmethod
     @db_query

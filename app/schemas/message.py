@@ -223,6 +223,8 @@ class Notification(BaseModel):
     text: Optional[str] = None
     # 图片
     image: Optional[str] = None
+    # 独立媒体海报，不使用背景图回退
+    poster: Optional[str] = None
     # 语音文件路径
     voice_path: Optional[str] = None
     # 本地文件路径
@@ -257,6 +259,14 @@ class Notification(BaseModel):
     parse_mode: Optional[str] = None
     # 是否写入消息历史
     save_history: bool = True
+    # 通知路由范围（user/admin/all）
+    notification_route_scope: Optional[str] = None
+
+    def set_notification_route_scope(self, scope: Optional[str]) -> None:
+        """
+        标记当前消息在通知链中的路由范围。
+        """
+        self.notification_route_scope = scope
 
     def to_dict(self):
         """

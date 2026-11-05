@@ -9,6 +9,7 @@ from .mediaserver import *
 from .message import *
 from .monitoring import *
 from .plugin import *
+from .push import *
 from .response import *
 from .rule import *
 from .search import *
