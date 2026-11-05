@@ -365,7 +365,11 @@
     "词表同步源必须为列表": "Word list sync sources must be a list",
     "通知渠道名称不能重复": "Notification channel names must be unique",
     "通知场景不能重复": "Notification scenarios must be unique",
-    "测试通知发送成功": "Test notification sent successfully"
+    "测试通知发送成功": "Test notification sent successfully",
+    "请完成数据库升级后重新登录": "Please complete the database upgrade and sign in again",
+    "用户未启用": "User is inactive",
+    "该内部凭据不支持直接读取": "This internal credential cannot be read directly",
+    "该内部凭据不支持直接修改": "This internal credential cannot be modified directly"
   },
   "message_patterns": [
     {
