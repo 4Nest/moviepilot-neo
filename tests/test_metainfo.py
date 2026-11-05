@@ -524,6 +524,16 @@ def test_versioned_anime_episode_formats_keep_episode_identity():
         assert meta.end_episode == end_episode
 
 
+    adjacent_bracket_meta = MetaInfo("[NEST] Black Torch - 12 [V2][CR WEB-DL 1080p AVC AAC].mkv")
+    assert isinstance(adjacent_bracket_meta, MetaAnime)
+    assert adjacent_bracket_meta.name == "Black Torch"
+    assert adjacent_bracket_meta.type == MediaType.TV
+    assert adjacent_bracket_meta.begin_episode == 12
+    assert adjacent_bracket_meta.total_episode == 1
+    assert adjacent_bracket_meta.season_episode == "S01 E12"
+    assert adjacent_bracket_meta.resource_team == "NEST"
+    assert adjacent_bracket_meta.resource_pix == "1080p"
+
 def test_versioned_anime_episode_file_uses_parent_title():
     """只有版本化集号的文件名仍应识别集数，并从父目录补片名。"""
     meta = MetaInfoPath(Path("/downloads/无职转生 第三季/01.v3.mkv"))

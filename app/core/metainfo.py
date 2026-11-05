@@ -14,6 +14,7 @@ from app.core.meta.metaanime import (
     extract_anime_video_encode,
     extract_multilingual_anime_names,
     has_versioned_anime_episode,
+    normalize_versioned_anime_episode,
 )
 from app.core.meta.infopath import (
     clear_parsed_title_for_parent_merge,
@@ -33,7 +34,7 @@ _ANIME_STANDALONE_EPISODE_BRACKET_RE = re.compile(
     r'\d{1,4}(?:-\d{1,4}|v\d+)?[\]】]',
     re.IGNORECASE,
 )
-_ANIME_DASH_EPISODE_RE = re.compile(r'\s+-\s+[\dv]{1,4}\s+', re.IGNORECASE)
+_ANIME_DASH_EPISODE_RE = re.compile(r'\s+-\s+[\dv]{1,4}(?:\s+|(?=[\[【(（])|$)', re.IGNORECASE)
 _VIDEO_SEASON_EPISODE_RE = re.compile(
     r"S\d{2}\s*-\s*S\d{2}|S\d{2}|\s+S\d{1,2}|"
     r"EP?\d{2,4}\s*-\s*EP?\d{2,4}|EP?\d{2,4}|\s+EP?\d{1,4}",
@@ -464,6 +465,23 @@ def _meta_from_rust(parsed: dict) -> Optional[MetaBase]:
         if not meta.cn_name:
             origin_title = (anitopy.parse(meta.org_string or meta.title or "") or {}).get("anime_title")
             meta.cn_name = extract_anime_cn_name(origin_title, meta.en_name)
+    if parsed.get("kind") == "anime" and meta.begin_episode is None and has_versioned_anime_episode(prepared_title):
+        versioned_info = anitopy.parse(normalize_versioned_anime_episode(prepared_title)) or {}
+        episode_number = versioned_info.get("episode_number")
+        if isinstance(episode_number, list):
+            begin_episode = episode_number[0] if episode_number else None
+            end_episode = episode_number[-1] if len(episode_number) > 1 else None
+        else:
+            begin_episode = episode_number
+            end_episode = None
+        if begin_episode and str(begin_episode).isdigit():
+            meta.begin_episode = int(begin_episode)
+            if end_episode and str(end_episode).isdigit() and int(end_episode) != meta.begin_episode:
+                meta.end_episode = int(end_episode)
+                meta.total_episode = (meta.end_episode - meta.begin_episode) + 1
+            else:
+                meta.total_episode = 1
+            meta.type = MediaType.TV
     # 年份被误判为集数(如 "标题 2026 [02]")时结果不可信,回退 Python 解析
     if any(isinstance(ep, int) and 1900 <= ep <= 2099
            for ep in (meta.begin_episode, meta.end_episode)):

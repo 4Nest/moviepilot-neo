@@ -63,8 +63,9 @@ def normalize_versioned_anime_episode(title: str) -> str:
         close = match.group("close")
         if match.start() == 0 and episode.isdigit() and not close:
             return f"E{episode}"
+        if not close and match.end() < len(title) and title[match.end()] in "[【(（":
+            return f"{episode} "
         return f"{episode}{close}"
-
     return VERSIONED_ANIME_EPISODE_RE.sub(replace, title)
 
 
