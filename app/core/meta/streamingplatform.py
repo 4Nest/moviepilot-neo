@@ -1,4 +1,5 @@
-from typing import Optional, List, Tuple
+import re
+from typing import Dict, List, Optional, Tuple
 
 from app.utils.singleton import Singleton
 
@@ -54,8 +55,20 @@ class StreamingPlatforms(metaclass=Singleton):
         ("CPP", "CATCHPLAY+"),
         ("LINETV", "LINE TV"),
         ("VIU", "Viu"),
-        ("IQ", ""),
+        ("iQIYI", "iQIYI"),
+        ("IQ", "iQIYI"),
+        ("TX", "TX"),
         ("", "WeTV"),
+        ("YOUKU", "YOUKU"),
+        ("YK", "YOUKU"),
+        ("Bilibili", "Bilibili"),
+        ("Bili", "Bilibili"),
+        ("BLBL", "Bilibili"),
+        ("MGTV", "MGTV"),
+        ("MIGU", "MIGU"),
+        ("LETV", "LETV"),
+        ("SOHU", "SOHU"),
+        ("CCTV", "CCTV"),
         ("ABMA", "Abema"),
         ("ADN", ""),
         ("AT-X", ""),
@@ -280,7 +293,9 @@ class StreamingPlatforms(metaclass=Singleton):
 
     def __init__(self):
         """初始化流媒体平台匹配器"""
-        self._lookup_cache = {}
+        self._lookup_cache: Dict[str, str] = {}
+        self._code_cache: Dict[str, str] = {}
+        self._aliases_cache: Dict[str, List[str]] = {}
         self._build_cache()
 
     def _build_cache(self) -> None:
@@ -288,15 +303,25 @@ class StreamingPlatforms(metaclass=Singleton):
         构建查询缓存。
         """
         self._lookup_cache.clear()
+        self._code_cache.clear()
+        self._aliases_cache.clear()
         for short_name, full_name in self.STREAMING_PLATFORMS:
             canonical_name = full_name or short_name
             if not canonical_name:
                 continue
 
-            aliases = {short_name, full_name}
-            for alias in aliases:
+            preferred_code = short_name or full_name
+            canonical_key = canonical_name.upper()
+            self._code_cache.setdefault(canonical_key, preferred_code)
+            if short_name:
+                self._code_cache[short_name.upper()] = short_name
+
+            alias_list = self._aliases_cache.setdefault(canonical_key, [])
+            for alias in (short_name, full_name):
                 if alias:
                     self._lookup_cache[alias.upper()] = canonical_name
+                    if alias not in alias_list:
+                        alias_list.append(alias)
 
     def get_lookup_cache(self) -> dict:
         """
@@ -311,6 +336,27 @@ class StreamingPlatforms(metaclass=Singleton):
         if platform_code is None:
             return None
         return self._lookup_cache.get(platform_code.upper())
+
+    def get_streaming_platform_code(
+        self,
+        platform_name_or_code: Optional[str],
+        title: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        将识别出的流媒体平台名称或简称还原为种子标题中使用的短标识（如 iQIYI、TX、NF、DSNP）。
+        """
+        if not platform_name_or_code:
+            return None
+        raw = str(platform_name_or_code).strip()
+        if not raw:
+            return None
+        canonical = self._lookup_cache.get(raw.upper(), raw)
+        if title:
+            aliases = self._aliases_cache.get(canonical.upper(), [raw])
+            for alias in aliases:
+                if re.search(rf"(?<![A-Za-z0-9]){re.escape(alias)}(?![A-Za-z0-9])", title, re.IGNORECASE):
+                    return alias
+        return self._code_cache.get(raw.upper(), raw)
 
     def is_streaming_platform(self, name: str) -> bool:
         """

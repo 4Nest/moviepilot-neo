@@ -71,11 +71,27 @@ def test_default_kwargs_without_rule_uses_type_default():
     assert result["save_path"] is None
 
 
-def _download(pix="2160p", rtype="WEB-DL", effect="DV HDR", team="ADWeb", customization=None, site=3):
+def _download(
+    pix="2160p",
+    rtype="WEB-DL",
+    effect="DV HDR",
+    team="ADWeb",
+    customization=None,
+    web_source=None,
+    title=None,
+    site=3,
+):
     return SimpleNamespace(
-        meta_info=SimpleNamespace(resource_pix=pix, resource_type=rtype, resource_effect=effect,
-                                  resource_team=team, customization=customization),
-        torrent_info=SimpleNamespace(site=site),
+        meta_info=SimpleNamespace(
+            resource_pix=pix,
+            resource_type=rtype,
+            resource_effect=effect,
+            resource_team=team,
+            customization=customization,
+            web_source=web_source,
+            title=title,
+        ),
+        torrent_info=SimpleNamespace(site=site, title=title),
     )
 
 
@@ -125,3 +141,29 @@ def test_backfill_quality_prefers_specific_types():
                             ["resolution", "quality", "effect"], [])
 
     assert update == {"quality": "Remux"}
+
+
+def test_backfill_web_source_maps_platform_to_pt_short_code_and_combines_with_team():
+    """流媒体平台回填应映射为种子标题短码（如 iQIYI、TX、NF、DSNP），并可与制作组组合。"""
+    assert build_backfill(_subscribe(), _download(web_source="Netflix", team="ADWeb"), ["web_source"], []) == {
+        "include": "NF"
+    }
+    assert build_backfill(_subscribe(), _download(web_source="Disney+", team="ADWeb"), ["web_source"], []) == {
+        "include": "DSNP"
+    }
+    assert build_backfill(_subscribe(), _download(web_source="iQIYI", team="ADWeb"), ["web_source", "include"], []) == {
+        "include": "iQIYI.+ADWeb"
+    }
+    assert build_backfill(
+        _subscribe(),
+        _download(
+            web_source="iQIYI",
+            team="ADWeb",
+            title="Show.S01E01.2026.2160p.IQ.WEB-DL.H265-ADWeb",
+        ),
+        ["web_source", "include"],
+        [],
+    ) == {"include": "IQ.+ADWeb"}
+    assert build_backfill(_subscribe(), _download(web_source="TX", team=None), ["web_source", "include"], []) == {
+        "include": "TX"
+    }

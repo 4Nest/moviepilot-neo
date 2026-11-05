@@ -20,6 +20,7 @@ from app.core.context import TorrentInfo, Context, MediaInfo
 from app.core.event import eventmanager, Event
 from app.core.meta import MetaBase
 from app.core.meta.releasegroup import ReleaseGroupsMatcher
+from app.core.meta.streamingplatform import StreamingPlatforms
 from app.core.meta.words import WordsMatcher
 from app.core.metainfo import MetaInfo
 from app.db.downloadhistory_oper import DownloadHistoryOper
@@ -211,7 +212,7 @@ SUBSCRIBE_CATEGORY_RULE_FIELDS = (
     "quality", "resolution", "effect", "include", "exclude", "sites", "downloader", "save_path", "filter_groups",
 )
 # 下载回填支持的订阅字段
-SUBSCRIBE_BACKFILL_FIELDS = ("resolution", "quality", "effect", "include", "sites")
+SUBSCRIBE_BACKFILL_FIELDS = ("resolution", "quality", "effect", "web_source", "include", "sites")
 # 回填值必须与订阅编辑页下拉选项的取值完全一致，界面才能显示为选中；按顺序取首个命中
 _BACKFILL_RESOLUTIONS = (
     (re.compile(r"4K|2160[pi]|x2160", re.IGNORECASE), "4K|2160p|x2160"),
@@ -264,6 +265,18 @@ def _match_backfill_option(value: Optional[str], options: tuple) -> Optional[str
     return None
 
 
+def _extract_backfill_web_source(meta: Any, torrent: Any) -> Optional[str]:
+    """从已识别资源信息还原流媒体平台短标识（如 iQIYI、TX、NF、DSNP）。"""
+    web_source = getattr(meta, "web_source", None)
+    if not web_source:
+        return None
+    raw_title = (
+        getattr(torrent, "title", None)
+        or getattr(meta, "org_string", None)
+        or getattr(meta, "title", None)
+    )
+    return StreamingPlatforms().get_streaming_platform_code(web_source, title=raw_title)
+
 def build_subscribe_backfill(subscribe: Subscribe, context: Context, fields: Optional[List[str]],
                              rss_sites: Optional[List[int]]) -> dict:
     """
@@ -293,11 +306,12 @@ def build_subscribe_backfill(subscribe: Subscribe, context: Context, fields: Opt
         value = _match_backfill_option(getattr(meta, "resource_effect", None), _BACKFILL_EFFECTS)
         if value:
             update["effect"] = value
-    if "include" in fields and not subscribe.include:
-        # 制作组与自定义占位符按字面匹配，转义正则特殊字符
-        team = getattr(meta, "resource_team", None)
-        customization = getattr(meta, "customization", None)
-        parts = [re.escape(item) for item in (customization, team) if item]
+    if ("web_source" in fields or "include" in fields) and not subscribe.include:
+        # 流媒体平台、自定义占位符与制作组按字面匹配，转义正则特殊字符
+        web_source = _extract_backfill_web_source(meta, torrent) if "web_source" in fields else None
+        customization = getattr(meta, "customization", None) if "include" in fields else None
+        team = getattr(meta, "resource_team", None) if "include" in fields else None
+        parts = [re.escape(item) for item in (web_source, customization, team) if item]
         if parts:
             update["include"] = ".+".join(parts)
     if "sites" in fields and not subscribe.sites and torrent and torrent.site:
