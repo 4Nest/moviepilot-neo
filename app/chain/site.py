@@ -409,7 +409,14 @@ class SiteChain(ChainBase):
 
             res = RequestUtils(cookies=cookie, timeout=15, ua=ua).get_res(url=favicon_url)
             if res:
-                return favicon_url, base64.b64encode(res.content).decode()
+                content = res.content
+                if (
+                    len(content) > 22
+                    and content[:6] == b"\x00\x00\x01\x00\x01\x00"
+                    and content[22:30] == b"\x89PNG\r\n\x1a\n"
+                ):
+                    content = content[22:]
+                return favicon_url, base64.b64encode(content).decode()
             else:
                 logger.error(f"获取站点图标失败：{favicon_url}")
         finally:
