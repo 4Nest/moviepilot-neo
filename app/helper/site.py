@@ -33,6 +33,106 @@ SITE_SUPPLEMENTS = {
         "subtitles": True,
         "alias_of": "hddolby.com",
     },
+    "hdwing.org": {
+        "id": "hdwing", "name": "HDWinG", "url": "https://hdwing.org/",
+        "domain": "https://hdwing.org/", "public": False,
+        "parser": "NexusPhp", "schema": "NexusPhp", "language": "zh",
+        "encoding": "UTF-8",
+        "alias_of": "hdchina.org",
+        "search": {
+            "paths": [{"path": "torrents.php", "method": "get"}],
+            "params": {"search": "{keyword}", "search_area": 4},
+            "batch": {"delimiter": " ", "space_replace": "_"},
+        },
+        "category": {
+            "movie": [
+                {"id": 20, "cat": "Movies/BluRay", "desc": "Movie Full BD"},
+                {"id": 17, "cat": "Movies/HD", "desc": "Movie 1080p"},
+                {"id": 16, "cat": "Movies/HD", "desc": "Movie 1080i"},
+                {"id": 9, "cat": "Movies/HD", "desc": "Movie 720p"},
+                {"id": 27, "cat": "Movies/SD", "desc": "iPad Video"},
+                {"id": 410, "cat": "Movies/UHD", "desc": "4K UltraHD"},
+                {"id": 14, "cat": "Anime", "desc": "Animation"},
+                {"id": 5, "cat": "Documentary", "desc": "Documentary"},
+            ],
+            "tv": [
+                {"id": 13, "cat": "TV", "desc": "EU/US TV series"},
+                {"id": 25, "cat": "TV", "desc": "Chinese TV series"},
+                {"id": 26, "cat": "TV", "desc": "Kor Drama"},
+                {"id": 24, "cat": "TV", "desc": "Jpn Drama"},
+                {"id": 21, "cat": "TV", "desc": "EU/US TV series pack"},
+                {"id": 22, "cat": "TV", "desc": "Chinese TV series pack"},
+                {"id": 23, "cat": "TV", "desc": "JPN/KOR drama pack"},
+                {"id": 5, "cat": "Documentary", "desc": "Documentary"},
+                {"id": 14, "cat": "Anime", "desc": "Animation"},
+                {"id": 401, "cat": "TV", "desc": "TV Shows"},
+            ],
+        },
+        "subtitles": {
+            "search": {
+                "paths": [{"path": "subtitles.php?search={keyword}&lang_id=0", "method": "get"}],
+            },
+            "list": {"selector": "tr:has(td.rowfollow)"},
+            "fields": {
+                "language": {"selector": "td:nth-child(1) img", "attribute": "title"},
+                "language_icon": {"selector": "td:nth-child(1) img", "attribute": "src"},
+                "title": {"selector": "td:nth-child(2) a"},
+                "download": {"selector": "td:nth-child(2) a", "attribute": "href"},
+                "date_added": {"selector": "td:nth-child(3) span", "attribute": "title", "optional": True},
+                "date_elapsed": {"selector": "td:nth-child(3) span", "optional": True},
+                "size": {"selector": "td:nth-child(4)"},
+                "grabs": {"selector": "td:nth-child(5)"},
+                "uploader": {"selector": "td:nth-child(6)"},
+                "report": {"selector": "td:nth-child(7) a", "attribute": "href"},
+            },
+        },
+        "torrents": {
+            "list": {"selector": 'table.torrent_list tr:has("td.t_cat")'},
+            "fields": {
+                "id": {
+                    "selector": 'a[href*="details.php?id="]',
+                    "attribute": "href",
+                    "filters": [{"name": "re_search", "args": ["\\d+", 0]}],
+                },
+                "title": {"selector": 'a[href*="details.php?id="]', "attribute": "title"},
+                "description": {"selector": "table.tbname tr > td:nth-child(2) > h4"},
+                "labels": {"selector": "table.tbname tr > td:nth-child(2) > h4 > span"},
+                "category": {
+                    "selector": 'a[href*="?cat="]',
+                    "attribute": "href",
+                    "filters": [{"name": "querystring", "args": "cat"}],
+                },
+                "details": {"selector": 'a[href*="details.php?id="]', "attribute": "href"},
+                "download": {"selector": 'a[href*="download.php?hash="]', "attribute": "href"},
+                "size": {"selector": "td.t_size"},
+                "grabs": {"selector": "td.t_completed"},
+                "seeders": {"selector": "td.t_torrents"},
+                "leechers": {"selector": "td.t_leech"},
+                "date_elapsed": {"selector": "td.t_time > span"},
+                "date_added": {"selector": "td.t_time > span", "attribute": "title"},
+                "csrf": {"selector": 'meta[name="x-csrf"]', "attribute": "content"},
+                "downloadvolumefactor": {
+                    "case": {
+                        "img.pro_free": 0,
+                        "img.pro_free2up": 0,
+                        "img.pro_50pctdown": 0.5,
+                        "img.pro_50pctdown2up": 0.5,
+                        "img.pro_30pctdown": 0.3,
+                        "*": 1,
+                    }
+                },
+                "uploadvolumefactor": {
+                    "case": {
+                        "img.pro_50pctdown2up": 2,
+                        "img.pro_free2up": 2,
+                        "img.pro_2up": 2,
+                        "*": 1,
+                    }
+                },
+                "hr": {"selector": "img.hitandrun"},
+            },
+        },
+    },
 }
 
 

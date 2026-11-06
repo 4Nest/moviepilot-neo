@@ -158,6 +158,9 @@ def test_uhddolby_special_site_test_and_rss_map(monkeypatch):
     assert chain.special_site_test["uhddolby.com"] == chain.special_site_test["hddolby.com"]
     assert RssHelper.rss_link_conf["uhddolby.com"] == RssHelper.rss_link_conf["hddolby.com"]
 
+    assert RssHelper.rss_link_conf["hdwing.org"] == RssHelper.rss_link_conf["hdchina.org"]
+    assert catalog.SITE_SUPPLEMENTS["hdwing.org"]["schema"] == "NexusPhp"
+    assert catalog.SITE_SUPPLEMENTS["hdwing.org"]["alias_of"] == "hdchina.org"
 
 def test_update_site_migrates_domain_records(monkeypatch):
     """修改站点域名为 www.uhddolby.com 时，应同步迁移图标、统计与历史用户数据。"""

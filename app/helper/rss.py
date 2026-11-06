@@ -115,6 +115,17 @@ class RssHelper:
                 "rsscart": 0
             }
         },
+        "hdwing.org": {
+            "xpath": "//a[@class='faqlink']/@href",
+            "url": "getrss.php",
+            "params": {
+                "inclbookmarked": 0,
+                "itemsmalldescr": 1,
+                "showrows": 50,
+                "search_mode": 1,
+                "rsscart": 0
+            }
+        },
         "audiences.me": {
             "xpath": "//a[@class='faqlink']/@href",
             "url": "getrss.php",
