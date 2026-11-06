@@ -630,7 +630,7 @@ class SiteChain(ChainBase):
         logger.info(f"开始缓存站点 {indexer.get('name')} 图标 ...")
         icon_url, icon_base64 = self.__parse_favicon(url=indexer.get("domain"),
                                                      cookie=cookie,
-                                                     ua=settings.USER_AGENT)
+                                                     ua=siteinfo.ua or settings.USER_AGENT)
         if icon_url:
             siteoper.update_icon(name=indexer.get("name"),
                                  domain=domain,
