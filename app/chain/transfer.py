@@ -2714,9 +2714,14 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
         if history or not include_move_dest:
             return history
 
-        history = transfer_history_oper.get_by_dest(
-            fileitem.path,
-            storage=fileitem.storage,
+        get_by_dest = getattr(transfer_history_oper, "get_by_dest", None)
+        history = (
+            get_by_dest(
+                fileitem.path,
+                storage=fileitem.storage,
+            )
+            if callable(get_by_dest)
+            else None
         )
         return history if self._is_successful_move_history(history) else None
 
@@ -3267,7 +3272,7 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                     transferd = self._get_manual_transfer_history(
                         fileitem=file_item,
                         transfer_history_oper=transfer_history_oper,
-                        include_move_dest=manual and reorganize,
+                        include_move_dest=manual,
                     )
                     if transferd:
                         should_reorganize = manual and (
@@ -3287,7 +3292,6 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                                 f"{file_item.path} 已清理旧整理记录，继续重新整理。"
                             )
                             transferd = None
-
                     if transferd:
                         skipped_history_count += 1
                         if not transferd.status:
