@@ -521,8 +521,9 @@ class SiteChain(ChainBase):
                 # 新增站点
                 domain_url = __indexer_domain(inx=indexer, sub_domain=domain)
                 proxy = False
+                site_ua = (site_info.ua or settings.USER_AGENT) if site_info else settings.USER_AGENT
                 res = RequestUtils(cookies=cookie,
-                                   ua=settings.USER_AGENT
+                                   ua=site_ua
                                    ).get_res(url=domain_url)
                 if res and res.status_code in [200, 500, 403]:
                     content = res.text
@@ -548,7 +549,7 @@ class SiteChain(ChainBase):
                         logger.info(f"站点 {indexer.get('name')} 初次连接失败，尝试通过代理重试...")
                         proxy = True
                         res = RequestUtils(cookies=cookie,
-                                           ua=settings.USER_AGENT,
+                                           ua=site_ua,
                                            proxies=settings.PROXY
                                            ).get_res(url=domain_url)
                         if res and res.status_code in [200, 500, 403]:
@@ -568,20 +569,29 @@ class SiteChain(ChainBase):
                     # 自动生成rss地址
                     rss_url, errmsg = rsshelper.get_rss_link(url=domain_url,
                                                              cookie=cookie,
-                                                             ua=settings.USER_AGENT,
+                                                             ua=site_ua,
                                                              proxy=proxy)
                     if errmsg:
                         logger.warn(errmsg)
-                # 插入数据库
-                logger.info(f"新增站点 {indexer.get('name')} ...")
-                siteoper.add(name=indexer.get("name"),
-                             url=domain_url,
-                             domain=domain,
-                             cookie=cookie,
-                             rss=rss_url,
-                             proxy=1 if proxy else 0,
-                             public=1 if indexer.get("public") else 0)
-                _add_count += 1
+                if site_info:
+                    logger.info(f"更新停用站点 {site_info.name} Cookie ...")
+                    siteoper.update(site_info.id, {
+                        "cookie": cookie,
+                        "rss": rss_url,
+                        "proxy": 1 if proxy else 0,
+                    })
+                    _update_count += 1
+                else:
+                    # 插入数据库
+                    logger.info(f"新增站点 {indexer.get('name')} ...")
+                    siteoper.add(name=indexer.get("name"),
+                                 url=domain_url,
+                                 domain=domain,
+                                 cookie=cookie,
+                                 rss=rss_url,
+                                 proxy=1 if proxy else 0,
+                                 public=1 if indexer.get("public") else 0)
+                    _add_count += 1
 
             # 通知站点更新
             if indexer:

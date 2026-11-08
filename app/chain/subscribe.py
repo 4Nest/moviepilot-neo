@@ -43,6 +43,7 @@ from app.helper.torrent import TorrentHelper
 from app.log import logger
 from app.schemas import (MediaRecognizeConvertEventData, SubscribeEpisodesRefreshEventData,
                          SubscribeCompletionCheckEventData)
+from app.schemas.event import SubscribeModifiedEventData
 from app.schemas.subscribe import compute_subscribe_version_total_episode
 from app.schemas.types import MediaType, SystemConfigKey, MessageChannel, NotificationType, EventType, ChainEventType, \
     ContentType
@@ -4467,6 +4468,75 @@ class SubscribeChain(ChainBase):
                 )
         logger.info(f'订阅 {subscribe_name} 缺失剧集数更新为：{no_exists}')
         return False, no_exists
+
+    @eventmanager.register(EventType.TransferComplete)
+    def check_transfer_complete(self, event: Event) -> None:
+        """
+        整理入库成功后同步电视剧订阅的已入库集数与缺失进度
+
+        :param event: 整理完成事件，包含媒体信息、识别元数据和整理结果
+        """
+        if not event or not isinstance(event.event_data, dict):
+            return
+        event_data = event.event_data
+        mediainfo = event_data.get("mediainfo")
+        meta = event_data.get("meta")
+        transferinfo = event_data.get("transferinfo")
+        if not transferinfo or not transferinfo.success:
+            return
+        if not isinstance(mediainfo, MediaInfo) or not isinstance(meta, MetaBase):
+            return
+        if mediainfo.type != MediaType.TV or not meta.episode_list:
+            return
+
+        season = meta.begin_season if meta.begin_season is not None else 1
+        transferred_episodes = {int(episode) for episode in meta.episode_list if int(episode) > 0}
+        if not transferred_episodes:
+            return
+        subscribeoper = SubscribeOper()
+        try:
+            subscribes = subscribeoper.list("R,N")
+            for subscribe in subscribes:
+                if subscribe.type != MediaType.TV.value or subscribe.season != season:
+                    continue
+                identity_matched = any((
+                    mediainfo.tmdb_id is not None and subscribe.tmdbid == mediainfo.tmdb_id,
+                    bool(mediainfo.douban_id) and subscribe.doubanid == mediainfo.douban_id,
+                    mediainfo.bangumi_id is not None and subscribe.bangumiid == mediainfo.bangumi_id,
+                ))
+                if not identity_matched:
+                    continue
+                recorded_episodes = {
+                    int(episode) for episode in subscribe.note or [] if str(episode).isdigit()
+                }
+                updated_note = sorted(recorded_episodes | transferred_episodes)
+                if updated_note == sorted(recorded_episodes):
+                    continue
+                update_data = {"note": updated_note}
+                if subscribe.total_episode and subscribe.total_episode > 0:
+                    update_data["lack_episode"] = max(
+                        0, subscribe.total_episode - len(updated_note)
+                    )
+                old_subscribe_info = subscribe.to_dict()
+                subscribeoper.update(subscribe.id, update_data)
+                for key, value in update_data.items():
+                    setattr(subscribe, key, value)
+                logger.info(
+                    f"订阅 {subscribe.name} 第{subscribe.season}季入库进度已更新："
+                    f"已入库 {len(updated_note)} 集，缺失 {subscribe.lack_episode or 0} 集"
+                )
+                if update_data.get("lack_episode") == 0 and subscribe.total_episode > 0:
+                    eventmanager.send_event(
+                        EventType.SubscribeModified,
+                        SubscribeModifiedEventData(
+                            subscribe_id=subscribe.id,
+                            old_subscribe_info=old_subscribe_info,
+                            subscribe_info=subscribe.to_dict(),
+                            scene="transfer",
+                        ),
+                    )
+        except Exception as err:
+            logger.warning(f"整理入库后同步订阅进度失败：{mediainfo.title_year}，{err}")
 
     @eventmanager.register(EventType.SiteDeleted)
     def remove_site(self, event: Event):

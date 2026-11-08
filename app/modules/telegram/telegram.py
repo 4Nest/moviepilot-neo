@@ -1383,6 +1383,14 @@ class Telegram:
         return image
 
     @retry(RetryException, logger=logger)
+    def __send_photo(self, photo: Any, caption: Optional[str], **kwargs):
+        """图片上传失败时轻量重试，最多共发送三次。"""
+        try:
+            return self._bot.send_photo(photo=photo, caption=caption, **kwargs)
+        except Exception as err:
+            raise RetryException(f"发送图片消息失败：{err}") from err
+
+    @retry(RetryException, logger=logger)
     def __send_short_message(self, image: Optional[bytes], caption: str,
                              disable_web_page_preview: Optional[bool] = None, **kwargs):
         """
@@ -1391,19 +1399,29 @@ class Telegram:
         parse_mode = kwargs.get("parse_mode")
         try:
             if image:
-                return self._bot.send_photo(
-                    photo=image,
-                    caption=self._prepare_text(caption, parse_mode),
-                    **kwargs,
-                )
+                try:
+                    return self.__send_photo(
+                        photo=image,
+                        caption=self._prepare_text(caption, parse_mode),
+                        **kwargs,
+                    )
+                except RetryException as err:
+                    logger.warning(f"Telegram图片发送重试失败，降级为文本消息：{err}")
+                    return self._bot.send_message(
+                        text=self._prepare_text(caption, parse_mode),
+                        disable_web_page_preview=disable_web_page_preview,
+                        **kwargs,
+                    )
             else:
                 return self._bot.send_message(
                     text=self._prepare_text(caption, parse_mode),
                     disable_web_page_preview=disable_web_page_preview,
                     **kwargs
                 )
-        except Exception:
-            raise RetryException(f"发送{'图片' if image else '文本'}消息失败")
+        except RetryException:
+            raise
+        except Exception as err:
+            raise RetryException(f"发送{'图片' if image else '文本'}消息失败") from err
 
     @retry(RetryException, logger=logger)
     def __send_long_plain_message(
@@ -1424,12 +1442,23 @@ class Telegram:
             for index, chunk in enumerate(chunks):
                 current_reply_markup = reply_markup if index == 0 else None
                 if image and index == 0:
-                    ret = self._bot.send_photo(
-                        **kwargs,
-                        photo=image,
-                        caption=chunk,
-                        reply_markup=current_reply_markup,
-                    )
+                    try:
+                        ret = self.__send_photo(
+                            **kwargs,
+                            photo=image,
+                            caption=chunk,
+                            reply_markup=current_reply_markup,
+                        )
+                    except RetryException as err:
+                        logger.warning(f"Telegram长消息图片发送失败，降级为文本消息：{err}")
+                        msg_kwargs = dict(**kwargs)
+                        if disable_web_page_preview is not None:
+                            msg_kwargs["disable_web_page_preview"] = disable_web_page_preview
+                        ret = self._bot.send_message(
+                            **msg_kwargs,
+                            text=chunk,
+                            reply_markup=current_reply_markup,
+                        )
                     continue
                 msg_kwargs = dict(**kwargs)
                 if disable_web_page_preview is not None:
@@ -1480,15 +1509,26 @@ class Telegram:
                     )
 
                 elif item.content_type == ContentTypes.PHOTO or (image and i == 0):
-                    ret = self._bot.send_photo(
-                        **kwargs,
-                        photo=(
-                            getattr(item, "file_name", ""),
-                            getattr(item, "file_data", image),
-                        ),
-                        caption=self._telegramify_item_caption(item),
-                        reply_markup=current_reply_markup,
-                    )
+                    try:
+                        ret = self.__send_photo(
+                            **kwargs,
+                            photo=(
+                                getattr(item, "file_name", ""),
+                                getattr(item, "file_data", image),
+                            ),
+                            caption=self._telegramify_item_caption(item),
+                            reply_markup=current_reply_markup,
+                        )
+                    except RetryException as err:
+                        logger.warning(f"Telegram图文消息发送失败，降级为文本消息：{err}")
+                        msg_kwargs = dict(**kwargs)
+                        if disable_web_page_preview is not None:
+                            msg_kwargs["disable_web_page_preview"] = disable_web_page_preview
+                        ret = self._bot.send_message(
+                            **msg_kwargs,
+                            text=self._telegramify_item_caption(item),
+                            reply_markup=current_reply_markup,
+                        )
 
                 elif item.content_type == ContentTypes.FILE:
                     ret = self._bot.send_document(

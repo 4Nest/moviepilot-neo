@@ -508,3 +508,48 @@ def test_forced_manual_reorganize_still_removes_history(monkeypatch):
         ("history", history.id),
     ]
     assert planned == [fileitem.path]
+
+
+def test_manual_transfer_all_history_skips_use_friendly_summary(monkeypatch):
+    """多个文件均因成功历史跳过时不应汇总为文件错误。"""
+    chain = make_transfer_chain()
+    fileitems = [
+        make_fileitem(f"/downloads/Test.Show.S01E0{index}.mkv")
+        for index in range(1, 4)
+    ]
+    history = SimpleNamespace(
+        id=12,
+        status=True,
+        mode="copy",
+        dest_fileitem=None,
+        download_hash=None,
+        downloader=None,
+    )
+    planned = []
+    deleted = []
+    _patch_transfer_planning(
+        monkeypatch,
+        chain,
+        fileitems[0],
+        history,
+        planned,
+        deleted,
+    )
+    monkeypatch.setattr(
+        chain,
+        "_TransferChain__get_trans_fileitems",
+        lambda current_fileitem, predicate: [(item, False) for item in fileitems],
+    )
+
+    state, message = TransferChain.do_transfer(
+        chain,
+        fileitem=fileitems[0],
+        background=False,
+        manual=True,
+    )
+
+    assert state is True
+    assert message == (
+        f"{fileitems[0].name} 已整理过、{fileitems[1].name} 已整理过，等3个文件已整理过"
+    )
+    assert planned == []

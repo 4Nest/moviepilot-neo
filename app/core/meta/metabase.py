@@ -92,6 +92,8 @@ class MetaBase(object):
     begin_episode: Optional[int] = None
     # 识别的结束集
     end_episode: Optional[int] = None
+    # 种子或文件解析出的离散集号，保留断档
+    _episode_list: Optional[List[int]] = None
     # Partx Cd Dvd Disk Disc
     part: Optional[str] = None
     # 识别的资源类型
@@ -298,8 +300,10 @@ class MetaBase(object):
     @property
     def episode_list(self) -> List[int]:
         """
-        返回集的数组
+        返回集的数组，优先保留显式解析出的离散集号
         """
+        if self._episode_list is not None:
+            return list(self._episode_list)
         if self.begin_episode is None:
             return []
         elif self.end_episode is not None:
@@ -491,26 +495,44 @@ class MetaBase(object):
             return
         if isinstance(ep, list):
             if len(ep) == 1 and str(ep[0]).isdigit():
+                self._episode_list = None
                 self.begin_episode = int(ep[0])
                 self.end_episode = None
             elif len(ep) > 1 and str(ep[0]).isdigit() and str(ep[-1]).isdigit():
+                self._episode_list = None
                 self.begin_episode = int(ep[0])
                 self.end_episode = int(ep[-1])
                 self.total_episode = (self.end_episode - self.begin_episode) + 1
         elif str(ep).isdigit():
+            self._episode_list = None
             self.begin_episode = int(ep)
             self.end_episode = None
 
     def set_episodes(self, begin: int, end: int):
         """
-        设置开始集结束集
+        设置开始集结束集，并清除此前的离散集号
         """
+        self._episode_list = None
         if begin:
             self.begin_episode = begin
         if end:
             self.end_episode = end
         if self.begin_episode and self.end_episode:
             self.total_episode = (self.end_episode - self.begin_episode) + 1
+
+    def set_episode_list(self, episodes: List[int]) -> None:
+        """
+        设置实际存在的离散集号，保留断档并同步集数范围
+
+        :param episodes: 种子或文件中解析出的集号列表
+        """
+        normalized = sorted({int(episode) for episode in episodes if int(episode) > 0})
+        if not normalized:
+            return
+        self._episode_list = normalized
+        self.begin_episode = normalized[0]
+        self.end_episode = normalized[-1] if len(normalized) > 1 else None
+        self.total_episode = len(normalized)
 
     def merge(self, meta: Self):
         """
@@ -542,6 +564,7 @@ class MetaBase(object):
             self.begin_episode = meta.begin_episode
             self.end_episode = meta.end_episode
             self.total_episode = meta.total_episode
+            self._episode_list = list(meta._episode_list) if meta._episode_list is not None else None
         # 版本
         if not self.resource_type:
             self.resource_type = meta.resource_type

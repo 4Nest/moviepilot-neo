@@ -737,3 +737,70 @@ def test_send_msg_edit_with_image_falls_back_to_text_when_image_url_unavailable(
     assert "测试标题" in edit_kwargs["text"]
     assert "测试内容" in edit_kwargs["text"]
     assert edit_kwargs["reply_markup"] is not None
+
+
+def test_send_msg_retries_photo_network_failure_then_falls_back_to_text(telegram):
+    """图片连续三次网络失败后应保留正文并降级为文本消息。"""
+    telegram.bot.send_photo.side_effect = ConnectionError("network unavailable")
+    telegram.bot.send_message.return_value = SimpleNamespace(
+        message_id=18,
+        chat=SimpleNamespace(id="fake_chat_id"),
+    )
+
+    with patch("app.utils.common.time.sleep") as retry_sleep:
+        result = telegram.send_msg(
+            title="测试标题",
+            text="测试内容",
+            image="https://example.com/poster.jpg",
+        )
+
+    assert result == {"success": True, "message_id": 18, "chat_id": "fake_chat_id"}
+    assert telegram.bot.send_photo.call_count == 3
+    assert retry_sleep.call_count == 2
+    telegram.bot.send_message.assert_called_once()
+    assert "测试内容" in telegram.bot.send_message.call_args.kwargs["text"]
+
+
+def test_send_msg_photo_retry_recovers_without_text_fallback(telegram):
+    """图片在轻量重试内恢复时不得重复发送文本通知。"""
+    telegram.bot.send_photo.side_effect = [
+        ConnectionError("network unavailable"),
+        ConnectionError("network unavailable"),
+        SimpleNamespace(message_id=19, chat=SimpleNamespace(id="fake_chat_id")),
+    ]
+
+    with patch("app.utils.common.time.sleep"):
+        result = telegram.send_msg(
+            title="测试标题",
+            text="测试内容",
+            image="https://example.com/poster.jpg",
+        )
+
+    assert result == {"success": True, "message_id": 19, "chat_id": "fake_chat_id"}
+    assert telegram.bot.send_photo.call_count == 3
+    telegram.bot.send_message.assert_not_called()
+
+
+@pytest.mark.parametrize("parse_mode", ["HTML", "MarkdownV2"])
+def test_send_long_msg_photo_failure_falls_back_without_losing_text(telegram, parse_mode):
+    """长通知的图片重试耗尽后应按原格式完整发送文本分段。"""
+    telegram.bot.send_photo.side_effect = ConnectionError("network unavailable")
+    telegram.bot.send_message.return_value = SimpleNamespace(
+        message_id=20,
+        chat=SimpleNamespace(id="fake_chat_id"),
+    )
+
+    with patch("app.utils.common.time.sleep"):
+        result = telegram.send_msg(
+            title="",
+            text="完整通知内容" * 800,
+            image="https://example.com/poster.jpg",
+            parse_mode=parse_mode,
+        )
+
+    assert result == {"success": True, "message_id": 20, "chat_id": "fake_chat_id"}
+    assert telegram.bot.send_photo.call_count == 3
+    assert telegram.bot.send_message.call_count >= 1
+    assert all(
+        call.kwargs["text"] for call in telegram.bot.send_message.call_args_list
+    )

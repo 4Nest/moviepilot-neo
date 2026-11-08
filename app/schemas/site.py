@@ -125,6 +125,7 @@ class SiteCookieUpdate(BaseModel):
 
 
 class SiteCategory(BaseModel):
-    id: Optional[int] = None
+    """站点资源分类，分类标识支持数字或文本。"""
+    id: Optional[Union[int, str]] = None
     cat: Optional[str] = None
     desc: Optional[str] = None

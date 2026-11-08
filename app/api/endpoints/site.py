@@ -446,8 +446,10 @@ async def site_category(
         return []
     result = []
     for cats in category.values():
+        if not isinstance(cats, list):
+            continue
         for cat in cats:
-            if cat not in result:
+            if isinstance(cat, dict) and cat not in result:
                 result.append(cat)
     return result
 

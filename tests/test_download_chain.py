@@ -604,6 +604,20 @@ def _build_tv_context(episode_list=None):
     构造标题未显式标集数的单季电视剧候选。
     """
     episodes = episode_list or []
+    meta = SimpleNamespace(
+        season_list=[1],
+        season_episode="S01E01",
+        episode_list=episodes,
+        title="Test Show",
+        org_string="Test Show S01 2160p",
+        set_episodes=lambda begin, end: None,
+    )
+
+    def set_episode_list(parsed_episodes):
+        """记录种子文件解析出的真实离散集号。"""
+        meta.episode_list = sorted(set(parsed_episodes))
+
+    meta.set_episode_list = set_episode_list
     return SimpleNamespace(
         media_info=SimpleNamespace(
             type=MediaType.TV,
@@ -613,14 +627,7 @@ def _build_tv_context(episode_list=None):
             bangumi_id=None,
             anilist_id=None,
         ),
-        meta_info=SimpleNamespace(
-            season_list=[1],
-            season_episode="S01E01",
-            episode_list=episodes,
-            title="Test Show",
-            org_string="Test Show S01 2160p",
-            set_episodes=lambda begin, end: None,
-        ),
+        meta_info=meta,
         torrent_info=SimpleNamespace(title="Test Show S01 2160p", site_name="TestSite"),
         allowed_episodes=None,
         confirmed_full_coverage=False,
@@ -1222,3 +1229,45 @@ def test_downloading_includes_media_type_and_source_site(monkeypatch):
     assert torrent.site_name == "示例站点"
     assert torrent.userid == "user-1"
     assert torrent.username == "tester"
+
+
+def test_meta_episode_list_preserves_gaps_until_range_is_reset():
+    """离散集号应去重排序，重新设置连续范围后恢复区间展开。"""
+    meta = MetaInfo("Test.Show.S01")
+
+    meta.set_episode_list([29, 26, 28, 26])
+
+    assert meta.episode_list == [26, 28, 29]
+    assert meta.begin_episode == 26
+    assert meta.end_episode == 29
+    assert meta.total_episode == 3
+
+    meta.set_episodes(begin=1, end=3)
+    assert meta.episode_list == [1, 2, 3]
+
+
+def test_batch_download_preserves_gapped_torrent_episode_list(monkeypatch):
+    """断档合集入库后不得把未包含的中间集记为已下载。"""
+    _FakeBatchTorrentHelper.episodes = [26, 28, 29]
+    monkeypatch.setattr(download_module, "TorrentHelper", _FakeBatchTorrentHelper)
+    monkeypatch.setattr(download_module.eventmanager, "send_event", lambda *args, **kwargs: None)
+    chain = DownloadChain.__new__(DownloadChain)
+    chain.download_torrent = MagicMock(return_value=(b"torrent-content", "", ["demo.mkv"]))
+    chain.download_single = MagicMock(return_value="hash")
+    context = _build_tv_context()
+    no_exists = {
+        1: {
+            1: NotExistMediaInfo(
+                season=1,
+                episodes=[26, 27, 28, 29],
+                total_episode=29,
+                start_episode=1,
+            )
+        }
+    }
+
+    downloads, lefts = chain.batch_download(contexts=[context], no_exists=no_exists)
+
+    assert downloads == [context]
+    assert context.meta_info.episode_list == [26, 28, 29]
+    assert lefts[1][1].episodes == [27]

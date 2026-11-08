@@ -244,11 +244,15 @@ class WeChat:
                 ]
             }
         }
-        try:
-            return self.__post_request(self._send_msg_url, req_json)
-        except Exception as e:
-            logger.error(f"发送图文消息失败：{e}")
-            return False
+        for attempt in range(3):
+            try:
+                return self.__post_request(self._send_msg_url, req_json)
+            except Exception as e:
+                if attempt < 2:
+                    logger.warning(f"发送图文消息失败，进行第{attempt + 2}次尝试：{e}")
+                else:
+                    logger.error(f"发送图文消息失败：{e}")
+        return False
 
     def send_msg(self, title: str, text: Optional[str] = None, image: Optional[str] = None,
                  userid: Optional[str] = None, link: Optional[str] = None) -> Optional[bool]:
@@ -268,6 +272,9 @@ class WeChat:
 
             if image:
                 ret_code = self.__send_image_message(title=title, text=text, image_url=image, userid=userid, link=link)
+                if not ret_code:
+                    logger.warning("企业微信图文消息发送失败，降级为纯文本消息")
+                    ret_code = self.__send_message(title=title, text=text, userid=userid, link=link)
             else:
                 ret_code = self.__send_message(title=title, text=text, userid=userid, link=link)
 

@@ -33,7 +33,24 @@ class DirectoryHelper:
         """
         获取所有下载目录
         """
-        return sorted([d for d in self.get_dirs() if d.download_path], key=lambda x: x.priority)
+        return sorted([d for d in self.get_dirs() if d.download_path], key=lambda x: x.priority or 0)
+
+    def get_download_dir(self, media: Optional[MediaInfo]) -> Optional[schemas.TransferDirectoryConf]:
+        """
+        按配置优先级返回首个媒体条件匹配且具有下载路径的目录
+
+        :param media: 待下载媒体信息
+        :return: 可用的下载目录配置，无匹配时返回 None
+        """
+        media_type = media.type.value if media and media.type else None
+        for directory in self.get_download_dirs():
+            if not media_type or not directory.media_type:
+                return directory
+            if directory.media_type != media_type:
+                continue
+            if not directory.media_category or directory.media_category == media.category:
+                return directory
+        return None
 
     def get_local_download_dirs(self) -> List[schemas.TransferDirectoryConf]:
         """

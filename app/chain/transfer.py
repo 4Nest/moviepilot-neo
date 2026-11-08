@@ -3535,8 +3535,17 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                     skipped_hash, skipped_downloader
                 )
 
+        all_history_skipped = (
+            manual
+            and all_success
+            and planned_file_count > 0
+            and skipped_history_count == planned_file_count
+            and len(err_msgs) > 2
+            and all(message.endswith("已整理过") for message in err_msgs)
+        )
         error_msg = "、".join(err_msgs[:2]) + (
-            f"，等{len(err_msgs)}个文件错误！" if len(err_msgs) > 2 else ""
+            f"，等{len(err_msgs)}个文件已整理过" if all_history_skipped
+            else f"，等{len(err_msgs)}个文件错误！" if len(err_msgs) > 2 else ""
         )
         if preview:
             return all_success, {

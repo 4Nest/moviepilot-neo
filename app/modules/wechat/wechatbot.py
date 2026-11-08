@@ -582,8 +582,21 @@ class WeChatBot:
 
     def send_msg(self, title: str, text: Optional[str] = None, image: Optional[str] = None,
                  userid: Optional[str] = None, link: Optional[str] = None) -> Optional[bool]:
+        """发送智能机器人通知，带图消息失败时轻量重试并降级为纯文本。"""
         content = self._build_markdown(title=title, text=text, image=image, link=link)
-        return self._send_markdown(content=content, userid=userid)
+        if not image:
+            return self._send_markdown(content=content, userid=userid)
+        for attempt in range(3):
+            try:
+                if self._send_markdown(content=content, userid=userid):
+                    return True
+            except Exception as err:
+                logger.warning(f"{self._config_name} 带图通知发送异常：{err}")
+            if attempt < 2:
+                logger.warning(f"{self._config_name} 带图通知发送失败，进行第{attempt + 2}次尝试")
+        logger.warning(f"{self._config_name} 带图通知重试失败，降级为纯文本消息")
+        text_content = self._build_markdown(title=title, text=text, link=link)
+        return self._send_markdown(content=text_content, userid=userid)
 
     def send_medias_msg(self, medias: List[MediaInfo], userid: Optional[str] = None) -> Optional[bool]:
         if not medias:

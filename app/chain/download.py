@@ -198,7 +198,7 @@ class DownloadChain(ChainBase):
                 )
             return storage, target_dir, ""
 
-        dir_info = DirectoryHelper().get_dir(media_info, include_unsorted=True)
+        dir_info = DirectoryHelper().get_download_dir(media_info)
         storage = dir_info.storage if dir_info else storage
         if not dir_info:
             logger.error(f"未找到下载目录：{media_info.type.value} {media_info.title_year}")
@@ -1373,6 +1373,7 @@ class DownloadChain(ChainBase):
                                 begin_ep = min(torrent_episodes)
                                 end_ep = max(torrent_episodes)
                                 meta.set_episodes(begin=begin_ep, end=end_ep)
+                                meta.set_episode_list(torrent_episodes)
                                 # 需要目标集范围；完整覆盖场景必须覆盖范围内每一集，不能只按数量判断。
                                 need_tv_info = __get_no_exist_media(need_mid, torrent_season[0])
                                 required_episodes = __get_required_episodes(need_mid, torrent_season[0]) \
@@ -1637,6 +1638,7 @@ class DownloadChain(ChainBase):
                             begin_ep = min(torrent_episodes)
                             end_ep = max(torrent_episodes)
                             meta.set_episodes(begin=begin_ep, end=end_ep)
+                            meta.set_episode_list(torrent_episodes)
                             # 更新仍需集数
                             need_episodes = __update_episodes(_mid=need_mid,
                                                               _need=need_episodes,
