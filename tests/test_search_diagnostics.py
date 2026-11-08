@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from app.api.endpoints import search as search_endpoint
 from app.chain import search as search_module
 from app.chain.search import SearchChain
+from app.core.config import ConfigModel
 from app.core.context import MediaInfo, TorrentInfo
 from app.helper.rule import RuleHelper
 from app.helper.torrent import TorrentHelper
@@ -504,7 +505,18 @@ def test_new_torrent_or_subtitle_search_clears_cached_diagnostics():
     assert asyncio.run(chain.async_last_search_diagnostics()) is None
     assert asyncio.run(chain.async_last_rejected_search_results()) == []
 
+
+def test_search_resource_pages_defaults_to_three(monkeypatch):
+    """搜索页数默认应为 3 页，并在配置异常时回退为 3 页。"""
+
+    assert ConfigModel().SEARCH_RESOURCE_PAGES == 3
+    monkeypatch.setattr(search_module.settings, "SEARCH_RESOURCE_PAGES", 3)
+    assert SearchChain._build_search_pages(0) == [0, 1, 2]
+
+    monkeypatch.setattr(search_module.settings, "SEARCH_RESOURCE_PAGES", "invalid")
+    assert SearchChain._build_search_pages(0) == [0, 1, 2]
+
+
 async def _collect(stream):
-    """收集异步搜索流事件。"""
 
     return [event async for event in stream]

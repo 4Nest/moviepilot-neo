@@ -54,13 +54,13 @@ class SearchChain(ChainBase):
         """
         获取搜索资源需要抓取的页数。
 
-        settings 可能被环境变量写成字符串，这里统一兜底为 1，避免异常配置导致搜索中断。
+        settings 可能被环境变量写成字符串，这里统一兜底为 3，避免异常配置导致搜索中断。
         """
         pages = settings.SEARCH_RESOURCE_PAGES
         try:
             pages = int(pages)
         except (TypeError, ValueError):
-            return 1
+            return 3
         return max(pages, 1)
 
     @classmethod

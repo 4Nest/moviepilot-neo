@@ -358,7 +358,7 @@ class ConfigModel(BaseModel):
     # 最大搜索名称数量
     MAX_SEARCH_NAME_LIMIT: int = 3
     # 搜索资源获取页数
-    SEARCH_RESOURCE_PAGES: int = 1
+    SEARCH_RESOURCE_PAGES: int = 3
 
     # ==================== 下载配置 ====================
     # 种子标签
