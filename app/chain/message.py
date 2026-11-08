@@ -1320,46 +1320,31 @@ class MediaInteractionChain(ChainBase):
             return
 
         contexts = TorrentHelper().sort_torrents(contexts)
-        if self._should_auto_download(userid):
-            logger.info("用户 %s 在自动下载用户中，开始自动择优下载 ...", userid)
-            request.phase = "torrent"
-            request.page = 0
-            request.title = mediainfo.title
-            request.items = list(contexts)
-            if self._prompt_download_dir_selection(
-                    request=request,
-                    download_mode="auto",
-                    channel=channel,
-                    source=source,
-                    userid=userid,
-                    username=username,
-                    no_exists=no_exists,
-                    original_message_id=original_message_id,
-                    original_chat_id=original_chat_id,
-            ):
-                return
-            self._auto_download(
+        logger.info("用户 %s 开始自动择优下载 ...", userid)
+        request.phase = "torrent"
+        request.page = 0
+        request.title = mediainfo.title
+        request.items = list(contexts)
+        if self._prompt_download_dir_selection(
                 request=request,
-                cache_list=contexts,
+                download_mode="auto",
                 channel=channel,
                 source=source,
                 userid=userid,
                 username=username,
                 no_exists=no_exists,
-            )
+                original_message_id=original_message_id,
+                original_chat_id=original_chat_id,
+        ):
             return
-
-        request.phase = "torrent"
-        request.page = 0
-        request.title = mediainfo.title
-        request.items = list(contexts)
-        self._render_interaction(
+        self._auto_download(
             request=request,
+            cache_list=contexts,
             channel=channel,
             source=source,
             userid=userid,
-            original_message_id=original_message_id,
-            original_chat_id=original_chat_id,
+            username=username,
+            no_exists=no_exists,
         )
 
     def _subscribe_media(
@@ -2250,20 +2235,6 @@ class MediaInteractionChain(ChainBase):
             f"第 {sea} 季总 {no_exist.total_episode} 集"
             for sea, no_exist in season_map.items()
         ]
-
-    @staticmethod
-    def _should_auto_download(userid: Union[str, int]) -> bool:
-        """
-        判断当前用户是否命中自动下载名单。
-        """
-        auto_download_user = settings.AUTO_DOWNLOAD_USER
-        return bool(
-            auto_download_user
-            and (
-                    auto_download_user == "all"
-                    or any(userid == user for user in auto_download_user.split(","))
-            )
-        )
 
     def _post_invalid_input(
             self,

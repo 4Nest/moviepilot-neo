@@ -1906,3 +1906,49 @@ def test_get_download_dirs_keeps_matching_tv_category_dir():
         "动画下载",
     ]
     assert download_dirs[0].save_path == "rclone:/media/anime"
+
+
+def test_search_media_resources_auto_downloads_by_default():
+    """远程搜索选定媒体后应默认对所有用户执行自动择优下载。"""
+    chain = MediaInteractionChain()
+    context = _build_context()
+    media = context.media_info
+    request = media_interaction_manager.create_or_replace(
+        user_id="any-user-id",
+        channel=MessageChannel.Telegram,
+        source="telegram-test",
+        username="tester",
+        action="Search",
+        keyword="星际穿越",
+        title="星际穿越",
+        meta=_build_meta("星际穿越"),
+        items=[media],
+    )
+
+    with patch(
+        "app.chain.message.DownloadChain.get_no_exists_info",
+        return_value=(False, {}),
+    ), patch(
+        "app.chain.message.SearchChain.process",
+        return_value=[context],
+    ), patch(
+        "app.chain.message.TorrentHelper.sort_torrents",
+        side_effect=lambda items: items,
+    ), patch(
+        "app.chain.message.DirectoryHelper.get_download_dirs",
+        return_value=_build_single_download_dir(),
+    ), patch.object(chain, "post_message"), patch.object(
+        chain, "_auto_download"
+    ) as auto_download:
+        chain._handle_media_selection(
+            request=request,
+            page_index=1,
+            channel=MessageChannel.Telegram,
+            source="telegram-test",
+            userid="any-user-id",
+            username="tester",
+        )
+
+    auto_download.assert_called_once()
+    assert auto_download.call_args.kwargs["userid"] == "any-user-id"
+    assert auto_download.call_args.kwargs["cache_list"] == [context]
