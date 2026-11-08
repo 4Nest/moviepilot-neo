@@ -45,8 +45,12 @@ jobs:
           python-version: '3.12'
           cache: pip
       - name: Install dependencies
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python -m pip install --upgrade pip setuptools wheel
+          gh release download "v0.2.9+neo.5" -R 4Nest/MoviePilot-Rust -p "*cp311*manylinux_2_17_x86_64*.whl" -D /tmp/wheels --clobber
+          pip install --no-index --find-links /tmp/wheels moviepilot-rust==0.2.9+neo.5
           pip install -r requirements-dev.in
       - name: Run tests
         run: python -m pytest tests -q
@@ -92,7 +96,7 @@ jobs:
           frontend_asset="dist-${frontend_sha}.zip"
           frontend_asset_url="https://github.com/${FRONTEND_REPO}/releases/download/${frontend_version}/${frontend_asset}"
           for attempt in $(seq 1 60); do
-            if curl -fsSIL "$frontend_asset_url" >/dev/null; then
+            if curl -fsSIL "$frontend_asset_url" >/dev/null || gh api "repos/${FRONTEND_REPO}/releases/tags/${frontend_version}" --jq '.assets[].name' | grep -Fxq "$frontend_asset"; then
               echo "sha=$frontend_sha" >> "$GITHUB_OUTPUT"
               echo "asset=$frontend_asset" >> "$GITHUB_OUTPUT"
               exit 0

@@ -88,8 +88,13 @@ RUN python3 -m venv ${VENV_PATH} \
     && ln -sf /usr/local/bin/uv-pip-compat ${VENV_PATH}/bin/pip3.12 \
     && ln -sf /usr/local/bin/uv-pip-compat ${VENV_PATH}/bin/pip-compile \
     && ln -sf /usr/local/bin/uv-pip-compat ${VENV_PATH}/bin/pip-sync \
-    && pip-compile --emit-find-links requirements.in -o requirements.txt \
+    && mkdir -p /tmp/wheels \
+    && RUST_ASSET_URL=$(curl -fsSL "https://api.github.com/repos/4Nest/MoviePilot-Rust/releases/tags/v0.2.9+neo.5" | jq -r '.assets[] | select(.name | test("cp311.*manylinux_2_17_x86_64")) | .url' | head -n 1) \
+    && curl -fsSL --retry 6 --retry-delay 5 --retry-all-errors -H "Accept: application/octet-stream" "${RUST_ASSET_URL}" -o "/tmp/wheels/moviepilot_rust-0.2.9+neo.5-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" \
+    && sed 's|^--find-links .*|--find-links /tmp/wheels|' requirements.in > /tmp/requirements-local.in \
+    && pip-compile --emit-find-links /tmp/requirements-local.in -o requirements.txt \
     && pip install -r requirements.txt \
+    && rm -rf /tmp/wheels /tmp/requirements-local.in \
     && python -c 'import moviepilot_rust as m; assert m.BT_PT_RECOGNITION_REVISION >= 4, "missing Neo subtitle recognition fixes"'
 
 # 下载准备代码
@@ -104,7 +109,12 @@ ARG FRONTEND_DIST_ASSET=dist.zip
 ARG FRONTEND_DIST_TAG=unknown
 RUN echo "frontend dist tag: ${FRONTEND_DIST_TAG}" \
     && FRONTEND_VERSION=$(sed -n "s/^FRONTEND_VERSION\s*=\s*'\([^']*\)'/\1/p" /app/version.py) \
-    && curl -fsSL --retry 12 --retry-delay 10 --retry-all-errors "https://github.com/${FRONTEND_REPO}/releases/download/${FRONTEND_VERSION}/${FRONTEND_DIST_ASSET}" -o /tmp/frontend-dist.zip \
+    && ASSET_API_URL=$(curl -fsSL "https://api.github.com/repos/${FRONTEND_REPO}/releases/tags/${FRONTEND_VERSION}" | jq -r --arg name "${FRONTEND_DIST_ASSET}" '.assets[] | select(.name == $name) | .url' | head -n 1) \
+    && if [ -n "${ASSET_API_URL}" ] && [ "${ASSET_API_URL}" != "null" ]; then \
+         curl -fsSL --retry 6 --retry-delay 5 --retry-all-errors -H "Accept: application/octet-stream" "${ASSET_API_URL}" -o /tmp/frontend-dist.zip; \
+       else \
+         curl -fsSL --retry 12 --retry-delay 10 --retry-all-errors "https://github.com/${FRONTEND_REPO}/releases/download/${FRONTEND_VERSION}/${FRONTEND_DIST_ASSET}" -o /tmp/frontend-dist.zip; \
+       fi \
     && busybox unzip -d / /tmp/frontend-dist.zip \
     && rm -f /tmp/frontend-dist.zip \
     && mv /dist /public \
