@@ -1,13 +1,15 @@
+import secrets
 from dataclasses import dataclass
 from typing import Literal, Optional, Tuple, Union
 
 from app.chain import ChainBase
 from app.core.config import settings
-from app.core.security import verify_password
+from app.core.security import get_password_hash, verify_password
 from app.db.models.user import User
 from app.db.user_oper import UserOper
 from app.log import logger
-from app.schemas import AuthCredentials
+from app.schemas import AuthCredentials, AuthInterceptCredentials
+from app.schemas.types import ChainEventType
 from app.utils.otp import OtpUtils
 
 PASSWORD_INVALID_CREDENTIALS_MESSAGE = "用户名、密码或验证码错误"
@@ -56,7 +58,10 @@ class UserChain(ChainBase):
         if credentials.grant_type != "password":
             logger.debug(f"认证类型 {grant_type} 未实现")
             return False, "不支持的认证类型"
-        success, user_or_message = self.password_authenticate(credentials=credentials)
+        if credentials.username == settings.SUPERUSER:
+            success, user_or_message = self.password_authenticate(credentials=credentials)
+        else:
+            success, user_or_message = self.emby_authenticate(credentials=credentials)
         if not success:
             return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
         mfa_result = self._verify_mfa(user_or_message, credentials.mfa_code)
@@ -64,7 +69,7 @@ class UserChain(ChainBase):
             return False, mfa_result
         if not mfa_result:
             return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
-        logger.info(f"用户 {username} 通过密码认证成功")
+        logger.info(f"用户 {username} 认证成功")
         return True, user_or_message
 
     @staticmethod
@@ -90,6 +95,66 @@ class UserChain(ChainBase):
             return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
         if not verify_password(credentials.password, str(user.hashed_password)):
             logger.info(f"密码认证失败，用户 {credentials.username} 的密码验证不通过")
+            return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
+        return True, user
+
+    def emby_authenticate(self, credentials: AuthCredentials) -> Tuple[bool, Union[User, str]]:
+        """
+        使用 Emby 媒体服务器进行辅助认证并在首次登录时自动创建普通用户。
+
+        :param credentials: 认证凭证
+        :return:
+            - 成功时返回 (True, User)
+            - 失败时返回 (False, "错误信息")
+        """
+        if (
+            not credentials
+            or credentials.grant_type != "password"
+            or not credentials.username
+            or not credentials.password
+        ):
+            return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
+        if credentials.username == settings.SUPERUSER:
+            return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
+
+        user_oper = UserOper()
+        user = user_oper.get_by_name(name=credentials.username)
+        if user and (not user.is_active or user.is_superuser):
+            logger.info(f"Emby 辅助认证拒绝：用户 {credentials.username} 已禁用或角色不允许")
+            return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
+
+        auth_result: Optional[AuthCredentials] = self.run_module(
+            "user_authenticate", credentials=credentials
+        )
+        if not auth_result or not auth_result.token:
+            logger.info(f"Emby 辅助认证失败：用户 {credentials.username} 凭证校验未通过")
+            return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
+
+        intercept_data = AuthInterceptCredentials(
+            username=credentials.username,
+            channel=auth_result.channel or "Emby",
+            service=auth_result.service or "",
+            token=auth_result.token,
+            status="completed",
+        )
+        event = self.eventmanager.send_event(ChainEventType.AuthIntercept, intercept_data)
+        event_data = getattr(event, "event_data", event) or intercept_data
+        if getattr(event_data, "cancel", False):
+            logger.info(
+                f"Emby 辅助认证完成后被拦截：user={credentials.username}, "
+                f"source={getattr(event_data, 'source', None)}, reason={getattr(event_data, 'reason', None)}"
+            )
+            return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
+
+        if not user:
+            user_oper.add(
+                name=credentials.username,
+                is_active=True,
+                is_superuser=False,
+                hashed_password=get_password_hash(secrets.token_urlsafe(16)),
+            )
+            user = user_oper.get_by_name(name=credentials.username)
+        if not user or not user.is_active or user.is_superuser:
             return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
         return True, user
 

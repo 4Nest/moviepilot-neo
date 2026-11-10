@@ -226,6 +226,259 @@ class Emby:
             logger.error(f"连接Users出错：" + str(e))
         return None
 
+    def get_users(self, detailed: bool = False) -> List[dict]:
+        """
+        获取Emby用户列表
+
+        :param detailed: 是否返回完整策略与权限扩展字段
+        :return: 归一化用户字典列表
+        """
+        if not self._host or not self._apikey:
+            return []
+        url = f"{self._host}Users"
+        params = {
+            "api_key": self._apikey
+        }
+        try:
+            res = RequestUtils().get_res(url, params)
+            if not res:
+                logger.error("Users 未获取到返回数据")
+                return []
+            users = res.json()
+            if not isinstance(users, list):
+                return []
+            result: List[dict] = []
+            for emby_user in users:
+                if not isinstance(emby_user, dict):
+                    continue
+                name = (emby_user.get("Name") or "").strip()
+                if not name:
+                    continue
+                policy = emby_user.get("Policy") or {}
+                item = {
+                    "id": str(emby_user.get("Id") or ""),
+                    "name": name,
+                    "is_admin": bool(policy.get("IsAdministrator")),
+                    "is_disabled": bool(policy.get("IsDisabled")),
+                    "last_login_date": emby_user.get("LastLoginDate"),
+                    "last_activity_date": emby_user.get("LastActivityDate"),
+                }
+                if detailed:
+                    item.update({
+                        "has_password": bool(emby_user.get("HasPassword")),
+                        "is_hidden": bool(policy.get("IsHidden", True)),
+                        "enable_all_folders": bool(policy.get("EnableAllFolders", True)),
+                        "enabled_folders": [
+                            str(fid)
+                            for fid in (policy.get("EnabledFolders") or [])
+                            if fid is not None
+                        ],
+                        "enable_remote_access": bool(policy.get("EnableRemoteAccess", True)),
+                        "enable_downloading": bool(policy.get("EnableContentDownloading", True)),
+                        "enable_video_transcoding": bool(
+                            policy.get("EnableVideoPlaybackTranscoding", True)
+                        ),
+                        "enable_audio_transcoding": bool(
+                            policy.get("EnableAudioPlaybackTranscoding", True)
+                        ),
+                        "simultaneous_stream_limit": int(
+                            policy.get("SimultaneousStreamLimit") or 0
+                        ),
+                    })
+                result.append(item)
+            return result
+        except Exception as e:
+            logger.error(f"连接Users出错：{str(e)}")
+            return []
+
+    def get_user_detail(self, user_id: str) -> Optional[dict]:
+        """
+        获取指定Emby用户的完整详情（含Policy与Configuration）
+
+        :param user_id: Emby用户ID
+        :return: Emby原始用户对象字典
+        """
+        if not self._host or not self._apikey or not user_id:
+            return None
+        url = f"{self._host}Users/{user_id}"
+        params = {"api_key": self._apikey}
+        try:
+            res = RequestUtils().get_res(url, params)
+            if res and 200 <= res.status_code < 300:
+                data = res.json()
+                return data if isinstance(data, dict) else None
+        except Exception as e:
+            logger.error(f"获取Emby用户详情出错 ({user_id})：{str(e)}")
+        return None
+
+    def set_user_password(self, user_id: str, new_password: str = "") -> Tuple[bool, str]:
+        """
+        重置或设置指定Emby用户的密码
+
+        :param user_id: Emby用户ID
+        :param new_password: 新密码（传空字符串表示清空密码）
+        :return: (是否成功, 提示信息)
+        """
+        if not self._host or not self._apikey or not user_id:
+            return False, "Emby服务器或用户ID无效"
+        url = f"{self._host}Users/{user_id}/Password"
+        params = {"api_key": self._apikey}
+        req = RequestUtils(content_type="application/json")
+        try:
+            # 先重置旧密码，避免因已有旧密码导致管理员无法直接覆盖新密码
+            reset_res = req.post_res(
+                url=url,
+                params=params,
+                data=json.dumps({"ResetPassword": True}),
+            )
+            if reset_res is None or reset_res.status_code >= 400:
+                logger.warning(f"Emby重置用户密码返回异常 ({user_id})：{getattr(reset_res, 'text', '')}")
+            if new_password:
+                set_res = req.post_res(
+                    url=url,
+                    params=params,
+                    data=json.dumps({"CurrentPw": "", "NewPw": new_password}),
+                )
+                if set_res is None or not (200 <= set_res.status_code < 300):
+                    err = getattr(set_res, "text", "") or "设置Emby用户密码失败"
+                    return False, err
+            return True, "密码已更新"
+        except Exception as e:
+            logger.error(f"设置Emby用户密码出错 ({user_id})：{str(e)}")
+            return False, str(e)
+
+    def update_user_policy(self, user_id: str, policy_updates: dict) -> Tuple[bool, str]:
+        """
+        更新指定Emby用户的权限策略（Policy）
+
+        :param user_id: Emby用户ID
+        :param policy_updates: 需要覆盖更新的Policy字段字典
+        :return: (是否成功, 提示信息)
+        """
+        if not self._host or not self._apikey or not user_id:
+            return False, "Emby服务器或用户ID无效"
+        detail = self.get_user_detail(user_id)
+        if not detail:
+            return False, "未找到对应的Emby用户"
+        current_policy = dict(detail.get("Policy") or {})
+        current_policy.update(policy_updates or {})
+        url = f"{self._host}Users/{user_id}/Policy"
+        params = {"api_key": self._apikey}
+        try:
+            res = RequestUtils(content_type="application/json").post_res(
+                url=url,
+                params=params,
+                data=json.dumps(current_policy),
+            )
+            if res is not None and 200 <= res.status_code < 300:
+                return True, "Emby用户策略已更新"
+            return False, getattr(res, "text", "") or "更新Emby用户策略失败"
+        except Exception as e:
+            logger.error(f"更新Emby用户策略出错 ({user_id})：{str(e)}")
+            return False, str(e)
+
+    def update_user_name(self, user_id: str, new_name: str) -> Tuple[bool, str]:
+        """
+        修改指定Emby用户的用户名
+
+        :param user_id: Emby用户ID
+        :param new_name: 新用户名
+        :return: (是否成功, 提示信息)
+        """
+        clean_name = (new_name or "").strip()
+        if not self._host or not self._apikey or not user_id or not clean_name:
+            return False, "Emby用户ID或新用户名不能为空"
+        detail = self.get_user_detail(user_id)
+        if not detail:
+            return False, "未找到对应的Emby用户"
+        detail["Name"] = clean_name
+        url = f"{self._host}Users/{user_id}"
+        params = {"api_key": self._apikey}
+        try:
+            res = RequestUtils(content_type="application/json").post_res(
+                url=url,
+                params=params,
+                data=json.dumps(detail),
+            )
+            if res is not None and 200 <= res.status_code < 300:
+                return True, "Emby用户名已更新"
+            return False, getattr(res, "text", "") or "更新Emby用户名失败"
+        except Exception as e:
+            logger.error(f"更新Emby用户名出错 ({user_id})：{str(e)}")
+            return False, str(e)
+
+    def create_emby_user(
+        self,
+        name: str,
+        password: Optional[str] = None,
+        copy_from_user_id: Optional[str] = None,
+        policy_updates: Optional[dict] = None,
+    ) -> Tuple[bool, str, Optional[dict]]:
+        """
+        在Emby服务器新建用户，并可选设置初始密码与权限策略
+
+        :param name: 用户名
+        :param password: 初始密码
+        :param copy_from_user_id: 可选复制权限的模板用户ID
+        :param policy_updates: 可选覆盖的Policy字段字典
+        :return: (是否成功, 提示信息, 创建后的用户字典)
+        """
+        clean_name = (name or "").strip()
+        if not self._host or not self._apikey or not clean_name:
+            return False, "Emby服务器配置或用户名无效", None
+        url = f"{self._host}Users/New"
+        params = {"api_key": self._apikey}
+        payload: Dict[str, Any] = {"Name": clean_name}
+        if copy_from_user_id:
+            payload["CopyFromUserId"] = copy_from_user_id
+            payload["UserCopyOptions"] = ["UserPolicy", "UserConfiguration"]
+        try:
+            res = RequestUtils(content_type="application/json").post_res(
+                url=url,
+                params=params,
+                data=json.dumps(payload),
+            )
+            if res is None or not (200 <= res.status_code < 300):
+                err = getattr(res, "text", "") or "创建Emby用户失败"
+                return False, err, None
+            created = res.json()
+            user_id = str((created or {}).get("Id") or "")
+            if not user_id:
+                return False, "创建Emby用户未返回有效ID", None
+            if password:
+                pw_ok, pw_msg = self.set_user_password(user_id, password)
+                if not pw_ok:
+                    logger.warning(f"新建Emby用户 {clean_name} 后设置密码失败：{pw_msg}")
+            if policy_updates:
+                pol_ok, pol_msg = self.update_user_policy(user_id, policy_updates)
+                if not pol_ok:
+                    logger.warning(f"新建Emby用户 {clean_name} 后设置策略失败：{pol_msg}")
+            final_user = self.get_user_detail(user_id) or created
+            return True, "创建Emby用户成功", final_user
+        except Exception as e:
+            logger.error(f"创建Emby用户出错 ({clean_name})：{str(e)}")
+            return False, str(e), None
+
+    def delete_emby_user(self, user_id: str) -> Tuple[bool, str]:
+        """
+        从Emby服务器删除指定用户
+
+        :param user_id: Emby用户ID
+        :return: (是否成功, 提示信息)
+        """
+        if not self._host or not self._apikey or not user_id:
+            return False, "Emby服务器配置或用户ID无效"
+        url = f"{self._host}Users/{user_id}"
+        params = {"api_key": self._apikey}
+        try:
+            res = RequestUtils().delete_res(url=url, params=params)
+            if res is not None and 200 <= res.status_code < 300:
+                return True, "已从Emby服务器删除用户"
+            return False, getattr(res, "text", "") or "删除Emby用户失败"
+        except Exception as e:
+            logger.error(f"删除Emby用户出错 ({user_id})：{str(e)}")
+            return False, str(e)
+
     def authenticate(self, username: str, password: str) -> Optional[str]:
         """
         用户认证

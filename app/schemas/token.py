@@ -26,8 +26,10 @@ class Token(BaseModel):
     @computed_field
     @property
     def permissions(self) -> dict[str, bool]:
-        """根据管理员身份提供客户端功能标记，不参与服务端鉴权。"""
-        return {key: self.super_user for key in ("discovery", "search", "subscribe", "manage")}
+        """根据管理员或普通订阅用户身份提供客户端功能标记。"""
+        if self.super_user:
+            return {key: True for key in ("discovery", "search", "subscribe", "manage")}
+        return {"discovery": True, "search": False, "subscribe": True, "manage": False}
 
 
 class TokenPayload(BaseModel):

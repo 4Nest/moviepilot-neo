@@ -36,6 +36,23 @@ async def get_current_user_async(
     return user
 
 
+def get_current_active_user(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """获取当前已激活的登录用户（含管理员与 Emby 普通用户）。"""
+    if not current_user.is_active:
+        raise HTTPException(status_code=403, detail="用户未激活")
+    return current_user
+
+
+async def get_current_active_user_async(
+    current_user: User = Depends(get_current_user_async),
+) -> User:
+    """异步获取当前已激活的登录用户（含管理员与 Emby 普通用户）。"""
+    if not current_user.is_active:
+        raise HTTPException(status_code=403, detail="用户未激活")
+    return current_user
+
 def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
     """只允许 canonical admin 账号访问业务接口。"""
     from app.core.config import settings

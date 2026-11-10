@@ -18,7 +18,11 @@ from app.db.models.subscribe import Subscribe
 from app.db.models.subscribehistory import SubscribeHistory
 from app.db.models.user import User
 from app.db.systemconfig_oper import SystemConfigOper
-from app.db.user_oper import get_current_admin, get_current_admin_async
+from app.db.user_oper import (
+    get_current_active_user_async,
+    get_current_admin,
+    get_current_admin_async,
+)
 from app.helper.server import MoviePilotServerHelper
 from app.log import logger
 from app.scheduler import Scheduler
@@ -82,15 +86,68 @@ async def list_subscribes_by_media_key(
     return list(unique_subscribes.values())
 
 
+
+_PRIVILEGED_SUBSCRIBE_WRITE_FIELDS = (
+    "sites",
+    "downloader",
+    "save_path",
+    "filter_groups",
+    "custom_words",
+    "media_category",
+    "filter",
+    "include",
+    "exclude",
+    "quality",
+    "resolution",
+    "effect",
+    "version_rules",
+    "skip_library_check",
+)
+
+
+def can_access_subscribe(
+    subscribe: Subscribe | SubscribeHistory | None, current_user: User
+) -> bool:
+    """判断当前登录用户是否有权查看或管理指定订阅记录。"""
+    if not subscribe:
+        return False
+    if current_user.is_superuser:
+        return True
+    return bool(subscribe.username) and subscribe.username == current_user.name
+
+
+async def get_accessible_subscribe(
+    db: AsyncSession, subscribe_id: int, current_user: User
+) -> Subscribe | None:
+    """按订阅 ID 获取当前用户有权访问的订阅对象。"""
+    if not subscribe_id:
+        return None
+    subscribe = await Subscribe.async_get(db, subscribe_id)
+    if not can_access_subscribe(subscribe, current_user):
+        return None
+    return subscribe
+
+
+def select_accessible_subscribe(
+    subscribes: List[Subscribe], current_user: User
+) -> Subscribe | None:
+    """从候选订阅列表中选择当前用户可见的第一条订阅。"""
+    for subscribe in subscribes or []:
+        if can_access_subscribe(subscribe, current_user):
+            return subscribe
+    return None
+
 @router.get("/", summary="查询所有订阅", response_model=List[schemas.Subscribe])
 async def read_subscribes(
     db: AsyncSession = Depends(get_async_db),
-    current_user: User = Depends(get_current_admin_async),
+    current_user: User = Depends(get_current_active_user_async),
 ) -> Any:
     """
-    查询所有订阅
+    查询所有订阅（管理员返回全部用户订阅，普通用户仅返回个人订阅）
     """
-    return await Subscribe.async_list(db)
+    if current_user.is_superuser:
+        return await Subscribe.async_list(db)
+    return await Subscribe.async_list_by_username(db, current_user.name)
 
 
 @router.get(
@@ -107,7 +164,7 @@ async def list_subscribes(_: Annotated[str, Depends(verify_apitoken)]) -> Any:
 async def create_subscribe(
     *,
     subscribe_in: schemas.Subscribe,
-    current_user: User = Depends(get_current_admin_async),
+    current_user: User = Depends(get_current_active_user_async),
 ) -> schemas.Response:
     """
     新增订阅
@@ -134,11 +191,15 @@ async def create_subscribe(
     else:
         title = None
     subscribe_dict = subscribe_in.to_public_write_payload()
-    subscribe_dict["username"] = settings.SUPERUSER
+    if not current_user.is_superuser:
+        for field in _PRIVILEGED_SUBSCRIBE_WRITE_FIELDS:
+            subscribe_dict.pop(field, None)
+    subscribe_dict["username"] = current_user.name
     sid, message = await SubscribeChain().async_add(
         mtype=mtype,
         title=title,
         exist_ok=True,
+        owner_scope=not current_user.is_superuser,
         **subscribe_dict,
     )
     return schemas.Response(success=bool(sid), message=message, data={"id": sid})
@@ -197,12 +258,12 @@ async def update_subscribe_status(
     subid: int,
     state: str,
     db: AsyncSession = Depends(get_async_db),
-    current_user: User = Depends(get_current_admin_async),
+    current_user: User = Depends(get_current_active_user_async),
 ) -> Any:
     """
     更新订阅状态
     """
-    subscribe = await Subscribe.async_get(db, subid)
+    subscribe = await get_accessible_subscribe(db, subid, current_user)
     if not subscribe:
         return schemas.Response(success=False, message="订阅不存在")
     valid_states = ["R", "P", "S"]
@@ -231,13 +292,13 @@ async def subscribe_mediaid(
     season: Optional[int] = None,
     title: Optional[str] = None,
     db: AsyncSession = Depends(get_async_db),
-    current_user: User = Depends(get_current_admin_async),
+    current_user: User = Depends(get_current_active_user_async),
 ) -> Any:
     """
     根据 TMDB、豆瓣、Bangumi、AniList 或插件媒体键查询订阅。
     """
     subscribes = await list_subscribes_by_media_key(db, mediaid, season)
-    result = subscribes[0] if subscribes else None
+    result = select_accessible_subscribe(subscribes, current_user)
     source, _ = parse_media_key(mediaid)
     title_check = not result and bool(title) and source != "themoviedb"
     # 使用名称检查订阅
@@ -248,7 +309,7 @@ async def subscribe_mediaid(
         subscribes = await Subscribe.async_list_by_title(
             db, title=meta.name, season=meta.begin_season
         )
-        result = subscribes[0] if subscribes else None
+        result = select_accessible_subscribe(subscribes, current_user)
     return result if result else Subscribe()
 @router.get("/refresh", summary="刷新订阅", response_model=schemas.Response)
 def refresh_subscribes(
@@ -396,12 +457,16 @@ async def delete_subscribe_by_mediaid(
     mediaid: str,
     season: Optional[int] = None,
     db: AsyncSession = Depends(get_async_db),
-    current_user: User = Depends(get_current_admin_async),
+    current_user: User = Depends(get_current_active_user_async),
 ) -> Any:
     """
     根据任意媒体数据源 ID 删除订阅。
     """
-    delete_subscribes = await list_subscribes_by_media_key(db, mediaid, season)
+    delete_subscribes = [
+        subscribe
+        for subscribe in await list_subscribes_by_media_key(db, mediaid, season)
+        if can_access_subscribe(subscribe, current_user)
+    ]
     delete_events = []
     for subscribe in delete_subscribes:
         subscribe_info = build_subscribe_event_payload(subscribe)
@@ -506,14 +571,19 @@ async def subscribe_history(
     page: Optional[int] = 1,
     count: Optional[int] = 30,
     db: AsyncSession = Depends(get_async_db),
-    current_user: User = Depends(get_current_admin_async),
+    current_user: User = Depends(get_current_active_user_async),
 ) -> Any:
     """
     查询电影/电视剧订阅历史
     """
-    histories = await SubscribeHistory.async_list_by_type(
-        db, mtype=mtype, page=page, count=count
-    )
+    if current_user.is_superuser:
+        histories = await SubscribeHistory.async_list_by_type(
+            db, mtype=mtype, page=page, count=count
+        )
+    else:
+        histories = await SubscribeHistory.async_list_by_type_and_username(
+            db, mtype=mtype, username=current_user.name, page=page, count=count
+        )
     result = []
     for history in histories:
         history_item = schemas.Subscribe.model_validate(history, from_attributes=True)
@@ -530,13 +600,13 @@ async def subscribe_history(
 async def delete_subscribe_history(
     history_id: int,
     db: AsyncSession = Depends(get_async_db),
-    current_user: User = Depends(get_current_admin_async),
+    current_user: User = Depends(get_current_active_user_async),
 ) -> Any:
     """
     删除订阅历史
     """
     history = await SubscribeHistory.async_get(db, history_id)
-    if history:
+    if history and can_access_subscribe(history, current_user):
         await SubscribeHistory.async_delete(db, history_id)
     return schemas.Response(success=True)
 
@@ -766,14 +836,14 @@ async def subscribe_share_statistics(
 async def read_subscribe(
     subscribe_id: int,
     db: AsyncSession = Depends(get_async_db),
-    current_user: User = Depends(get_current_admin_async),
+    current_user: User = Depends(get_current_active_user_async),
 ) -> Any:
     """
     根据订阅编号查询订阅信息
     """
     if not subscribe_id:
         return Subscribe()
-    subscribe = await Subscribe.async_get(db, subscribe_id)
+    subscribe = await get_accessible_subscribe(db, subscribe_id, current_user)
     return subscribe if subscribe else Subscribe()
 
 
@@ -781,12 +851,12 @@ async def read_subscribe(
 async def delete_subscribe(
     subscribe_id: int,
     db: AsyncSession = Depends(get_async_db),
-    current_user: User = Depends(get_current_admin_async),
+    current_user: User = Depends(get_current_active_user_async),
 ) -> Any:
     """
     删除订阅信息
     """
-    subscribe = await Subscribe.async_get(db, subscribe_id)
+    subscribe = await get_accessible_subscribe(db, subscribe_id, current_user)
     if subscribe:
         # 在删除之前获取订阅信息
         subscribe_info = build_subscribe_event_payload(subscribe)

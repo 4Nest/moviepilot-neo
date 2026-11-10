@@ -176,6 +176,86 @@ class Subscribe(Base):
 
     @classmethod
     @db_query
+    def exists_by_username(
+            cls, db: Session, username: str, tmdbid: Optional[int] = None,
+            doubanid: Optional[str] = None, bangumiid: Optional[int] = None,
+            anilistid: Optional[int] = None, media_source: Optional[str] = None,
+            media_id: Optional[str] = None, season: Optional[int] = None,
+            episode_group: Optional[str] = None,
+    ):
+        """按用户名、媒体身份、季号与剧集组查询已有订阅。"""
+        if not username:
+            return None
+        condition = cls._identity_condition(
+            media_source, media_id, tmdbid, doubanid, bangumiid, anilistid
+        )
+        if condition is None:
+            return None
+        query = db.query(cls).filter(condition, cls.username == username)
+        if season is not None:
+            query = query.filter(cls.season == season)
+        query = query.filter(cls.episode_group == episode_group)
+        return query.first()
+
+    @classmethod
+    @async_db_query
+    async def async_exists_by_username(
+            cls, db: AsyncSession, username: str, tmdbid: Optional[int] = None,
+            doubanid: Optional[str] = None, bangumiid: Optional[int] = None,
+            anilistid: Optional[int] = None, media_source: Optional[str] = None,
+            media_id: Optional[str] = None, season: Optional[int] = None,
+            episode_group: Optional[str] = None,
+    ):
+        """异步按用户名、媒体身份、季号与剧集组查询已有订阅。"""
+        if not username:
+            return None
+        condition = cls._identity_condition(
+            media_source, media_id, tmdbid, doubanid, bangumiid, anilistid
+        )
+        if condition is None:
+            return None
+        query = select(cls).filter(condition, cls.username == username)
+        if season is not None:
+            query = query.filter(cls.season == season)
+        query = query.filter(cls.episode_group == episode_group)
+        result = await db.execute(query)
+        return result.scalars().first()
+
+    @classmethod
+    @db_query
+    def list_by_username(
+            cls, db: Session, username: str, state: Optional[str] = None,
+            mtype: Optional[str] = None,
+    ):
+        """按用户名查询订阅列表，支持按状态和媒体类型过滤。"""
+        if not username:
+            return []
+        query = db.query(cls).filter(cls.username == username)
+        if state:
+            query = query.filter(cls.state.in_(state.split(',')))
+        if mtype:
+            query = query.filter(cls.type == mtype)
+        return query.all()
+
+    @classmethod
+    @async_db_query
+    async def async_list_by_username(
+            cls, db: AsyncSession, username: str, state: Optional[str] = None,
+            mtype: Optional[str] = None,
+    ):
+        """异步按用户名查询订阅列表，支持按状态和媒体类型过滤。"""
+        if not username:
+            return []
+        query = select(cls).filter(cls.username == username)
+        if state:
+            query = query.filter(cls.state.in_(state.split(',')))
+        if mtype:
+            query = query.filter(cls.type == mtype)
+        result = await db.execute(query)
+        return result.scalars().all()
+
+    @classmethod
+    @db_query
     def get_by_state(cls, db: Session, state: str):
         # 如果 state 为空或 None，返回所有订阅
         if not state:

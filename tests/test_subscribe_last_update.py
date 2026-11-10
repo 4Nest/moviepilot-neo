@@ -1,6 +1,7 @@
 """订阅响应聚合版本更新时间的兼容回归。"""
 
 from copy import deepcopy
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -96,7 +97,9 @@ def test_read_endpoints_return_latest_version_time(monkeypatch: pytest.MonkeyPat
     app = FastAPI()
     app.include_router(subscribe_api.router, prefix="/api/v1/subscribe")
     app.dependency_overrides[subscribe_api.get_async_db] = lambda: None
-    app.dependency_overrides[subscribe_api.get_current_admin_async] = lambda: None
+    admin_user = SimpleNamespace(name="admin", is_active=True, is_superuser=True)
+    app.dependency_overrides[subscribe_api.get_current_admin_async] = lambda: admin_user
+    app.dependency_overrides[subscribe_api.get_current_active_user_async] = lambda: admin_user
     app.dependency_overrides[subscribe_api.verify_apitoken] = lambda: "test"
 
     with TestClient(app) as client:

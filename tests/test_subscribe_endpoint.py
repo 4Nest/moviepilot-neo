@@ -509,8 +509,8 @@ class SubscribeEndpointTest(TestCase):
         payload = async_add.await_args.kwargs
         for field in ("id", "poster", "backdrop", "vote", "description", "completed_episode"):
             self.assertNotIn(field, payload)
-        self.assertEqual(payload["username"], "admin")
-        self.assertNotIn("owner_scope", payload)
+        self.assertEqual(payload["username"], "moviepilot-user")
+        self.assertTrue(payload["owner_scope"])
 
     def test_create_subscribe_ignores_runtime_fact_fields(self):
         """
@@ -545,7 +545,7 @@ class SubscribeEndpointTest(TestCase):
 
         self.assertTrue(response.success)
         payload = async_add.await_args.kwargs
-        self.assertEqual(payload["username"], "admin")
+        self.assertEqual(payload["username"], "moviepilot-user")
         for field in (
             "lack_episode",
             "note",
@@ -588,11 +588,11 @@ class SubscribeEndpointTest(TestCase):
 
         self.assertTrue(response.success)
         self.assertEqual(async_add.await_args.kwargs["season"], 0)
-        self.assertNotIn("owner_scope", async_add.await_args.kwargs)
+        self.assertTrue(async_add.await_args.kwargs["owner_scope"])
 
     def test_create_subscribe_uses_global_deduplication(self):
         """
-        新增订阅保持全局去重语义，不再携带 owner_scope。
+        管理员新增订阅保持全局去重语义（owner_scope=False）。
         """
         subscribe_in = Subscribe(
             name="测试电影",
@@ -612,7 +612,7 @@ class SubscribeEndpointTest(TestCase):
             )
 
         self.assertTrue(response.success)
-        self.assertNotIn("owner_scope", async_add.await_args.kwargs)
+        self.assertFalse(async_add.await_args.kwargs["owner_scope"])
 
     def test_update_status_sends_modified_event_payload_with_scene_and_fields(self):
         """

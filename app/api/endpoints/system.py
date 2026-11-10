@@ -38,7 +38,11 @@ from app.core.module import ModuleManager
 from app.core.security import verify_apitoken, verify_resource_token, verify_token
 from app.db.models import User
 from app.db.systemconfig_oper import SystemConfigOper
-from app.db.user_oper import get_current_admin, get_current_admin_async
+from app.db.user_oper import (
+    get_current_active_user_async,
+    get_current_admin,
+    get_current_admin_async,
+)
 from app.helper.image import ImageHelper
 from app.helper.locale import LocaleHelper
 from app.helper.market import (
@@ -899,7 +903,9 @@ def get_global_setting(token: str):
 @router.get(
     "/global/user", summary="查询用户相关系统设置", response_model=schemas.Response
 )
-async def get_user_global_setting(_: User = Depends(get_current_admin_async)):
+async def get_user_global_setting(
+    current_user: User = Depends(get_current_active_user_async),
+):
     """
     查询用户相关系统设置（登录后获取）
     包含业务功能相关的配置和用户权限信息
@@ -913,7 +919,11 @@ async def get_user_global_setting(_: User = Depends(get_current_admin_async)):
     )
 
     # 追加用户唯一ID和订阅分享管理权限
-    share_admin = await MoviePilotServerHelper.async_is_admin_user()
+    share_admin = (
+        await MoviePilotServerHelper.async_is_admin_user()
+        if current_user.is_superuser
+        else False
+    )
     info.update(
         {
             "USER_UNIQUE_ID": MoviePilotServerHelper.get_user_uuid(),
@@ -958,7 +968,7 @@ async def usage_statistic(_: User = Depends(get_current_admin_async)):
 
 
 @router.get("/ping", summary="服务存活检测", response_model=schemas.Response)
-async def ping(_: User = Depends(get_current_admin_async)) -> schemas.Response:
+async def ping(_: User = Depends(get_current_active_user_async)) -> schemas.Response:
     """
     检测服务是否可用
     """
@@ -1029,7 +1039,7 @@ async def get_progress(
 
 @router.get("/setting/public/{key}", summary="查询公开系统设置", response_model=schemas.Response)
 async def get_public_setting(
-    key: str, _: User = Depends(get_current_admin_async)
+    key: str, _: User = Depends(get_current_active_user_async)
 ) -> schemas.Response:
     """
     查询普通用户可读取的非敏感系统设置

@@ -104,6 +104,10 @@ class AuthCredentials(ChainEventData):
         ...,
         description="认证类型，仅支持 'password'",
     )
+    # 输出参数
+    channel: Optional[str] = Field(default=None, description="辅助认证渠道")
+    service: Optional[str] = Field(default=None, description="辅助认证服务实例名称")
+    token: Optional[str] = Field(default=None, description="辅助认证返回的访问令牌")
 
     @model_validator(mode="before")
     @classmethod
@@ -121,6 +125,19 @@ class AuthCredentials(ChainEventData):
 
         return values
 
+
+
+class AuthInterceptCredentials(ChainEventData):
+    """辅助认证准入拦截事件数据模型。"""
+
+    username: str = Field(..., description="请求认证的用户名")
+    channel: str = Field(..., description="认证渠道，如 Emby")
+    service: str = Field(..., description="媒体服务器实例名称")
+    token: Optional[str] = Field(default=None, description="认证通过后的访问令牌")
+    status: str = Field(default="triggered", description="阶段：triggered 或 completed")
+    cancel: bool = Field(default=False, description="是否拦截拒绝本次登录")
+    source: Optional[str] = Field(default=None, description="拦截来源插件名")
+    reason: Optional[str] = Field(default=None, description="拒绝原因")
 
 class CommandRegisterEventData(ChainEventData):
     """

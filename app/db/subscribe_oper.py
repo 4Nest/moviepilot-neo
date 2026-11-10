@@ -28,6 +28,8 @@ class SubscribeOper(DbOper):
         """
         新增订阅
         """
+        owner_scope = bool(kwargs.pop("owner_scope", False))
+        owner_username = kwargs.get("username") if owner_scope else None
         media_source, media_id = resolve_media_identity(
             media=mediainfo,
             source=kwargs.get("media_source"),
@@ -43,7 +45,12 @@ class SubscribeOper(DbOper):
             "season": kwargs.get("season"),
             "episode_group": mediainfo.episode_group,
         }
-        subscribe = Subscribe.exists(self._db, **identity_params)
+        if owner_username:
+            subscribe = Subscribe.exists_by_username(
+                self._db, username=owner_username, **identity_params
+            )
+        else:
+            subscribe = Subscribe.exists(self._db, **identity_params)
         kwargs.update({
             "name": mediainfo.title,
             "year": mediainfo.year,
@@ -69,7 +76,12 @@ class SubscribeOper(DbOper):
             subscribe = Subscribe(**kwargs)
             subscribe.create(self._db)
             # 查询订阅
-            subscribe = Subscribe.exists(self._db, **identity_params)
+            if owner_username:
+                subscribe = Subscribe.exists_by_username(
+                    self._db, username=owner_username, **identity_params
+                )
+            else:
+                subscribe = Subscribe.exists(self._db, **identity_params)
             return subscribe.id, "新增订阅成功"
         else:
             return subscribe.id, "订阅已存在"
@@ -78,6 +90,8 @@ class SubscribeOper(DbOper):
         """
         异步新增订阅
         """
+        owner_scope = bool(kwargs.pop("owner_scope", False))
+        owner_username = kwargs.get("username") if owner_scope else None
         media_source, media_id = resolve_media_identity(
             media=mediainfo,
             source=kwargs.get("media_source"),
@@ -93,7 +107,12 @@ class SubscribeOper(DbOper):
             "season": kwargs.get("season"),
             "episode_group": mediainfo.episode_group,
         }
-        subscribe = await Subscribe.async_exists(self._db, **identity_params)
+        if owner_username:
+            subscribe = await Subscribe.async_exists_by_username(
+                self._db, username=owner_username, **identity_params
+            )
+        else:
+            subscribe = await Subscribe.async_exists(self._db, **identity_params)
         kwargs.update({
             "name": mediainfo.title,
             "year": mediainfo.year,
@@ -119,7 +138,12 @@ class SubscribeOper(DbOper):
             subscribe = Subscribe(**kwargs)
             await subscribe.async_create(self._db)
             # 查询订阅
-            subscribe = await Subscribe.async_exists(self._db, **identity_params)
+            if owner_username:
+                subscribe = await Subscribe.async_exists_by_username(
+                    self._db, username=owner_username, **identity_params
+                )
+            else:
+                subscribe = await Subscribe.async_exists(self._db, **identity_params)
             return subscribe.id, "新增订阅成功"
         else:
             return subscribe.id, "订阅已存在"
@@ -201,6 +225,19 @@ class SubscribeOper(DbOper):
             return await Subscribe.async_get_by_state(self._db, state)
         return await Subscribe.async_list(self._db)
 
+
+    def list_by_username(
+        self,
+        username: str,
+        state: Optional[str] = None,
+        mtype: Optional[str] = None,
+    ) -> List[Subscribe]:
+        """
+        按用户名获取订阅列表。
+        """
+        return Subscribe.list_by_username(
+            self._db, username=username, state=state, mtype=mtype
+        )
     def delete(self, sid: int):
         """
         删除订阅

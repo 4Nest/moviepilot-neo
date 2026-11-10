@@ -9,7 +9,11 @@ from app import schemas
 from app.core.security import get_password_hash
 from app.db import get_async_db
 from app.db.models.user import User
-from app.db.user_oper import get_current_admin, get_current_admin_async
+from app.db.user_oper import (
+    get_current_active_user,
+    get_current_active_user_async,
+    get_current_admin_async,
+)
 from app.db.userconfig_oper import UserConfigOper
 
 router = APIRouter()
@@ -17,7 +21,7 @@ router = APIRouter()
 
 @router.get("/current", summary="当前登录用户信息", response_model=schemas.User)
 async def read_current_user(
-    current_user: User = Depends(get_current_admin_async),
+    current_user: User = Depends(get_current_active_user_async),
 ) -> Any:
     """
     当前登录用户信息
@@ -77,7 +81,7 @@ async def upload_avatar(
 
 
 @router.get("/config/{key}", summary="查询用户配置", response_model=schemas.Response)
-def get_config(key: str, current_user: User = Depends(get_current_admin)):
+def get_config(key: str, current_user: User = Depends(get_current_active_user)):
     """
     查询用户配置
     """
@@ -89,7 +93,7 @@ def get_config(key: str, current_user: User = Depends(get_current_admin)):
 def set_config(
     key: str,
     value: Annotated[Union[list, dict, bool, int, str] | None, Body()] = None,
-    current_user: User = Depends(get_current_admin),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
     更新用户配置

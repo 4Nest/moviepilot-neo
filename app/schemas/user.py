@@ -60,8 +60,12 @@ class User(UserInDBBase):
     @computed_field
     @property
     def permissions(self) -> dict[str, bool]:
-        """仅从账号实际状态派生客户端功能标记。"""
-        return {key: self.is_active and self.is_superuser for key in ("discovery", "search", "subscribe", "manage")}
+        """从账号实际状态派生客户端功能标记。"""
+        if not self.is_active:
+            return {key: False for key in ("discovery", "search", "subscribe", "manage")}
+        if self.is_superuser:
+            return {key: True for key in ("discovery", "search", "subscribe", "manage")}
+        return {"discovery": True, "search": False, "subscribe": True, "manage": False}
 
 
 # Additional properties stored in DB

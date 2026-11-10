@@ -110,6 +110,25 @@ class SubscribeHistory(Base):
         return result.scalars().all()
 
     @classmethod
+    @async_db_query
+    async def async_list_by_type_and_username(
+            cls, db: AsyncSession, mtype: str, username: str,
+            page: Optional[int] = 1, count: Optional[int] = 30,
+    ):
+        """异步按媒体类型和用户名分页查询订阅历史。"""
+        if not username:
+            return []
+        result = await db.execute(
+            select(cls).filter(
+                cls.type == mtype,
+                cls.username == username,
+            ).order_by(
+                cls.date.desc()
+            ).offset((page - 1) * count).limit(count)
+        )
+        return result.scalars().all()
+
+    @classmethod
     def _identity_condition(
             cls,
             media_source: Optional[str] = None,

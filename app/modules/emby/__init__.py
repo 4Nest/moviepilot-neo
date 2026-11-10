@@ -2,10 +2,11 @@ from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 
 from app import schemas
 from app.core.context import MediaInfo
+from app.core.event import eventmanager
 from app.log import logger
 from app.modules import _MediaServerBase, _ModuleBase
 from app.modules.emby.emby import Emby
-from app.schemas.types import MediaType, ModuleType, MediaServerType
+from app.schemas.types import ChainEventType, MediaType, ModuleType, MediaServerType
 
 
 class EmbyModule(_ModuleBase, _MediaServerBase[Emby]):
@@ -94,6 +95,54 @@ class EmbyModule(_ModuleBase, _MediaServerBase[Emby]):
                 result = server.get_webhook_message(form, args)
                 if result:
                     return result
+        return None
+
+    def user_authenticate(
+        self,
+        credentials: schemas.AuthCredentials,
+        service_name: Optional[str] = None,
+    ) -> Optional[schemas.AuthCredentials]:
+        """
+        使用Emby服务器进行辅助用户认证
+
+        :param credentials: 认证凭证
+        :param service_name: 指定媒体服务器实例名称
+        :return: 认证成功返回填充后的凭证，否则返回None
+        """
+        if (
+            not credentials
+            or credentials.grant_type != "password"
+            or not credentials.username
+            or not credentials.password
+        ):
+            return None
+        if service_name:
+            servers = [(service_name, self.get_instance(service_name))]
+        else:
+            servers = list(self.get_instances().items())
+        for name, server in servers:
+            if not server:
+                continue
+            intercept_data = schemas.AuthInterceptCredentials(
+                username=credentials.username,
+                channel=self.get_name(),
+                service=name,
+                status="triggered",
+            )
+            event = eventmanager.send_event(ChainEventType.AuthIntercept, intercept_data)
+            event_data = getattr(event, "event_data", event) or intercept_data
+            if getattr(event_data, "cancel", False):
+                logger.info(
+                    f"Emby 辅助认证被拦截：user={credentials.username}, service={name}, "
+                    f"source={getattr(event_data, 'source', None)}, reason={getattr(event_data, 'reason', None)}"
+                )
+                continue
+            token = server.authenticate(credentials.username, credentials.password)
+            if token:
+                credentials.channel = self.get_name()
+                credentials.service = name
+                credentials.token = token
+                return credentials
         return None
 
     def media_exists(self, mediainfo: MediaInfo, itemid: Optional[str] = None,

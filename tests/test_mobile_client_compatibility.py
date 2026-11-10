@@ -65,12 +65,15 @@ def test_lite_login_and_profile_restore_permissions(client_context: tuple[TestCl
 def test_legacy_reads_still_require_canonical_admin(
     client_context: tuple[TestClient, SimpleNamespace], field: str, value: object,
 ) -> None:
-    """旧版只读接口仍拒绝停用账号、普通账号及非配置管理员。"""
+    """旧版用户列表与按名称读取接口仍拒绝停用账号、普通账号及非配置管理员；current 接口拒绝停用账号。"""
     client, account = client_context
     setattr(account, field, value)
-    for path in ("/api/v1/user/current", "/api/v1/user/", f"/api/v1/user/{account.name}"):
+    for path in ("/api/v1/user/", f"/api/v1/user/{account.name}"):
         assert client.get(path).status_code == 403
-
+    if field == "is_active" and value is False:
+        assert client.get("/api/v1/user/current").status_code == 403
+    else:
+        assert client.get("/api/v1/user/current").status_code == 200
 
 def test_legacy_user_management_writes_remain_unavailable(client_context: tuple[TestClient, SimpleNamespace]) -> None:
     """客户端兼容不能恢复新增、删除或修改其它用户的能力。"""
@@ -81,7 +84,12 @@ def test_legacy_user_management_writes_remain_unavailable(client_context: tuple[
 
 
 def test_token_without_admin_identity_does_not_advertise_permissions() -> None:
-    """缺失管理员身份的令牌响应不可默认宣告管理员权限。"""
+    """缺失管理员身份的令牌响应仅开放发现与订阅，不可宣告搜索与管理权限。"""
     token = schemas.Token(access_token="test", token_type="bearer", user_id=1, user_name="user")
     assert token.super_user is False
-    assert not any(token.model_dump()["permissions"].values())
+    assert token.model_dump()["permissions"] == {
+        "discovery": True,
+        "search": False,
+        "subscribe": True,
+        "manage": False,
+    }

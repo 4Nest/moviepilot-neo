@@ -18,6 +18,7 @@ from app.api.endpoints import transfer as transfer_endpoint
 from app.api.endpoints import user as user_endpoint
 from app.core.security import verify_resource_token
 from app.db.user_oper import (
+    get_current_active_user_async,
     get_current_admin,
     get_current_admin_async,
 )
@@ -50,10 +51,11 @@ def test_system_sensitive_read_endpoints_require_admin():
     assert _dependency_of(system_endpoint.get_setting, "_") is get_current_admin_async
 
 
-def test_system_public_read_endpoints_require_admin():
-    """公开读取接口同样收敛到 canonical admin 依赖。"""
-    assert _dependency_of(system_endpoint.ping, "_") is get_current_admin_async
-    assert _dependency_of(system_endpoint.get_public_setting, "_") is get_current_admin_async
+def test_system_public_read_endpoints_require_active_user():
+    """公开读取接口要求已激活登录用户（含管理员与 Emby 普通用户）。"""
+    assert _dependency_of(system_endpoint.ping, "_") is get_current_active_user_async
+    assert _dependency_of(system_endpoint.get_public_setting, "_") is get_current_active_user_async
+    assert _dependency_of(system_endpoint.get_user_global_setting, "current_user") is get_current_active_user_async
 
 
 def test_dashboard_endpoints_require_admin():
