@@ -365,7 +365,10 @@ def test_emby_user_manager_plugin_overview_status_blacklist_and_delete(monkeypat
     import inspect
     from app.core.event import Event
     from app.db.user_oper import get_current_admin
-    from app.plugins.embyusermanager import EmbyUserManager
+    EmbyUserManager = pytest.importorskip(
+        "app.plugins.embyusermanager",
+        reason="EmbyUserManager 属于独立插件仓库，未安装时跳过插件集成测试",
+    ).EmbyUserManager
 
     plugin = EmbyUserManager()
     plugin.init_plugin({"enabled": True, "allow_mode": "blacklist", "blacklist": ["emby_bad"]})
@@ -455,7 +458,10 @@ def test_emby_user_manager_plugin_overview_status_blacklist_and_delete(monkeypat
 def test_emby_account_crud_methods_and_plugin_endpoints(monkeypatch):
     """验证 Emby 实例与 EmbyUserManager 插件的 Emby 账号增删改查及本地用户名迁移。"""
     import json as json_mod
-    from app.plugins.embyusermanager import EmbyUserManager
+    EmbyUserManager = pytest.importorskip(
+        "app.plugins.embyusermanager",
+        reason="EmbyUserManager 属于独立插件仓库，未安装时跳过插件集成测试",
+    ).EmbyUserManager
 
     emby = Emby.__new__(Emby)
     emby._host = "http://emby.local/"
