@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Callable, List, Optional, Tuple, Union, Dict
 from urllib.parse import urljoin
 
-from app.helper.site import SitesHelper
+from app.helper.site import SiteHealthSentinel, SiteResourceRegistry, SitesHelper
 from lxml import etree
 
 from app.chain import ChainBase
@@ -63,7 +63,44 @@ class SiteChain(ChainBase):
             "uhddolby.com": self.__hddolby_test,
             "rousi.pro": self.__rousi_test,
             "sunnypt.top": self.__sunnypt_test,
+            "hdarea.club": self.__hdarea_test,
         }
+
+    def _record_site_failure(
+        self,
+        *,
+        domain: str,
+        site_name: str,
+        error_reason: Optional[str],
+        count_failure: bool = True,
+    ) -> None:
+        """记录失败原因，并在鉴权异常或触发熔断时按冷却窗口发送告警。"""
+        reason = error_reason or "站点请求失败"
+        auth_keywords = ("cookie", "api key", "apikey", "cloudflare", "登录失败", "401", "403", "权限")
+        auth_failed = any(keyword in reason.lower() for keyword in auth_keywords)
+        should_alert = SiteHealthSentinel.record_failure(
+            domain,
+            error_reason=reason,
+            auth_failed=auth_failed,
+            count_failure=count_failure,
+            alert_requested=True,
+        )
+        if not should_alert:
+            return
+        status = SiteHealthSentinel.get_status(domain)
+        if status["circuit_open"]:
+            text = (
+                f"站点连续异常，已自动进入 30 分钟熔断保护。\n"
+                f"最近异常：{reason}\n预计恢复时间：{status['circuit_until']}"
+            )
+        else:
+            text = f"检测到站点鉴权或访问异常：{reason}\n请检查站点 Cookie、API Key 及访问权限。"
+        self.post_message(Notification(
+            mtype=NotificationType.SiteMessage,
+            title=f"【站点健康预警】{site_name}",
+            text=text,
+            link=settings.MP_DOMAIN("#/site"),
+        ))
 
     def refresh_userdata(self, site: dict = None) -> Optional[SiteUserData]:
         """
@@ -71,9 +108,18 @@ class SiteChain(ChainBase):
         :param site:  站点
         :return: 用户数据
         """
+        domain = StringUtils.get_url_domain(site.get("domain") or site.get("url"))
         userdata: SiteUserData = self.run_module("refresh_userdata", site=site)
+        if userdata is None or userdata.err_msg:
+            self._record_site_failure(
+                domain=domain,
+                site_name=site.get("name") or domain,
+                error_reason=userdata.err_msg if userdata else "未获取到站点用户数据",
+            )
+            return None
+        SiteHealthSentinel.record_success(domain)
         if userdata:
-            SiteOper().update_userdata(domain=StringUtils.get_url_domain(site.get("domain")),
+            SiteOper().update_userdata(domain=domain,
                                        name=site.get("name"),
                                        payload=userdata.model_dump())
             # 发送事件
@@ -179,12 +225,24 @@ class SiteChain(ChainBase):
 
         return result
 
+    def _resolve_special_site_tester(self, domain: str) -> Optional[Callable]:
+        """优先查找热更站点专属测活函数与别名映射，未命中回退内置表。"""
+        norm_domain = StringUtils.get_url_domain(domain).lower() if domain else ""
+        if not norm_domain:
+            return None
+        hot_func = SiteResourceRegistry.get_site_test_func(norm_domain)
+        if callable(hot_func):
+            return hot_func
+        alias_target = SiteResourceRegistry.get_special_site_test_aliases().get(norm_domain)
+        if alias_target and alias_target in self.special_site_test:
+            return self.special_site_test[alias_target]
+        return self.special_site_test.get(norm_domain)
+
     def is_special_site(self, domain: str) -> bool:
         """
         判断是否特殊站点
         """
-        return domain in self.special_site_test
-
+        return self._resolve_special_site_tester(domain) is not None
     @staticmethod
     def __zhuque_test(site: Site) -> Tuple[bool, str]:
         """
@@ -296,6 +354,46 @@ class SiteChain(ChainBase):
         return True, "连接成功"
 
     @staticmethod
+    def __hdarea_test(site: Site) -> Tuple[bool, str]:
+        """
+        通过 HDArea API v1 探活接口校验 API Key 与子令牌权限范围
+
+        :param site: HDArea 站点配置
+        :return: (是否可用, 状态描述)
+        """
+        if not site.apikey:
+            return False, "请配置站点 API Key"
+        base_url = str(site.url or "https://hdarea.club/").rstrip("/")
+        res = RequestUtils(
+            headers={
+                "Accept": "application/json",
+                "User-Agent": site.ua or settings.USER_AGENT,
+                "X-API-Key": site.apikey.strip(),
+            },
+            proxies=settings.PROXY if site.proxy else None,
+            timeout=site.timeout or 15,
+        ).get_res(url=f"{base_url}/api/v1/status")
+        if res is None:
+            return False, "无法连接 HDArea API 服务"
+        try:
+            payload = res.json() or {}
+        except (TypeError, ValueError):
+            payload = {}
+        if res.status_code != 200:
+            err_msg = payload.get("message") if isinstance(payload, dict) else None
+            return False, err_msg or f"错误：{res.status_code} {res.reason}"
+        if not isinstance(payload, dict) or str(payload.get("code")) != "0":
+            err_msg = payload.get("message") if isinstance(payload, dict) else None
+            return False, err_msg or "API Key 已过期或无效"
+        auth_user = (payload.get("data") or {}).get("authenticated_user") or {}
+        scopes = set(auth_user.get("token_scopes") or [])
+        if scopes:
+            for required_scope in ("read", "download"):
+                if required_scope not in scopes:
+                    return False, f"当前 API 令牌缺少 {required_scope} 权限"
+        return True, "连接成功"
+
+    @staticmethod
     def __yema_test(site: Site) -> Tuple[bool, str]:
         """
         判断站点是否已经登陆：yemapt
@@ -385,31 +483,42 @@ class SiteChain(ChainBase):
             return False, f"错误：{res.status_code} {res.reason}"
 
     @staticmethod
-    def __parse_favicon(url: str, cookie: str, ua: str) -> Tuple[str, Optional[str]]:
+    def __parse_favicon(
+        url: str,
+        cookie: str,
+        ua: str,
+        api_only: bool = False,
+    ) -> Tuple[Optional[str], Optional[str]]:
         """
-        解析站点favicon,返回base64 fav图标
+        解析站点 favicon 并返回图标地址及 Base64 内容；首页受限时继续回退尝试默认 favicon.ico
+
         :param url: 站点地址
-        :param cookie: Cookie
+        :param cookie: 站点 Cookie
         :param ua: User-Agent
-        :return:
+        :param api_only: 是否为无浏览器 Cookie 的纯 API 模式站点
+        :return: (图标 URL, 图标 Base64 内容)
         """
         favicon_url = urljoin(url, "favicon.ico")
         res = RequestUtils(cookies=cookie, timeout=30, ua=ua).get_res(url=url)
-        if res:
-            html_text = res.text
-        else:
-            logger.error(f"获取站点页面失败：{url}")
-            return favicon_url, None
-        html = etree.HTML(html_text)
+        html = etree.HTML(res.text) if res and res.text else None
+        if not res and not api_only:
+            logger.debug(f"获取站点首页失败，继续尝试默认图标地址：{favicon_url}")
         try:
-            if StringUtils.is_valid_html_element(html):
+            if html is not None and StringUtils.is_valid_html_element(html):
                 fav_link = html.xpath('//head/link[contains(@rel, "icon")]/@href')
                 if fav_link:
                     favicon_url = urljoin(url, fav_link[0])
 
             res = RequestUtils(cookies=cookie, timeout=15, ua=ua).get_res(url=favicon_url)
-            if res:
+            if res and res.content:
                 content = res.content
+                leading = content.lstrip()[:16].lower()
+                if leading.startswith((b"<!doctype", b"<html")):
+                    if api_only:
+                        logger.info(f"站点 {url} 图标路径返回网页内容，跳过纯 API 模式图标抓取")
+                        return None, None
+                    logger.warning(f"站点图标响应为 HTML 页面，已忽略：{favicon_url}")
+                    return favicon_url, None
                 if (
                     len(content) > 22
                     and content[:6] == b"\x00\x00\x01\x00\x01\x00"
@@ -417,8 +526,10 @@ class SiteChain(ChainBase):
                 ):
                     content = content[22:]
                 return favicon_url, base64.b64encode(content).decode()
-            else:
-                logger.error(f"获取站点图标失败：{favicon_url}")
+            if api_only:
+                logger.info(f"站点 {url} 使用纯 API 模式且图标受访问防护，跳过图标抓取")
+                return None, None
+            logger.error(f"获取站点图标失败：{favicon_url}")
         finally:
             if html is not None:
                 del html
@@ -500,7 +611,8 @@ class SiteChain(ChainBase):
                             cookie=cookie,
                             ua=site_info.ua or settings.USER_AGENT,
                             proxy=True if site_info.proxy else False,
-                            timeout=site_info.timeout or 15
+                            timeout=site_info.timeout or 15,
+                            apikey=site_info.apikey,
                         )
                         if rss_url:
                             logger.info(f"更新站点 {domain} RSS地址 ...")
@@ -616,6 +728,15 @@ class SiteChain(ChainBase):
         return True, ret_msg
 
     @eventmanager.register(EventType.SiteUpdated)
+    def reset_site_health(self, event: Event):
+        """用户更新站点 Cookie 或 API Key 后立即清除旧熔断与告警状态。"""
+        if not event:
+            return
+        domain = (event.event_data or {}).get("domain")
+        if domain:
+            SiteHealthSentinel.record_success(domain)
+
+    @eventmanager.register(EventType.SiteUpdated)
     def cache_site_icon(self, event: Event):
         """
         缓存站点图标
@@ -643,18 +764,29 @@ class SiteChain(ChainBase):
         if not indexer:
             logger.warn(f"站点 {domain} 索引器不存在！")
             return
+        api_only = bool((siteinfo.apikey or siteinfo.token) and not cookie)
+        if api_only:
+            existing_icon = siteoper.get_icon_by_domain(domain)
+            if existing_icon and existing_icon.base64:
+                logger.debug(f"站点 {indexer.get('name')} 已有缓存图标，纯 API 模式下保留现有图标")
+                return
         # 查询站点图标
         logger.info(f"开始缓存站点 {indexer.get('name')} 图标 ...")
-        icon_url, icon_base64 = self.__parse_favicon(url=indexer.get("domain"),
-                                                     cookie=cookie,
-                                                     ua=siteinfo.ua or settings.USER_AGENT)
+        icon_url, icon_base64 = self.__parse_favicon(
+            url=indexer.get("domain"),
+            cookie=cookie,
+            ua=siteinfo.ua or settings.USER_AGENT,
+            api_only=api_only,
+        )
         if icon_url:
-            siteoper.update_icon(name=indexer.get("name"),
-                                 domain=domain,
-                                 icon_url=icon_url,
-                                 icon_base64=icon_base64)
+            siteoper.update_icon(
+                name=indexer.get("name"),
+                domain=domain,
+                icon_url=icon_url,
+                icon_base64=icon_base64,
+            )
             logger.info(f"缓存站点 {indexer.get('name')} 图标成功")
-        else:
+        elif not api_only:
             logger.warn(f"缓存站点 {indexer.get('name')} 图标失败")
 
     @eventmanager.register(EventType.SiteUpdated)
@@ -710,15 +842,18 @@ class SiteChain(ChainBase):
         siteoper = SiteOper()
         site_info = siteoper.get_by_domain(domain)
         if not site_info:
-            return False, f"站点【{url}】不存在"
+            message = f"站点【{url}】不存在"
+            self._record_site_failure(domain=domain, site_name=domain, error_reason=message)
+            return False, message
 
         # 模拟登录
         try:
             # 开始记时
             start_time = datetime.now()
             # 特殊站点测试
-            if self.special_site_test.get(domain):
-                state, message = self.special_site_test[domain](site_info)
+            special_tester = self._resolve_special_site_tester(domain)
+            if special_tester:
+                state, message = special_tester(site_info)
             else:
                 # 通用站点测试
                 state, message = self.__test(site_info)
@@ -726,11 +861,24 @@ class SiteChain(ChainBase):
             seconds = (datetime.now() - start_time).seconds
             if state:
                 siteoper.success(domain=domain, seconds=seconds)
+                SiteHealthSentinel.record_success(domain)
             else:
                 siteoper.fail(domain)
+                self._record_site_failure(
+                    domain=domain,
+                    site_name=site_info.name or domain,
+                    error_reason=message,
+                    count_failure=False,
+                )
             return state, message
         except Exception as e:
-            return False, f"{str(e)}！"
+            message = f"{str(e)}！"
+            self._record_site_failure(
+                domain=domain,
+                site_name=site_info.name or domain,
+                error_reason=message,
+            )
+            return False, message
 
     @staticmethod
     def __test(site_info: Site) -> Tuple[bool, str]:

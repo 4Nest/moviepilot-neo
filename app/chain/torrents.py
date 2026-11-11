@@ -3,7 +3,7 @@ import re
 import traceback
 from typing import Callable, Dict, List, Union, Optional
 
-from app.helper.site import SitesHelper
+from app.helper.site import SiteHealthSentinel, SitesHelper
 
 from app.chain import ChainBase
 from app.chain.media import MediaChain
@@ -461,6 +461,13 @@ class TorrentsChain(ChainBase):
             for item in rss_items:
                 if not item.get("title"):
                     continue
+                raw_pubdate = item.get("pubdate")
+                if hasattr(raw_pubdate, "strftime"):
+                    pubdate_str = raw_pubdate.strftime("%Y-%m-%d %H:%M:%S")
+                elif raw_pubdate:
+                    pubdate_str = StringUtils.unify_datetime_str(str(raw_pubdate))
+                else:
+                    pubdate_str = None
                 torrentinfo = TorrentInfo(
                     site=site.get("id"),
                     site_name=site.get("name"),
@@ -475,7 +482,13 @@ class TorrentsChain(ChainBase):
                     enclosure=item.get("enclosure"),
                     page_url=item.get("link"),
                     size=item.get("size"),
-                    pubdate=item["pubdate"].strftime("%Y-%m-%d %H:%M:%S") if item.get("pubdate") else None,
+                    seeders=item.get("seeders") or 0,
+                    peers=item.get("peers") or 0,
+                    downloadvolumefactor=item.get("downloadvolumefactor"),
+                    uploadvolumefactor=item.get("uploadvolumefactor"),
+                    freedate=item.get("freedate"),
+                    imdbid=item.get("imdbid"),
+                    pubdate=pubdate_str,
                 )
                 ret_torrents.append(torrentinfo)
         finally:
@@ -553,6 +566,13 @@ class TorrentsChain(ChainBase):
                 )
             domain = StringUtils.get_url_domain(indexer.get("domain"))
             domains.append(domain)
+            circuit_open, circuit_until = SiteHealthSentinel.is_circuit_open(domain)
+            if circuit_open:
+                logger.warning(
+                    f"{indexer.get('name')} 处于站点健康熔断保护期，"
+                    f"本轮跳过资源刷新，恢复时间：{circuit_until}"
+                )
+                continue
             if stype == "spider":
                 # 刷新首页种子
                 torrents: List[TorrentInfo] = []
@@ -731,11 +751,24 @@ class TorrentsChain(ChainBase):
                 ua=site.get("ua") or settings.USER_AGENT,
                 proxy=True if site.get("proxy") else False,
                 timeout=site.get("timeout"),
+                apikey=site.get("apikey"),
             )
             if rss_url:
-                # 获取新的日期的passkey
+                apikey_match = re.search(r'apikey=([a-zA-Z0-9]+)', rss_url)
                 match = re.search(r'passkey=([a-zA-Z0-9]+)', rss_url)
-                if match:
+                if apikey_match:
+                    current_rss = site.get("rss") or ""
+                    if "apikey=" in current_rss:
+                        new_rss = re.sub(
+                            r'apikey=([a-zA-Z0-9]+)',
+                            f"apikey={apikey_match.group(1)}",
+                            current_rss,
+                        )
+                    else:
+                        new_rss = rss_url
+                    logger.info(f"更新站点 {domain} RSS地址 ...")
+                    SiteOper().update_rss(domain=domain, rss=new_rss)
+                elif match:
                     new_passkey = match.group(1)
                     # 获取过期rss除去passkey部分
                     new_rss = re.sub(r'&passkey=([a-zA-Z0-9]+)', f'&passkey={new_passkey}', site.get("rss"))

@@ -65,6 +65,14 @@ class SiteStatistic(BaseModel):
     lst_mod_date: Optional[str] = None
     # 备注
     note: Optional[Any] = None
+    # 连续失败次数（运行时健康状态）
+    consecutive_fails: int = 0
+    # 是否处于熔断保护期
+    circuit_open: bool = False
+    # 熔断恢复时间
+    circuit_until: Optional[str] = None
+    # 最近异常原因
+    last_error: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

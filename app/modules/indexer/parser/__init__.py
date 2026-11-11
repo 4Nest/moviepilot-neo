@@ -40,6 +40,7 @@ class SiteSchema(Enum):
     Bitpt = "Bitpt"
     RousiPro = "RousiPro"
     SunnyPT = "SunnyPT"
+    HDArea = "HDArea"
 
 
 class SiteParserBase(metaclass=ABCMeta):

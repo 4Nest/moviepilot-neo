@@ -47,7 +47,14 @@ class SearchChain(ChainBase):
     __subtitle_result_temp_file = "__subtitle_search_result__"
     __search_params_temp_file = "__search_params__"
     __search_diagnostics_temp_file = "__search_diagnostics__"
-    _OUTCOME_PRIORITY = {"empty": 0, "success": 1, "unknown": 2, "cooldown": 3, "error": 4}
+    _OUTCOME_PRIORITY = {
+        "empty": 0,
+        "success": 1,
+        "unknown": 2,
+        "cooldown": 3,
+        "circuit_open": 4,
+        "error": 5,
+    }
 
     @staticmethod
     def _get_search_resource_pages() -> int:
@@ -315,7 +322,7 @@ class SearchChain(ChainBase):
         sites: Dict[Optional[int], SearchDiagnosticSite] = {}
         warning_codes = set()
         for observation in observations:
-            if observation.outcome in {"error", "cooldown", "unknown"}:
+            if observation.outcome in {"error", "cooldown", "circuit_open", "unknown"}:
                 warning_codes.add(
                     "provider_outcome_unknown"
                     if observation.outcome == "unknown"

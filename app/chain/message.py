@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Optional, Dict, Union, List, Tuple
 
 from app.chain import ChainBase
-from app.chain.download import DownloadChain
+from app.chain.download import DownloadChain, download_interaction_manager
 from app.chain.media import MediaChain
 from app.chain.search import SearchChain
 from app.chain.site import SiteChain, site_interaction_manager
@@ -282,6 +282,16 @@ class MessageChain(ChainBase):
             ):
                 return False
 
+        if latest_slash_interaction == "downloading":
+            if DownloadChain().handle_text_interaction(
+                    channel=channel,
+                    source=source,
+                    userid=userid,
+                    username=username,
+                    text=text,
+            ):
+                return False
+
 
         if media_interaction_manager.get_by_user(userid):
             if MediaInteractionChain().handle_text_interaction(
@@ -538,6 +548,17 @@ class MessageChain(ChainBase):
         ):
             return False
 
+        if DownloadChain().handle_callback_interaction(
+                callback_data=callback_data,
+                channel=channel,
+                source=source,
+                userid=userid,
+                username=username,
+                original_message_id=original_message_id,
+                original_chat_id=original_chat_id,
+        ):
+            return False
+
         if MediaInteractionChain().handle_callback_interaction(
                 callback_data=callback_data,
                 channel=channel,
@@ -591,6 +612,7 @@ class MessageChain(ChainBase):
         for name, manager in (
                 ("sites", site_interaction_manager),
                 ("subscribes", subscribe_interaction_manager),
+                ("downloading", download_interaction_manager),
         ):
             request = manager.get_by_user(userid)
             if request:

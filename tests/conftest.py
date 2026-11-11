@@ -14,7 +14,19 @@ prepare_backend()
 
 # 复用共享 autouse 网络守卫；同一实现亦供各插件仓 conftest import 复用，避免逐仓维护
 from app.testing.network_guard import block_real_network  # noqa: E402,F401
+import pytest  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _reset_site_health_sentinel():
+    """隔离每个测试前后的站点健康哨兵与热更注册表缓存，避免跨用例状态泄漏。"""
+    from app.helper.site import SiteHealthSentinel, SiteResourceRegistry
+
+    SiteHealthSentinel.reset_for_tests()
+    SiteResourceRegistry.reset_for_tests()
+    yield
+    SiteHealthSentinel.reset_for_tests()
+    SiteResourceRegistry.reset_for_tests()
 
 def _report_session_cleanup_error(session, name: str, err: Exception) -> None:
     """记录收尾错误；原测试绿色时将会话标记为失败。"""

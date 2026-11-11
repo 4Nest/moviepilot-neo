@@ -24,7 +24,7 @@ from app.db.models.siteuserdata import SiteUserData
 from app.db.site_oper import SiteOper
 from app.db.systemconfig_oper import SystemConfigOper
 from app.db.user_oper import get_current_admin, get_current_admin_async
-from app.helper.site import SitesHelper
+from app.helper.site import SiteHealthSentinel, SitesHelper
 from app.log import logger
 from app.scheduler import Scheduler
 from app.schemas.event import ConfigChangeEventData
@@ -33,6 +33,12 @@ from app.utils.string import StringUtils
 
 router = APIRouter()
 _cookiecloud_blacklist_lock = Lock()
+
+
+def _merge_site_health(statistic: Any, domain: str) -> schemas.SiteStatistic:
+    """将内存中的实时熔断状态合并到统计响应，不修改数据库模型。"""
+    result = schemas.SiteStatistic.model_validate(statistic)
+    return result.model_copy(update=SiteHealthSentinel.get_status(domain))
 
 
 @router.get("/", summary="所有站点", response_model=List[schemas.Site])
@@ -517,8 +523,8 @@ async def read_statistic_by_domain(
     domain = StringUtils.get_url_domain(site_url)
     sitestatistic = await SiteStatistic.async_get_by_domain(db, domain)
     if sitestatistic:
-        return sitestatistic
-    return schemas.SiteStatistic(domain=domain)
+        return _merge_site_health(sitestatistic, domain)
+    return _merge_site_health(schemas.SiteStatistic(domain=domain), domain)
 
 
 @router.get(
@@ -531,7 +537,16 @@ async def read_statistics(
     """
     获取所有站点统计信息
     """
-    return await SiteStatistic.async_list(db)
+    statistics = await SiteStatistic.async_list(db)
+    result = [
+        _merge_site_health(statistic, StringUtils.get_url_domain(statistic.domain))
+        for statistic in statistics
+    ]
+    seen_domains = {StringUtils.get_url_domain(item.domain) for item in result if item.domain}
+    for domain in SiteHealthSentinel.active_domains():
+        if domain not in seen_domains:
+            result.append(_merge_site_health(schemas.SiteStatistic(domain=domain), domain))
+    return result
 
 
 @router.get("/rss", summary="所有订阅站点", response_model=List[schemas.Site])

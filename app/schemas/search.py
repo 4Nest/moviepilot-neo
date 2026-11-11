@@ -16,7 +16,7 @@ class SearchDiagnosticSite(BaseModel):
     site_id: Optional[int] = Field(default=None, description="站点主键；插件来源为 None")
     site_name: str = Field(description="站点名称；插件使用插件资源源，缺失名称使用未知站点")
     attempted: bool = Field(description="是否实际发起过该来源请求，冷却跳过时为 False")
-    outcome: Literal["success", "empty", "error", "cooldown", "unknown"] = Field(description="来源结果")
+    outcome: Literal["success", "empty", "error", "cooldown", "circuit_open", "unknown"] = Field(description="来源结果")
     raw_count: int = Field(default=0, ge=0, description="来源报告的原始资源数，同站点本轮请求累加")
 
 
@@ -94,7 +94,7 @@ class SiteSearchObservation:
 
     reported: bool = False
     attempted: bool = False
-    outcome: Literal["success", "empty", "error", "cooldown", "unknown"] = "unknown"
+    outcome: Literal["success", "empty", "error", "cooldown", "circuit_open", "unknown"] = "unknown"
     raw_count: int = 0
 
 
@@ -119,7 +119,7 @@ def capture_site_search_observation() -> Iterator[SiteSearchObservation]:
 def report_site_search_outcome(
         *,
         attempted: bool,
-        outcome: Literal["success", "empty", "error", "cooldown", "unknown"],
+        outcome: Literal["success", "empty", "error", "cooldown", "circuit_open", "unknown"],
         raw_count: int = 0,
 ) -> None:
     """向当前搜索观察上下文报告站点请求结果，不影响原有搜索返回值。"""

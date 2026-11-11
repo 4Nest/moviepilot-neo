@@ -39,6 +39,7 @@ from app.db.systemconfig_oper import SystemConfigOper
 from app.helper.image import WallpaperHelper
 from app.helper.message import MessageHelper
 from app.helper.progress import ProgressHelper
+from app.helper.resource import ResourceHelper
 from app.helper.server import MoviePilotServerHelper
 from app.helper.service import ServiceConfigHelper
 from app.helper.sites import SitesHelper  # noqa
@@ -494,6 +495,11 @@ class Scheduler(ConfigReloadMixin, metaclass=SingletonClass):
                     "running": False,
                     "kwargs": {"force": True},
                 },
+                "resource_update": {
+                    "name": "站点资源包更新",
+                    "func": ResourceHelper.check_and_update,
+                    "running": False,
+                },
                 "subscribe_calendar_cache": {
                     "name": "订阅日历缓存",
                     "func": SubscribeChain().cache_calendar,
@@ -721,6 +727,17 @@ class Scheduler(ConfigReloadMixin, metaclass=SingletonClass):
                 minutes=30,
                 kwargs={"job_id": "plugin_market_refresh"},
             )
+
+            # 站点资源包自动检查与热更新（每6小时）
+            if settings.AUTO_UPDATE_RESOURCE:
+                self._scheduler.add_job(
+                    self.start,
+                    "interval",
+                    id="resource_update",
+                    name="站点资源包更新",
+                    hours=6,
+                    kwargs={"job_id": "resource_update"},
+                )
 
             # 订阅日历缓存
             self._scheduler.add_job(

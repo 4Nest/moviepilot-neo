@@ -1,10 +1,11 @@
+import inspect
 from datetime import datetime
 from typing import List, Optional, Tuple, Union
 
 from app.core.context import SubtitleInfo, TorrentInfo
 from app.db.site_oper import SiteOper
 from app.helper.module import ModuleHelper
-from app.helper.site import SitesHelper
+from app.helper.site import SiteHealthSentinel, SiteResourceRegistry, SitesHelper
 from app.log import logger
 from app.modules import _ModuleBase
 from app.modules.indexer.parser import SiteParserBase
@@ -12,6 +13,7 @@ from app.modules.indexer.spider import SiteSpider
 from app.modules.indexer.spider.anibt import AniBTSpider
 from app.modules.indexer.spider.mikan import MikanSpider
 from app.modules.indexer.spider.haidan import HaiDanSpider
+from app.modules.indexer.spider.hdarea import HDAreaSpider
 from app.modules.indexer.spider.hddolby import HddolbySpider
 from app.modules.indexer.spider.mtorrent import MTorrentSpider
 from app.modules.indexer.spider.rousi import RousiSpider
@@ -32,6 +34,7 @@ SPIDER_PARSER_CLASSES = {
     "HDDolby": HddolbySpider,
     "RousiPro": RousiSpider,
     "SunnyPT": SunnyPTSpider,
+    "HDArea": HDAreaSpider,
 }
 
 
@@ -107,8 +110,15 @@ class IndexerModule(_ModuleBase):
             report_site_search_outcome(attempted=False, outcome="empty")
             return False
 
+        domain = StringUtils.get_url_domain(site.get("domain"))
+        circuit_open, circuit_until = SiteHealthSentinel.is_circuit_open(domain)
+        if circuit_open:
+            logger.warning(f"{site.get('name')} 处于站点健康熔断保护期，恢复时间：{circuit_until}")
+            report_site_search_outcome(attempted=False, outcome="circuit_open")
+            return False
+
         # 站点流控
-        state, msg = SitesHelper().check(StringUtils.get_url_domain(site.get("domain")))
+        state, msg = SitesHelper().check(domain)
         if state:
             logger.warn(msg)
             report_site_search_outcome(attempted=False, outcome="cooldown")
@@ -194,7 +204,31 @@ class IndexerModule(_ModuleBase):
                 result.get("language") and result.get("enclosure") and result.get("title") and result.get("size")]
 
     @staticmethod
-    def get_search_page_size(site: dict, keyword: Optional[str] = None) -> Optional[int]:
+    def _resolve_spider_class(parser_name: Optional[str]):
+        """优先返回热更注册表中的 Spider 类，未命中时回退内置映射。"""
+        if not parser_name:
+            return None
+        return SiteResourceRegistry.get_spider_class(parser_name) or SPIDER_PARSER_CLASSES.get(parser_name)
+
+    @staticmethod
+    def _build_spider_kwargs(method_obj, keyword, mtype, cat, page) -> dict:
+        """按目标 Spider 方法签名自适应组装查询参数，兼容不同参数子集的适配器。"""
+        candidates = {
+            "keyword": keyword,
+            "mtype": mtype,
+            "cat": cat,
+            "page": page,
+        }
+        try:
+            sig = inspect.signature(method_obj)
+        except (TypeError, ValueError):
+            return candidates
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+            return candidates
+        return {k: v for k, v in candidates.items() if k in sig.parameters}
+
+    @classmethod
+    def get_search_page_size(cls, site: dict, keyword: Optional[str] = None) -> Optional[int]:
         """
         获取站点搜索单页容量；None 表示当前搜索入口不支持可靠翻页。
         """
@@ -203,9 +237,9 @@ class IndexerModule(_ModuleBase):
             return AniBTSpider.get_search_page_size(keyword=keyword)
         if MikanSpider.matches(site):
             return MikanSpider.get_search_page_size(keyword=keyword)
-        site_parser = site.get("parser")
-        if site_parser in SPIDER_PARSER_CLASSES:
-            return SPIDER_PARSER_CLASSES[site_parser].get_search_page_size(keyword=keyword)
+        spider_cls = cls._resolve_spider_class(site.get("parser"))
+        if spider_cls and hasattr(spider_cls, "get_search_page_size"):
+            return spider_cls.get_search_page_size(keyword=keyword)
         try:
             page_size = int(site.get("result_num") or SiteSpider.default_result_num())
         except (TypeError, ValueError):
@@ -243,7 +277,14 @@ class IndexerModule(_ModuleBase):
 
         # 开始搜索
         try:
-            if AniBTSpider.matches(site):
+            dynamic_spider_cls = SiteResourceRegistry.get_spider_class(site.get("parser"))
+            if dynamic_spider_cls is not None:
+                spider_inst = dynamic_spider_cls(site)
+                call_kwargs = self._build_spider_kwargs(
+                    spider_inst.search, search_word, mtype, cat, page
+                )
+                error_flag, result = spider_inst.search(**call_kwargs)
+            elif AniBTSpider.matches(site):
                 error_flag, result = AniBTSpider(site).search(
                     keyword=search_word,
                     mtype=mtype,
@@ -304,6 +345,13 @@ class IndexerModule(_ModuleBase):
                     cat=cat,
                     page=page
                 )
+            elif site.get('parser') == "HDArea":
+                error_flag, result = HDAreaSpider(site).search(
+                    keyword=search_word,
+                    mtype=mtype,
+                    cat=cat,
+                    page=page
+                )
             else:
                 error_flag, result = self.__spider_search(
                     search_word=search_word,
@@ -358,12 +406,19 @@ class IndexerModule(_ModuleBase):
         search_word = self.__clear_search_text(keyword)
 
         try:
-            error_flag, result = self.__spider_search(
-                search_word=search_word,
-                indexer=site,
-                page=page,
-                search_type="subtitles"
-            )
+            spider_cls = self._resolve_spider_class(site.get("parser"))
+            if spider_cls and hasattr(spider_cls, "search_subtitles"):
+                error_flag, result = spider_cls(site).search_subtitles(
+                    keyword=search_word,
+                    page=page,
+                )
+            else:
+                error_flag, result = self.__spider_search(
+                    search_word=search_word,
+                    indexer=site,
+                    page=page,
+                    search_type="subtitles"
+                )
         except Exception as err:
             logger.error(f"{site.get('name')} 字幕搜索出错：{str(err)}")
 
@@ -406,7 +461,14 @@ class IndexerModule(_ModuleBase):
 
         # 开始搜索
         try:
-            if AniBTSpider.matches(site):
+            dynamic_spider_cls = SiteResourceRegistry.get_spider_class(site.get("parser"))
+            if dynamic_spider_cls is not None:
+                spider_inst = dynamic_spider_cls(site)
+                call_kwargs = self._build_spider_kwargs(
+                    spider_inst.async_search, search_word, mtype, cat, page
+                )
+                error_flag, result = await spider_inst.async_search(**call_kwargs)
+            elif AniBTSpider.matches(site):
                 error_flag, result = await AniBTSpider(site).async_search(
                     keyword=search_word,
                     mtype=mtype,
@@ -467,6 +529,13 @@ class IndexerModule(_ModuleBase):
                     cat=cat,
                     page=page
                 )
+            elif site.get('parser') == "HDArea":
+                error_flag, result = await HDAreaSpider(site).async_search(
+                    keyword=search_word,
+                    mtype=mtype,
+                    cat=cat,
+                    page=page
+                )
             else:
                 error_flag, result = await self.__async_spider_search(
                     search_word=search_word,
@@ -521,12 +590,19 @@ class IndexerModule(_ModuleBase):
         search_word = self.__clear_search_text(keyword)
 
         try:
-            error_flag, result = await self.__async_spider_search(
-                search_word=search_word,
-                indexer=site,
-                page=page,
-                search_type="subtitles"
-            )
+            spider_cls = self._resolve_spider_class(site.get("parser"))
+            if spider_cls and hasattr(spider_cls, "async_search_subtitles"):
+                error_flag, result = await spider_cls(site).async_search_subtitles(
+                    keyword=search_word,
+                    page=page,
+                )
+            else:
+                error_flag, result = await self.__async_spider_search(
+                    search_word=search_word,
+                    indexer=site,
+                    page=page,
+                    search_type="subtitles"
+                )
         except Exception as err:
             logger.error(f"{site.get('name')} 字幕搜索出错：{str(err)}")
 
@@ -637,8 +713,23 @@ class IndexerModule(_ModuleBase):
             """
             获取站点解析器
             """
+            target_schema = site.get("schema")
+            dynamic_parser = SiteResourceRegistry.get_parser_class(target_schema)
+            if dynamic_parser is not None:
+                return dynamic_parser(
+                    site_name=site.get("name"),
+                    url=site.get("url"),
+                    site_cookie=site.get("cookie"),
+                    apikey=site.get("apikey"),
+                    token=site.get("token"),
+                    ua=site.get("ua"),
+                    proxy=site.get("proxy"),
+                    api_url=site.get("api_url"),
+                )
             for site_schema in self._site_schemas:
-                if site_schema.schema and site_schema.schema.value == site.get("schema"):
+                schema_attr = getattr(site_schema, "schema", None)
+                schema_val = getattr(schema_attr, "value", schema_attr)
+                if schema_val and schema_val == target_schema:
                     return site_schema(
                         site_name=site.get("name"),
                         url=site.get("url"),

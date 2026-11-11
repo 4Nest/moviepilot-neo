@@ -7,6 +7,7 @@ from lxml import etree
 
 from app.core.config import settings
 from app.helper.browser import PlaywrightHelper
+from app.helper.site import SiteResourceRegistry
 from app.log import logger
 from app.utils import rust_accel
 from app.utils.http import RequestUtils
@@ -22,6 +23,16 @@ class RssHelper:
     MAX_RSS_SIZE = 50 * 1024 * 1024  # 50MB最大RSS文件大小
     MAX_RSS_ITEMS = 1000  # 最大解析条目数
 
+    _PROMO_TITLE_PREFIX_RE = re.compile(
+        r"^\s*\[(?:免费|2X\s*免费|2X\s*上传|2X|50%(?:下载)?|2X\s*50%(?:下载)?|30%(?:下载)?|"
+        r"Free|2X\s*Free|Half\s*Down)\]\s*",
+        re.IGNORECASE,
+    )
+    _IFREE_CATEGORY_PREFIX_RE = re.compile(
+        r"^\s*\[(?:Movie|Movies|TV|Anime|Animations|Documentary|Documentaries|"
+        r"Music|Sports|Misc|HQ\s*Audio)[^\]]*\]\s*",
+        re.IGNORECASE,
+    )
     # 各站点RSS链接获取配置
     rss_link_conf = {
         "default": {
@@ -281,18 +292,139 @@ class RssHelper:
                     return title[:index], title[index + 1:-1].strip(), title[index:]
         return None
 
+    @staticmethod
+    def _normalize_imdb_attr(raw_value: Optional[str]) -> Optional[str]:
+        """标准化 Torznab 属性中的 IMDb 编号。"""
+        if not raw_value:
+            return None
+        cleaned = str(raw_value).strip()
+        if not cleaned or cleaned == "0":
+            return None
+        match = re.search(r"tt\d+", cleaned, re.IGNORECASE)
+        if match:
+            return match.group(0).lower()
+        if cleaned.isdigit():
+            return f"tt{cleaned.zfill(7)}"
+        return None
+
+    @classmethod
+    def _extract_item_extensions(cls, item_node) -> dict:
+        """提取单条 RSS <item>/<entry> 中的 torznab:attr 与 nexusphp 促销扩展节点。"""
+        ext: dict = {}
+        attr_map: dict[str, str] = {}
+        for attr_node in item_node.xpath('.//*[local-name()="attr"]'):
+            name = (attr_node.get("name") or "").strip().lower()
+            val = attr_node.get("value")
+            if name and val is not None:
+                attr_map[name] = str(val).strip()
+
+        if "seeders" in attr_map:
+            try:
+                ext["seeders"] = max(int(float(attr_map["seeders"])), 0)
+            except ValueError:
+                pass
+        if "leechers" in attr_map:
+            try:
+                ext["peers"] = max(int(float(attr_map["leechers"])), 0)
+            except ValueError:
+                pass
+        elif "peers" in attr_map:
+            try:
+                peers_total = max(int(float(attr_map["peers"])), 0)
+                ext["peers"] = max(peers_total - ext.get("seeders", 0), 0) if "seeders" in ext else peers_total
+            except ValueError:
+                pass
+
+        if "downloadvolumefactor" in attr_map:
+            try:
+                ext["downloadvolumefactor"] = float(attr_map["downloadvolumefactor"])
+            except ValueError:
+                pass
+        if "uploadvolumefactor" in attr_map:
+            try:
+                ext["uploadvolumefactor"] = float(attr_map["uploadvolumefactor"])
+            except ValueError:
+                pass
+        if "size" in attr_map:
+            try:
+                parsed_size = int(float(attr_map["size"]))
+                if parsed_size > 0:
+                    ext["attr_size"] = parsed_size
+            except ValueError:
+                pass
+        imdb_val = cls._normalize_imdb_attr(attr_map.get("imdb") or attr_map.get("imdbid"))
+        if imdb_val:
+            ext["imdbid"] = imdb_val
+
+        promo_nodes = item_node.xpath('.//*[local-name()="promotion_until"]')
+        if promo_nodes and promo_nodes[0].text:
+            promo_text = promo_nodes[0].text.strip()
+            if promo_text and not promo_text.startswith("0000-00-00"):
+                freedate = StringUtils.unify_datetime_str(promo_text)
+                if freedate:
+                    ext["freedate"] = freedate
+        return ext
+
+    @classmethod
+    def _enrich_extended_rss_attrs(cls, ret_xml: str, items: list[dict]) -> None:
+        """为 Rust 快速解析结果补齐 XML 中的 torznab:attr 与促销截止时间扩展字段。"""
+        if not items or not ret_xml:
+            return
+        if "attr" not in ret_xml and "promotion_until" not in ret_xml:
+            return
+        parser = None
+        root = None
+        try:
+            parser = etree.XMLParser(
+                recover=True,
+                strip_cdata=False,
+                resolve_entities=False,
+                no_network=True,
+                huge_tree=False,
+            )
+            root = etree.fromstring(ret_xml.encode("utf-8"), parser=parser)
+            if root is None:
+                return
+            xml_items = root.xpath(".//item | .//entry")
+            for idx, item_dict in enumerate(items):
+                if idx >= len(xml_items):
+                    break
+                ext = cls._extract_item_extensions(xml_items[idx])
+                if not ext:
+                    continue
+                attr_size = ext.pop("attr_size", None)
+                if not item_dict.get("size") and attr_size:
+                    item_dict["size"] = attr_size
+                item_dict.update(ext)
+        except Exception as err:
+            logger.debug(f"补充解析 RSS 扩展属性失败：{err}")
+        finally:
+            if parser is not None:
+                try:
+                    parser.close()
+                except Exception:
+                    pass
+            if root is not None:
+                del root
+
     def _normalize_items(self, items: list[dict], url: str) -> list[dict]:
         """拆分 RSS 副标题并清理 HTML，Python 与 Rust 解析路径共用。"""
         params = parse_qs(urlsplit(url).query)
         include_description = any(
             params.get(key) == ["1"] for key in ("ismalldescr", "itemsmalldescr")
         )
+        has_ifree = params.get("ifree") == ["1"]
         suffix_fields = ("iuplder", "isize") if include_description else ()
         for item in items:
             title = item.get("title") or ""
+            promo_stripped = self._PROMO_TITLE_PREFIX_RE.sub("", title)
+            if promo_stripped != title:
+                title = promo_stripped
+                if has_ifree:
+                    title = self._IFREE_CATEGORY_PREFIX_RE.sub("", title)
+                item["title"] = title
             description = item.get("description") or ""
             suffix = ""
-            # NexusPHP 可在副标题之后追加大小和发布者，不能把这些字段当成副标题。
             for key in suffix_fields:
                 if params.get(key) != ["1"]:
                     continue
@@ -378,6 +510,7 @@ class RssHelper:
                     )
                     rust_items = self.__parse_with_rust(ret_xml)
                     if rust_items is not None:
+                        self._enrich_extended_rss_attrs(ret_xml, rust_items)
                         return self._normalize_items(rust_items, url)
                 if not ret_xml:
                     ret_xml = ret.text
@@ -395,8 +528,8 @@ class RssHelper:
 
                 rust_items = self.__parse_with_rust(ret_xml)
                 if rust_items is not None:
+                    self._enrich_extended_rss_attrs(ret_xml, rust_items)
                     return self._normalize_items(rust_items, url)
-
                 # 使用lxml.etree解析XML
                 parser = None
                 try:
@@ -512,6 +645,11 @@ class RssHelper:
                             nickname_nodes = item.xpath('.//*[local-name()="creator"]')
                             nickname = nickname_nodes[0].text if nickname_nodes and nickname_nodes[0].text else ""
 
+                            ext_attrs = self._extract_item_extensions(item)
+                            attr_size = ext_attrs.pop("attr_size", None)
+                            if not size and attr_size:
+                                size = attr_size
+
                             # 返回对象
                             tmp_dict = {
                                 'title': title,
@@ -519,7 +657,8 @@ class RssHelper:
                                 'size': size,
                                 'description': description,
                                 'link': link,
-                                'pubdate': pubdate
+                                'pubdate': pubdate,
+                                **ext_attrs,
                             }
                             # 如果豆瓣昵称不为空，返回数据增加豆瓣昵称，供doubansync插件获取
                             if nickname:
@@ -552,7 +691,15 @@ class RssHelper:
 
         return self._normalize_items(ret_array, url)
 
-    def get_rss_link(self, url: str, cookie: str, ua: str, proxy: bool = False, timeout: int = None) -> Tuple[str, str]:
+    def get_rss_link(
+        self,
+        url: str,
+        cookie: str,
+        ua: str,
+        proxy: bool = False,
+        timeout: int = None,
+        apikey: Optional[str] = None,
+    ) -> Tuple[str, str]:
         """
         获取站点rss地址
         :param url: 站点地址
@@ -560,14 +707,19 @@ class RssHelper:
         :param ua: 站点ua
         :param proxy: 是否使用代理
         :param timeout: 请求超时时间
+        :param apikey: 站点 API Key（支持免 Cookie RSS 的站点优先使用）
         :return: rss地址、错误信息
         """
         try:
             # 获取站点域名
             domain = StringUtils.get_url_domain(url)
-            # 获取配置
-            site_conf = self.rss_link_conf.get(domain) or self.rss_link_conf.get("default")
-            # RSS地址
+            apikey_templates = SiteResourceRegistry.get_apikey_rss_templates()
+            if apikey and domain in apikey_templates:
+                rel_tpl = apikey_templates[domain].format(apikey=apikey.strip())
+                return urljoin(url, rel_tpl), ""
+            # 获取配置（优先读取热更 RSS 规则）
+            hot_rss_conf = SiteResourceRegistry.get_rss_link_conf()
+            site_conf = hot_rss_conf.get(domain) or self.rss_link_conf.get(domain) or self.rss_link_conf.get("default")
             rss_url = urljoin(url, site_conf.get("url"))
             # RSS请求参数
             rss_params = site_conf.get("params")

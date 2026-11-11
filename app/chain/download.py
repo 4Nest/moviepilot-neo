@@ -24,6 +24,15 @@ from app.db.downloadhistory_oper import DownloadHistoryOper
 from app.db.mediaserver_oper import MediaServerOper
 from app.db.site_oper import SiteOper
 from app.helper.directory import DirectoryHelper, validate_download_save_path
+from app.helper.interaction import (
+    PendingSlashInteraction,
+    SlashInteractionManager,
+    build_navigation_buttons,
+    page_items,
+    supports_interaction_buttons,
+    supports_markdown,
+    update_or_post_message,
+)
 from app.helper.service import ServiceConfigHelper
 from app.helper.thread import ThreadHelper
 from app.helper.torrent import TorrentHelper
@@ -31,7 +40,7 @@ from app.log import logger
 from app.schemas import ExistMediaInfo, FileURI, NotExistMediaInfo, DownloaderTorrent, Notification, ResourceSelectionEventData, \
     ResourceDownloadEventData
 from app.schemas.types import MediaType, TorrentStatus, EventType, MessageChannel, NotificationType, ContentType, \
-    ChainEventType
+    ChainEventType, DownloadTaskState, TorrentQueryStatus
 from app.utils.http import RequestUtils
 from app.utils.media import build_media_key, resolve_media_identity
 from app.utils.string import StringUtils
@@ -51,6 +60,8 @@ DOWNLOAD_FAILURE_RESOURCE_ERROR_KEYWORDS = (
     "deleted",
     "invalid torrent",
 )
+
+download_interaction_manager = SlashInteractionManager()
 
 
 class DownloadChain(ChainBase):
@@ -667,9 +678,39 @@ class DownloadChain(ChainBase):
         :return: 种子内容，种子目录名，种子文件清单
         """
 
-        def __get_redict_url(url: str, ua: Optional[str] = None, cookie: Optional[str] = None) -> Optional[str]:
+        def __extract_redirect_error(res_obj=None, payload_obj=None) -> str:
             """
-            获取下载链接， url格式：[base64]url
+            从两段式下载凭证响应中提取可读错误信息
+            """
+            data_obj = payload_obj
+            if data_obj is None and res_obj is not None:
+                try:
+                    data_obj = res_obj.json()
+                except Exception:
+                    data_obj = None
+            detail = ""
+            if isinstance(data_obj, dict):
+                err_node = data_obj.get("error")
+                if isinstance(err_node, dict):
+                    detail = str(err_node.get("message") or "")
+                elif isinstance(err_node, str):
+                    detail = err_node
+                if not detail:
+                    detail = str(data_obj.get("message") or data_obj.get("msg") or "")
+            detail = detail.strip()
+            if res_obj is not None and res_obj.status_code != 200:
+                if detail:
+                    return f"获取下载凭证失败（HTTP {res_obj.status_code}：{detail}）"
+                return f"获取下载凭证失败（HTTP {res_obj.status_code}）"
+            return detail or "站点未返回有效下载地址"
+
+        def __get_redict_url(
+            url: str,
+            ua: Optional[str] = None,
+            cookie: Optional[str] = None,
+        ) -> Tuple[Optional[str], str]:
+            """
+            获取下载链接，url格式：[base64]url
             """
             # 获取[]中的内容
             m = re.search(r"\[(.*)](.*)", url)
@@ -679,7 +720,7 @@ class DownloadChain(ChainBase):
                 # URL
                 url = m.group(2)
                 if not base64_str:
-                    return url
+                    return url, ""
                 # 解码参数
                 req_str = base64.b64decode(base64_str.encode('utf-8')).decode('utf-8')
                 req_params: Dict[str, dict] = json.loads(req_str)
@@ -709,34 +750,43 @@ class DownloadChain(ChainBase):
                         headers=headers,
                         proxies=settings.PROXY if proxy else None
                     ).post_res(url, params=req_params.get('params'))
+                if res is None:
+                    return None, "无法连接站点下载凭证接口"
                 if not res:
-                    return None
+                    return None, __extract_redirect_error(res_obj=res)
                 if not req_params.get('result'):
-                    return res.text
-                else:
-                    data = res.json()
-                    success_key = req_params.get('success')
-                    if success_key and not data.get(success_key):
-                        return None
-                    for key in str(req_params.get('result')).split("."):
-                        data = data.get(key)
-                        if not data:
-                            return None
-                    result_path = req_params.get('result_path')
-                    result_query_param = req_params.get('result_query_param')
-                    if result_path and result_query_param:
-                        result_url = urljoin(
-                            f"{str(req_params.get('result_base_url')).rstrip('/')}/",
-                            str(result_path).lstrip('/'),
-                        )
-                        return f"{result_url}?{urlencode({result_query_param: data})}"
-                    data = self._normalize_indirect_download_url(
-                        url=data,
-                        base_url=req_params.get('result_base_url'),
+                    return res.text, ""
+                try:
+                    payload = res.json()
+                except (TypeError, ValueError):
+                    return None, "站点下载凭证响应不是有效 JSON"
+                if not isinstance(payload, dict):
+                    return None, "站点下载凭证响应结构无效"
+                success_key = req_params.get('success')
+                if success_key and not payload.get(success_key):
+                    return None, __extract_redirect_error(res_obj=res, payload_obj=payload)
+                data = payload
+                for key in str(req_params.get('result')).split("."):
+                    if not isinstance(data, dict):
+                        return None, __extract_redirect_error(res_obj=res, payload_obj=payload)
+                    data = data.get(key)
+                    if not data:
+                        return None, __extract_redirect_error(res_obj=res, payload_obj=payload)
+                result_path = req_params.get('result_path')
+                result_query_param = req_params.get('result_query_param')
+                if result_path and result_query_param:
+                    result_url = urljoin(
+                        f"{str(req_params.get('result_base_url')).rstrip('/')}/",
+                        str(result_path).lstrip('/'),
                     )
-                    logger.info("已获取到站点临时下载地址")
-                    return data
-            return None
+                    return f"{result_url}?{urlencode({result_query_param: data})}", ""
+                data = self._normalize_indirect_download_url(
+                    url=data,
+                    base_url=req_params.get('result_base_url'),
+                )
+                logger.info("已获取到站点临时下载地址")
+                return data, ""
+            return None, "下载地址格式无效"
 
         # 获取下载链接
         if not torrent.enclosure:
@@ -746,17 +796,29 @@ class DownloadChain(ChainBase):
         # Cookie
         site_cookie = torrent.site_cookie
         indirect_download = torrent.enclosure.startswith("[")
+        redirect_error = ""
         if indirect_download:
             # 需要解码获取下载地址
-            torrent_url = __get_redict_url(url=torrent.enclosure,
-                                           ua=torrent.site_ua,
-                                           cookie=site_cookie)
+            torrent_url, redirect_error = __get_redict_url(
+                url=torrent.enclosure,
+                ua=torrent.site_ua,
+                cookie=site_cookie,
+            )
             # 涉及解析地址的不使用Cookie下载种子，否则MT会出错
             site_cookie = None
         else:
             torrent_url = torrent.enclosure
         if not torrent_url:
-            logger.error(f"{torrent.title} 无法获取下载地址！")
+            reason = redirect_error or "无法获取下载地址"
+            logger.error(f"{torrent.title} 无法获取下载地址：{reason}")
+            self.post_message(Notification(
+                channel=channel,
+                source=source if channel else None,
+                mtype=NotificationType.Manual,
+                title=f"{torrent.title} 种子下载失败！",
+                text=f"错误信息：{reason}\n站点：{torrent.site_name}",
+                userid=userid,
+            ))
             return None, "", []
         # 下载种子文件
         _, content, download_folder, files, error_msg = TorrentHelper().download_torrent(
@@ -1790,41 +1852,551 @@ class DownloadChain(ChainBase):
             # 全部存在
             return True, no_exists
 
-    def remote_downloading(self, channel: MessageChannel, userid: Union[str, int] = None, source: Optional[str] = None):
+    _download_page_size = 5
+
+    def remote_downloading(
+            self,
+            arg_str: str = "",
+            channel: MessageChannel = None,
+            userid: Union[str, int] = None,
+            source: Optional[str] = None,
+            username: Optional[str] = None,
+    ) -> None:
         """
-        查询正在下载的任务，并发送消息
+        创建 /downloading 交互会话并展示下载任务控制台。
         """
-        torrents = self.list_torrents(status=TorrentStatus.DOWNLOADING)
-        if not torrents:
+        request = download_interaction_manager.create_or_replace(
+            user_id=userid,
+            command="/downloading",
+            channel=channel,
+            source=source,
+            username=username,
+        )
+        normalized_arg = (arg_str or "").strip()
+        if normalized_arg and self.handle_text_interaction(
+                channel=channel,
+                source=source,
+                userid=userid,
+                username=username or "",
+                text=normalized_arg,
+        ):
+            return
+        self._render_download_interaction(
+            request=request,
+            channel=channel,
+            source=source,
+            userid=userid,
+            username=username,
+        )
+
+    @staticmethod
+    def parse_callback(callback_data: str) -> Optional[Tuple[str, str]]:
+        """
+        解析 /downloading 按钮回调，动作参数仍使用短哈希。
+        """
+        if not callback_data.startswith("downloading:"):
+            return None
+        parts = callback_data.split(":", 2)
+        if len(parts) != 3 or not parts[1] or not parts[2]:
+            return None
+        return parts[1], parts[2]
+
+    def handle_callback_interaction(
+            self,
+            callback_data: str,
+            channel: MessageChannel,
+            source: str,
+            userid: Union[str, int],
+            username: str,
+            original_message_id: Optional[Union[str, int]] = None,
+            original_chat_id: Optional[str] = None,
+    ) -> bool:
+        """
+        处理下载控制台的翻页、任务控制和删除确认回调。
+        """
+        parsed = self.parse_callback(callback_data)
+        if not parsed:
+            return False
+        request_id, action = parsed
+        request = download_interaction_manager.get_by_id(request_id, userid)
+        if not request:
             self.post_message(Notification(
                 channel=channel,
                 source=source,
-                mtype=NotificationType.Download,
-                title="没有正在下载的任务！",
                 userid=userid,
-                link=settings.MP_DOMAIN('#/downloading'),
+                username=username,
+                title="下载交互已失效，请重新发送 /downloading",
                 save_history=False,
             ))
-            return
-        # 发送消息
-        title = f"共 {len(torrents)} 个任务正在下载："
-        messages = []
-        index = 1
-        for torrent in torrents:
-            messages.append(f"{index}. {torrent.title} "
-                            f"{StringUtils.str_filesize(torrent.size)} "
-                            f"{round(torrent.progress, 1)}%")
-            index += 1
-        self.post_message(Notification(
+            return True
+
+        request.channel = channel
+        request.source = source
+        request.username = username
+        if action == "close":
+            download_interaction_manager.remove(request.request_id)
+            update_or_post_message(
+                chain=self,
+                channel=channel,
+                source=source,
+                userid=userid,
+                username=username,
+                title="下载管理",
+                text="下载交互已结束",
+                original_message_id=original_message_id,
+                original_chat_id=original_chat_id,
+            )
+            return True
+
+        notice = None
+        action_name, _, short_hash = action.partition(":")
+        if action == "page-prev":
+            request.page = max(0, request.page - 1)
+            request.awaiting_input = None
+        elif action == "page-next":
+            request.page += 1
+            request.awaiting_input = None
+        elif action in {"refresh", "cancel"}:
+            request.awaiting_input = None
+        elif action_name in {"toggle", "pause", "resume", "askdel", "cfmdel"}:
+            torrents = self._get_download_queue()
+            if action_name == "cfmdel":
+                notice = self._confirm_delete(
+                    request=request,
+                    torrents=torrents,
+                    short_hash=short_hash,
+                )
+                request.awaiting_input = None
+            else:
+                torrent = self._find_torrent_by_short_hash(torrents, short_hash)
+                if not torrent:
+                    request.awaiting_input = None
+                    notice = "未找到对应下载任务，列表已刷新"
+                elif action_name == "askdel":
+                    request.awaiting_input = f"confirm_delete:{torrent.hash}"
+                else:
+                    request.awaiting_input = None
+                    if action_name == "toggle":
+                        oper = (
+                            "start"
+                            if torrent.state == DownloadTaskState.PAUSED.value
+                            else "stop"
+                        )
+                    else:
+                        oper = "start" if action_name == "resume" else "stop"
+                    notice = self._change_torrent_state(torrent, oper)
+
+        self._render_download_interaction(
+            request=request,
             channel=channel,
             source=source,
-            mtype=NotificationType.Download,
-            title=title,
-            text="\n".join(messages),
             userid=userid,
-            link=settings.MP_DOMAIN('#/downloading'),
-            save_history=False,
+            username=username,
+            original_message_id=original_message_id,
+            original_chat_id=original_chat_id,
+            notice=notice,
+        )
+        return True
+
+    def handle_text_interaction(
+            self,
+            channel: MessageChannel,
+            source: str,
+            userid: Union[str, int],
+            username: str,
+            text: str,
+    ) -> bool:
+        """
+        处理纯文本渠道的下载任务控制指令。
+        """
+        request = download_interaction_manager.get_by_user(userid)
+        if not request:
+            return False
+        request.channel = channel
+        request.source = source
+        request.username = username
+
+        normalized = (text or "").strip()
+        lowered = normalized.lower()
+        if lowered in {"q", "退出", "关闭", "quit", "exit"}:
+            download_interaction_manager.remove(request.request_id)
+            self.post_message(Notification(
+                channel=channel,
+                source=source,
+                userid=userid,
+                username=username,
+                title="下载交互已结束",
+                save_history=False,
+            ))
+            return True
+
+        notice = None
+        if lowered in {"n", "next", "下一页"}:
+            request.page += 1
+            request.awaiting_input = None
+        elif lowered in {"b", "prev", "上一页"}:
+            request.page = max(0, request.page - 1)
+            request.awaiting_input = None
+        elif lowered in {"f", "刷新", "refresh", "列表", "list"}:
+            request.awaiting_input = None
+        elif lowered in {"取消", "cancel", "返回", "back"}:
+            request.awaiting_input = None
+        elif (
+                request.awaiting_input
+                and request.awaiting_input.startswith("confirm_delete:")
+                and lowered in {"确认", "确认删除", "y", "yes", "confirm"}
+        ):
+            full_hash = request.awaiting_input.split(":", 1)[1]
+            notice = self._confirm_delete(
+                request=request,
+                torrents=self._get_download_queue(),
+                short_hash=full_hash[:10],
+            )
+            request.awaiting_input = None
+        else:
+            command_match = re.fullmatch(r"([prd])\s+(\d+)", lowered)
+            if not command_match:
+                self.post_message(Notification(
+                    channel=channel,
+                    source=source,
+                    userid=userid,
+                    username=username,
+                    title="下载管理",
+                    text=self._download_usage_hint(),
+                    save_history=False,
+                ))
+                return True
+            command, index_text = command_match.groups()
+            torrents = self._get_download_queue()
+            index = int(index_text)
+            torrent = torrents[index - 1] if 0 < index <= len(torrents) else None
+            if not torrent or not torrent.hash:
+                notice = f"未找到序号 {index} 对应的下载任务"
+            elif command == "d":
+                request.awaiting_input = f"confirm_delete:{torrent.hash}"
+            else:
+                request.awaiting_input = None
+                notice = self._change_torrent_state(
+                    torrent,
+                    "stop" if command == "p" else "start",
+                )
+
+        self._render_download_interaction(
+            request=request,
+            channel=channel,
+            source=source,
+            userid=userid,
+            username=username,
+            notice=notice,
+        )
+        return True
+
+    def _render_download_interaction(
+            self,
+            request: PendingSlashInteraction,
+            channel: MessageChannel,
+            source: Optional[str],
+            userid: Union[str, int],
+            username: Optional[str],
+            original_message_id: Optional[Union[str, int]] = None,
+            original_chat_id: Optional[str] = None,
+            notice: Optional[str] = None,
+    ) -> None:
+        """
+        查询最新队列并原地渲染下载控制台当前页面。
+        """
+        torrents = self._get_download_queue()
+        page_torrents, page, total_pages = page_items(
+            torrents,
+            request.page,
+            self._download_page_size,
+        )
+        request.page = page
+        sections = [notice] if notice else []
+        awaiting_torrent = self._get_awaiting_torrent(request, torrents)
+        if awaiting_torrent:
+            sections.append(
+                f"⚠️ 确认删除任务：{self._download_torrent_name(awaiting_torrent)}\n"
+                "此操作会删除下载任务及文件，请确认。"
+            )
+        if page_torrents:
+            sections.append(self._format_download_list(
+                page_torrents,
+                channel=channel,
+                start_index=page * self._download_page_size + 1,
+            ))
+        else:
+            sections.append("当前下载队列没有未完成任务。")
+        sections.append(f"第 {page + 1}/{total_pages} 页，共 {len(torrents)} 个任务")
+        if not supports_interaction_buttons(channel):
+            sections.append(self._download_usage_hint())
+
+        buttons = None
+        if supports_interaction_buttons(channel):
+            if awaiting_torrent:
+                buttons = [[
+                    {
+                        "text": "⚠️ 确认删除任务",
+                        "callback_data": (
+                            f"downloading:{request.request_id}:cfmdel:"
+                            f"{awaiting_torrent.hash[:10]}"
+                        ),
+                    },
+                    {
+                        "text": "↩️ 取消",
+                        "callback_data": f"downloading:{request.request_id}:cancel",
+                    },
+                ]]
+            else:
+                buttons = self._build_download_buttons(
+                    request=request,
+                    torrents=page_torrents,
+                    page=page,
+                    total_pages=total_pages,
+                )
+
+        update_or_post_message(
+            chain=self,
+            channel=channel,
+            source=source,
+            userid=userid,
+            username=username,
+            title="下载管理",
+            text="\n\n".join(sections),
+            buttons=buttons,
+            original_message_id=original_message_id,
+            original_chat_id=original_chat_id,
+        )
+
+    def _build_download_buttons(
+            self,
+            request: PendingSlashInteraction,
+            torrents: List[DownloaderTorrent],
+            page: int,
+            total_pages: int,
+    ) -> List[List[dict]]:
+        """
+        构造任务控制、翻页、刷新和关闭按钮，回调仅携带十位短哈希。
+        """
+        buttons = []
+        for index, torrent in enumerate(torrents, start=page * self._download_page_size + 1):
+            if not torrent.hash:
+                continue
+            short_hash = torrent.hash[:10]
+            paused = torrent.state == DownloadTaskState.PAUSED.value
+            buttons.append([
+                {
+                    "text": f"{'▶️ 继续' if paused else '⏸️ 暂停'} {index}",
+                    "callback_data": f"downloading:{request.request_id}:toggle:{short_hash}",
+                },
+                {
+                    "text": f"🗑️ 删除 {index}",
+                    "callback_data": f"downloading:{request.request_id}:askdel:{short_hash}",
+                },
+            ])
+        buttons.extend(build_navigation_buttons(
+            "downloading",
+            request,
+            page,
+            total_pages,
         ))
+        buttons.append([
+            {
+                "text": "🔄 刷新",
+                "callback_data": f"downloading:{request.request_id}:refresh",
+            },
+            {
+                "text": "关闭",
+                "callback_data": f"downloading:{request.request_id}:close",
+            },
+        ])
+        return buttons
+
+    def _get_download_queue(self) -> List[DownloaderTorrent]:
+        """
+        合并活动下载和暂停中的未完成任务，并避免重复任务。
+        """
+        torrents = list(self.downloading() or [])
+        existing = {(torrent.downloader, torrent.hash) for torrent in torrents}
+        paused_torrents = self.list_torrents(status=TorrentQueryStatus.PAUSED) or []
+        pending_paused = [
+            torrent
+            for torrent in paused_torrents
+            if (torrent.progress or 0) < 100
+            and (torrent.downloader, torrent.hash) not in existing
+        ]
+        self._attach_download_history(pending_paused)
+        torrents.extend(pending_paused)
+        return torrents
+
+    def _change_torrent_state(self, torrent: DownloaderTorrent, oper: str) -> str:
+        """
+        暂停或继续任务并返回面板顶部操作结果。
+        """
+        success = self.set_downloading(torrent.hash, oper, name=torrent.downloader)
+        name = self._download_torrent_name(torrent)
+        if oper == "start":
+            return f"✅ 已继续：{name}" if success else f"❌ 继续失败：{name}"
+        return f"✅ 已暂停：{name}" if success else f"❌ 暂停失败：{name}"
+
+    def _confirm_delete(
+            self,
+            request: PendingSlashInteraction,
+            torrents: List[DownloaderTorrent],
+            short_hash: str,
+    ) -> str:
+        """
+        校验删除确认态后按完整哈希删除任务并返回操作结果。
+        """
+        awaiting_input = request.awaiting_input or ""
+        if not awaiting_input.startswith("confirm_delete:"):
+            return "删除确认已失效，请重新选择任务"
+        full_hash = awaiting_input.split(":", 1)[1]
+        if not short_hash or not full_hash.lower().startswith(short_hash.lower()):
+            return "删除确认与所选任务不一致，请重新选择"
+        torrent = next(
+            (
+                item
+                for item in torrents
+                if item.hash and item.hash.lower() == full_hash.lower()
+            ),
+            None,
+        )
+        if not torrent:
+            return "任务已不在下载队列中，列表已刷新"
+        success = self.remove_torrents(hashs=full_hash, downloader=torrent.downloader)
+        name = self._download_torrent_name(torrent)
+        return f"✅ 已删除：{name}" if success else f"❌ 删除失败：{name}"
+
+    @staticmethod
+    def _get_awaiting_torrent(
+            request: PendingSlashInteraction,
+            torrents: List[DownloaderTorrent],
+    ) -> Optional[DownloaderTorrent]:
+        """
+        返回当前等待删除确认的任务。
+        """
+        awaiting_input = request.awaiting_input or ""
+        if not awaiting_input.startswith("confirm_delete:"):
+            return None
+        full_hash = awaiting_input.split(":", 1)[1].lower()
+        return next(
+            (
+                torrent
+                for torrent in torrents
+                if torrent.hash and torrent.hash.lower() == full_hash
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _find_torrent_by_short_hash(
+            torrents: List[DownloaderTorrent],
+            short_hash: str,
+    ) -> Optional[DownloaderTorrent]:
+        """
+        使用十位短哈希唯一匹配当前队列任务。
+        """
+        if not short_hash:
+            return None
+        matches = [
+            torrent
+            for torrent in torrents
+            if torrent.hash and torrent.hash.lower().startswith(short_hash.lower())
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _download_torrent_name(torrent: DownloaderTorrent) -> str:
+        """
+        优先返回媒体标题和季集，否则返回种子标题。
+        """
+        media = torrent.media or {}
+        if media.get("title"):
+            return " ".join(
+                str(value)
+                for value in (
+                    media.get("title"),
+                    media.get("season"),
+                    media.get("episode"),
+                )
+                if value
+            )
+        return torrent.title or torrent.name or torrent.hash or "未命名任务"
+
+    def _format_download_list(
+            self,
+            torrents: List[DownloaderTorrent],
+            channel: Optional[MessageChannel],
+            start_index: int,
+    ) -> str:
+        """
+        按全局序号展示任务标题、来源、体积、进度、速率和剩余时间。
+        """
+        lines = []
+        use_markdown = supports_markdown(channel)
+        for index, torrent in enumerate(torrents, start=start_index):
+            name = self._download_torrent_name(torrent)
+            lines.append(f"{index}. **{name}**" if use_markdown else f"{index}. {name}")
+            if torrent.media and torrent.media.get("title"):
+                lines.append(f"   种子：{torrent.title or torrent.name or '-'}")
+            state_text = (
+                "⏸️ 已暂停"
+                if torrent.state == DownloadTaskState.PAUSED.value
+                else "⬇️ 下载中"
+            )
+            lines.append(
+                f"   下载器：{torrent.downloader or '-'} | 站点：{torrent.site_name or '-'}"
+            )
+            lines.append(
+                f"   大小：{StringUtils.str_filesize(torrent.size or 0)}"
+                f" | 进度：{float(torrent.progress or 0):.1f}% | 状态：{state_text}"
+            )
+            lines.append(
+                f"   下载：{StringUtils.str_filesize(torrent.dlspeed or 0)}/s"
+                f" | 上传：{StringUtils.str_filesize(torrent.upspeed or 0)}/s"
+                f" | 剩余：{torrent.left_time or '未知'}"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _download_usage_hint() -> str:
+        """
+        返回纯文本下载控制台指令说明。
+        """
+        return (
+            "指令：`p <序号>` 暂停，`r <序号>` 继续，`d <序号>` 删除；"
+            "删除后输入 `确认删除`，输入 `取消` 放弃。\n"
+            "`n` 下一页，`b` 上一页，`f` 刷新，`q` / `退出` / `关闭` 结束会话。"
+        )
+
+    @staticmethod
+    def _attach_download_history(torrents: List[DownloaderTorrent]) -> None:
+        """
+        为队列任务补充下载历史中的媒体和站点信息。
+        """
+        if not torrents:
+            return
+        history_map = DownloadHistoryOper().get_by_hashes(
+            [torrent.hash for torrent in torrents if torrent.hash]
+        )
+        for torrent in torrents:
+            history = history_map.get(torrent.hash)
+            if not history:
+                continue
+            torrent.media = {
+                "tmdbid": history.tmdbid,
+                "type": history.type,
+                "title": history.title,
+                "season": history.seasons,
+                "episode": history.episodes,
+                "image": history.poster,
+                "poster": history.poster,
+                "backdrop": history.image,
+            }
+            torrent.site_name = history.torrent_site
+            torrent.userid = history.userid
+            torrent.username = history.username
 
     def downloading(self, name: Optional[str] = None) -> List[DownloaderTorrent]:
         """
@@ -1834,30 +2406,8 @@ class DownloadChain(ChainBase):
         if not torrents:
             return []
 
-        history_map = DownloadHistoryOper().get_by_hashes(
-            [torrent.hash for torrent in torrents if torrent.hash]
-        )
-        ret_torrents = []
-        for torrent in torrents:
-            history = history_map.get(torrent.hash)
-            if history:
-                # 媒体信息
-                torrent.media = {
-                    "tmdbid": history.tmdbid,
-                    "type": history.type,
-                    "title": history.title,
-                    "season": history.seasons,
-                    "episode": history.episodes,
-                    "image": history.poster,
-                    "poster": history.poster,
-                    "backdrop": history.image,
-                }
-                torrent.site_name = history.torrent_site
-                # 下载用户
-                torrent.userid = history.userid
-                torrent.username = history.username
-            ret_torrents.append(torrent)
-        return ret_torrents
+        self._attach_download_history(torrents)
+        return torrents
 
     def set_downloading(self, hash_str, oper: str, name: Optional[str] = None) -> bool:
         """

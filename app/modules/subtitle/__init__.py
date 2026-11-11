@@ -11,10 +11,11 @@ from app.chain.storage import StorageChain
 from app.core.config import settings
 from app.core.context import Context
 from app.db.site_oper import SiteOper
-from app.helper.site import SitesHelper
+from app.helper.site import SiteResourceRegistry, SitesHelper
 from app.helper.torrent import TorrentHelper
 from app.log import logger
 from app.modules import _ModuleBase
+from app.modules.indexer.spider.hdarea import HDAreaSpider
 from app.modules.indexer.spider.mtorrent import MTorrentSpider
 from app.schemas import TorrentInfo
 from app.schemas.file import FileURI 
@@ -147,12 +148,21 @@ class SubtitleModule(_ModuleBase):
         # API请求方式的站点需要特殊处理
         if torrent.site is not None:
             site = SiteOper().get(torrent.site)
-            if indexer := SitesHelper().get_indexer(site.domain):
-                if indexer.get("parser") == "mTorrent":
+            if site and (indexer := SitesHelper().get_indexer(site.domain)):
+                parser_name = indexer.get("parser")
+                dynamic_spider = SiteResourceRegistry.get_spider_class(parser_name)
+                if dynamic_spider and hasattr(dynamic_spider, "get_subtitle_links"):
+                    return dynamic_spider(indexer).get_subtitle_links(
+                        torrent.page_url
+                    )
+                if parser_name == "mTorrent":
                     return MTorrentSpider(indexer).get_subtitle_links(
                         torrent.page_url
                     )
-                # TODO 其它采用API访问的站点
+                if parser_name == "HDArea":
+                    return HDAreaSpider(indexer).get_subtitle_links(
+                        torrent.page_url
+                    )
         # 普通站点通过解析网站代码的方式获取
         request = RequestUtils(
             cookies=torrent.site_cookie,

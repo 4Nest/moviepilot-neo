@@ -259,6 +259,8 @@ class SiteOper(DbOper):
         """
         站点访问成功
         """
+        from app.helper.site import SiteHealthSentinel
+
         lst_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         sta = SiteStatistic.get_by_domain(self._db, domain)
         if sta:
@@ -295,11 +297,14 @@ class SiteOper(DbOper):
                 lst_mod_date=lst_date,
                 note=note
             ).create(self._db)
+        SiteHealthSentinel.record_success(domain)
 
     def fail(self, domain: str):
         """
         站点访问失败
         """
+        from app.helper.site import SiteHealthSentinel
+
         lst_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         sta = SiteStatistic.get_by_domain(self._db, domain)
         if sta:
@@ -316,11 +321,14 @@ class SiteOper(DbOper):
                 lst_state=1,
                 lst_mod_date=lst_date
             ).create(self._db)
+        SiteHealthSentinel.record_failure(domain)
 
     async def async_success(self, domain: str, seconds: Optional[int] = None):
         """
         异步站点访问成功
         """
+        from app.helper.site import SiteHealthSentinel
+
         lst_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         sta = await SiteStatistic.async_get_by_domain(self._db, domain)
         if sta:
@@ -357,11 +365,14 @@ class SiteOper(DbOper):
                 lst_mod_date=lst_date,
                 note=note
             ).async_create(self._db)
+        SiteHealthSentinel.record_success(domain)
 
     async def async_fail(self, domain: str):
         """
         异步站点访问失败
         """
+        from app.helper.site import SiteHealthSentinel
+
         lst_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         sta = await SiteStatistic.async_get_by_domain(self._db, domain)
         if sta:
@@ -378,3 +389,4 @@ class SiteOper(DbOper):
                 lst_state=1,
                 lst_mod_date=lst_date
             ).async_create(self._db)
+        SiteHealthSentinel.record_failure(domain)
