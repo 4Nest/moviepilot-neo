@@ -195,6 +195,7 @@ class SiteParserBase(metaclass=ABCMeta):
             # Cookie模式时，获取站点首页html
             if self.request_mode == "apikey":
                 if not self.apikey and not self.token:
+                    self.err_msg = "未配置 API Key 或 Token"
                     logger.warn(f"{self._site_name} 未设置cookie 或 apikey/token，跳过后续操作")
                     return
                 self._index_html = {}

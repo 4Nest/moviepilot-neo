@@ -108,13 +108,26 @@ class SiteChain(ChainBase):
         :param site:  站点
         :return: 用户数据
         """
+        if not site:
+            return None
         domain = StringUtils.get_url_domain(site.get("domain") or site.get("url"))
+        if site.get("public"):
+            SiteHealthSentinel.record_success(domain)
+            return None
         userdata: SiteUserData = self.run_module("refresh_userdata", site=site)
-        if userdata is None or userdata.err_msg:
+        if userdata is None:
+            if site.get("schema"):
+                self._record_site_failure(
+                    domain=domain,
+                    site_name=site.get("name") or domain,
+                    error_reason="未获取到站点用户数据",
+                )
+            return None
+        if userdata.err_msg:
             self._record_site_failure(
                 domain=domain,
                 site_name=site.get("name") or domain,
-                error_reason=userdata.err_msg if userdata else "未获取到站点用户数据",
+                error_reason=userdata.err_msg,
             )
             return None
         SiteHealthSentinel.record_success(domain)
@@ -185,7 +198,11 @@ class SiteChain(ChainBase):
         """
         any_site_updated = False
         result = {}
-        sites = [site for site in SitesHelper().get_indexers() if site.get("is_active")]
+        sites = [
+            site
+            for site in SitesHelper().get_indexers()
+            if site.get("is_active") and not site.get("public")
+        ]
         total_num = len(sites)
         if progress_callback:
             progress_callback(
@@ -826,7 +843,7 @@ class SiteChain(ChainBase):
         if str(domain).startswith("http"):
             domain = StringUtils.get_url_domain(domain)
         indexer = SitesHelper().get_indexer(domain)
-        if not indexer:
+        if not indexer or indexer.get("public"):
             return
         # 刷新站点用户数据
         self.refresh_userdata(site=indexer) or {}

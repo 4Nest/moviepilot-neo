@@ -166,7 +166,12 @@ def test_refresh_userdata_records_specific_failures(monkeypatch, userdata, expec
     monkeypatch.setattr(chain, "run_module", lambda *_args, **_kwargs: userdata)
     notifications = []
     monkeypatch.setattr(chain, "post_message", notifications.append)
-    site = {"domain": "userdata.example.com", "name": "用户数据站点"}
+    site = {
+        "domain": "userdata.example.com",
+        "name": "用户数据站点",
+        "public": False,
+        "schema": "NexusPhp",
+    }
 
     assert chain.refresh_userdata(site) is None
     status = SiteHealthSentinel.get_status("userdata.example.com")
@@ -183,8 +188,12 @@ def test_successful_userdata_refresh_recovers_sentinel(monkeypatch):
     monkeypatch.setattr(chain, "run_module", lambda *_args, **_kwargs: SiteUserData(domain=domain))
     monkeypatch.setattr(SiteOper, "update_userdata", lambda self, **_kwargs: None)
 
-    result = chain.refresh_userdata({"domain": domain, "name": "恢复站点"})
-    assert result is not None
+    result = chain.refresh_userdata({
+        "domain": domain,
+        "name": "恢复站点",
+        "public": False,
+        "schema": "NexusPhp",
+    })
     assert SiteHealthSentinel.get_status(domain)["consecutive_fails"] == 0
 
 
@@ -291,3 +300,48 @@ def test_statistic_endpoints_merge_runtime_circuit_status(monkeypatch):
         assert statistic.circuit_until is not None
         assert statistic.last_error == "权限不足"
         assert statistic.note == {"2026-01-01 00:00:00": 2}
+
+
+def test_public_bt_and_schemaless_sites_never_trigger_userdata_failure_or_circuit(monkeypatch):
+    """公开 BT 站（如 Nyaa、动漫花园）与无 schema 站点没有个人用户数据，刷新时严禁计失败或触发熔断。"""
+    nyaa = {"id": 1, "domain": "https://nyaa.si/", "url": "https://nyaa.si/", "name": "Nyaa", "public": True, "is_active": True}
+    dmhy = {"id": 2, "domain": "https://dmhy.org/", "url": "https://dmhy.org/", "name": "动漫花园", "public": 1, "schema": "NexusPhp", "is_active": True}
+    mikan = {"id": 3, "domain": "https://mikanani.me/", "url": "https://mikanani.me/", "name": "MiKan", "public": False, "schema": None, "is_active": True}
+    private_pt = {"id": 4, "domain": "https://private.example.com/", "url": "https://private.example.com/", "name": "私有站", "public": False, "schema": "NexusPhp", "is_active": True}
+
+    chain = SiteChain()
+    notifications = []
+    refreshed_domains = []
+    monkeypatch.setattr(chain, "post_message", notifications.append)
+    monkeypatch.setattr(SiteOper, "update_userdata", lambda self, **_kwargs: None)
+
+    def fake_run_module(method, site=None, **_kw):
+        assert method == "refresh_userdata"
+        if not site or site.get("public") or not site.get("schema"):
+            return None
+        refreshed_domains.append(site.get("name"))
+        return SiteUserData(domain="private.example.com", username="pt_user")
+    monkeypatch.setattr(chain, "run_module", fake_run_module)
+    monkeypatch.setattr(SitesHelper, "get_indexers", lambda self: [nyaa, dmhy, mikan, private_pt])
+    monkeypatch.setattr(SitesHelper, "get_indexer", lambda self, dom: nyaa if "nyaa" in dom else dmhy)
+
+    # 模拟此前已残留误记状态，公开站刷新后应恢复干净且不调用底层解析
+    SiteHealthSentinel.record_failure("nyaa.si", "未获取到站点用户数据")
+    for _ in range(5):
+        assert chain.refresh_userdata(nyaa) is None
+        assert chain.refresh_userdata(dmhy) is None
+        assert chain.refresh_userdata(mikan) is None
+        chain.cache_site_userdata(SimpleNamespace(event_data={"domain": "nyaa.si"}))
+
+    for dom in ("nyaa.si", "dmhy.org", "mikanani.me"):
+        st = SiteHealthSentinel.get_status(dom)
+        assert st["consecutive_fails"] == 0
+        assert st["circuit_open"] is False
+        assert st["last_error"] is None
+    assert notifications == []
+    assert refreshed_domains == []
+
+    # 批量刷新只应对支持用户数据的私有 PT 站点发起请求
+    batch = chain.refresh_userdatas()
+    assert list(batch.keys()) == ["私有站"]
+    assert refreshed_domains == ["私有站"]

@@ -741,19 +741,22 @@ class IndexerModule(_ModuleBase):
                         api_url=site.get("api_url"))
             return None
 
+        if not site or site.get("public"):
+            return None
+
         site_obj = __get_site_obj()
         if not site_obj:
-            if not site.get("public"):
-                logger.warn(f"站点  {site.get('name')} 未找到站点解析器，schema：{site.get('schema')}")
+            logger.warn(f"站点  {site.get('name')} 未找到站点解析器，schema：{site.get('schema')}")
             return None
 
         # 获取用户数据
+        domain = StringUtils.get_url_domain(site.get("url") or site.get("domain"))
         try:
             logger.info(f"站点 {site.get('name')} 开始以 {site.get('schema')} 模型解析数据...")
             site_obj.parse()
             logger.debug(f"站点 {site.get('name')} 数据解析完成")
             return SiteUserData(
-                domain=StringUtils.get_url_domain(site.get("url")),
+                domain=domain,
                 userid=site_obj.userid,
                 username=site_obj.username,
                 user_level=site_obj.user_level,
@@ -771,6 +774,13 @@ class IndexerModule(_ModuleBase):
                 message_unread_contents=site_obj.message_unread_contents.copy() if site_obj.message_unread_contents else [],
                 updated_day=datetime.now().strftime('%Y-%m-%d'),
                 err_msg=site_obj.err_msg
+            )
+        except Exception as err:
+            logger.error(f"站点 {site.get('name')} 解析用户数据失败：{err}")
+            return SiteUserData(
+                domain=domain,
+                updated_day=datetime.now().strftime('%Y-%m-%d'),
+                err_msg=str(err),
             )
         finally:
             site_obj.clear()
