@@ -1,15 +1,17 @@
 import asyncio
 import mimetypes
 import shutil
-from typing import Annotated, Any, Dict, List, Optional
+from copy import deepcopy
+from time import monotonic
+from typing import Annotated, Any, Callable, Dict, Hashable, List, Optional
 
-import aiofiles
 from anyio import Path as AsyncPath
-from fastapi import APIRouter, Depends, Header, HTTPException, Security
+from cachetools import TTLCache
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, Security
 from fastapi.concurrency import run_in_threadpool
 from starlette import status
-from starlette.responses import StreamingResponse
-
+from starlette.responses import FileResponse
+from starlette.staticfiles import StaticFiles
 from app import schemas
 from app.api.apiv2_utils import API_V2_STR, OPENAPI_V2_PATH
 from app.command import Command
@@ -44,6 +46,42 @@ PROTECTED_ROUTES = {
     "/docs/oauth2-redirect",
     "/redoc",
 }
+
+_plugin_metrics_cache: TTLCache = TTLCache(maxsize=128, ttl=300, timer=monotonic)
+_plugin_metrics_revision: int = 0
+
+
+def _plugin_metrics_scope() -> Hashable:
+    """构造插件指标缓存的中心端、实例身份与统计开关隔离键。"""
+    return (
+        settings.MP_SERVER_HOST,
+        MoviePilotServerHelper.get_user_uid(),
+        bool(settings.PLUGIN_STATISTIC_SHARE),
+    )
+
+
+async def _cached_plugin_metrics(
+    kind: str,
+    key_ids: Optional[tuple[str, ...]],
+    loader: Callable[[], Any],
+) -> dict:
+    """复用五分钟内的非空插件统计或批量评分快照，评分提交后自动丢弃在途旧结果。"""
+    cache_key = (_plugin_metrics_scope(), kind, key_ids)
+    cached = _plugin_metrics_cache.get(cache_key)
+    if cached is not None:
+        return deepcopy(cached)
+    revision = _plugin_metrics_revision
+    result = await loader()
+    if result and revision == _plugin_metrics_revision:
+        _plugin_metrics_cache[cache_key] = deepcopy(result)
+    return deepcopy(result) if result is not None else {}
+
+
+def reset_plugin_metrics_cache_for_tests() -> None:
+    """清空插件指标进程缓存，供测试前后重置使用。"""
+    global _plugin_metrics_revision
+    _plugin_metrics_revision += 1
+    _plugin_metrics_cache.clear()
 PLUGIN_PREFIX = f"{settings.API_V1_STR}/plugin"
 PLUGIN_V2_PREFIX = f"{API_V2_STR}/plugin"
 
@@ -458,10 +496,13 @@ async def plugin_releases(
 @router.get("/statistic", summary="插件安装统计", response_model=dict)
 async def statistic(_: schemas.TokenPayload = Depends(verify_token)) -> Any:
     """
-    插件安装统计
+    插件安装统计，复用当前实例最近五分钟的非空结果。
     """
-    return await MoviePilotServerHelper.async_get_plugin_statistic()
-
+    return await _cached_plugin_metrics(
+        "statistic",
+        None,
+        MoviePilotServerHelper.async_get_plugin_statistic,
+    )
 
 @router.get(
     "/rating",
@@ -476,12 +517,16 @@ async def plugin_ratings(
     批量查询插件平均分、评分人数和当前安装实例评分。
     """
     requested_ids = plugin_ids.split(",") if plugin_ids is not None else None
-    ratings = await MoviePilotServerHelper.async_get_plugin_ratings(requested_ids)
+    key_ids = tuple(sorted(set(requested_ids))) if requested_ids is not None else None
+    ratings = await _cached_plugin_metrics(
+        "ratings",
+        key_ids,
+        lambda: MoviePilotServerHelper.async_get_plugin_ratings(requested_ids),
+    )
     return {
         plugin_id: schemas.PluginRating.model_validate(rating)
         for plugin_id, rating in ratings.items()
     }
-
 
 @router.get(
     "/rating/{plugin_id}",
@@ -519,14 +564,16 @@ async def rate_plugin(
             detail=f"插件 {plugin_id} 未安装，无法评分",
         )
 
+    global _plugin_metrics_revision
     rating = await MoviePilotServerHelper.async_submit_plugin_rating(
         plugin_id,
         payload.rating,
     )
     if rating is None:
         return schemas.Response(success=False, message="连接MoviePilot服务器失败")
+    _plugin_metrics_revision += 1
+    _plugin_metrics_cache.clear()
     return schemas.Response(success=True, data=rating)
-
 
 @router.get(
     "/reload/{plugin_id}", summary="重新加载插件", response_model=schemas.Response
@@ -742,22 +789,36 @@ def reset_plugin(
     return schemas.Response(success=True)
 
 
-@router.get("/file/{plugin_id}/{filepath:path}", summary="获取插件静态文件")
+@router.get(
+    "/file/{plugin_id}/{filepath:path}",
+    summary="获取插件静态文件",
+    response_model=None,
+    response_class=FileResponse,
+    responses={
+        200: {"description": "插件静态资源"},
+        304: {"description": "插件静态资源未修改，复用浏览器缓存"},
+    },
+)
 async def plugin_static_file(
     plugin_id: str,
     filepath: str,
+    request: Request = None,
     _: None = Depends(_verify_plugin_static_file_access),
-) -> StreamingResponse:
+) -> Response:
     """
-    获取插件静态文件
+    在访问校验后返回插件静态资源，支持私有缓存及 ETag、Last-Modified 条件请求。
     """
-    # 基础安全检查
     if ".." in filepath or ".." in plugin_id:
         logger.warning(
             f"Static File API: Path traversal attempt detected: {plugin_id}/{filepath}"
         )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
+    plugin_manager = PluginManager()
+    runtime_id = next(
+        (pid for pid in plugin_manager.get_plugin_ids() if pid.lower() == plugin_id.lower()),
+        plugin_id,
+    )
     plugin_base_dir = (
         AsyncPath(settings.ROOT_PATH) / "app" / "plugins" / plugin_id.lower()
     )
@@ -786,39 +847,37 @@ async def plugin_static_file(
             status_code=status.HTTP_403_FORBIDDEN, detail=f"{plugin_file_path} 不是文件"
         )
 
-    # 判断 MIME 类型
     response_type, _ = mimetypes.guess_type(str(plugin_file_path))
     suffix = plugin_file_path.suffix.lower()
-    # 强制修正 .mjs 和 .js 的 MIME 类型
     if suffix in [".js", ".mjs"]:
         response_type = "application/javascript"
-    elif suffix == ".css" and not response_type:  # 如果 guess_type 没猜对 css，也修正
+    elif suffix == ".css" and not response_type:
         response_type = "text/css"
-    elif not response_type:  # 对于其他猜不出的类型
+    elif not response_type:
         response_type = "application/octet-stream"
 
-    try:
-        # 异步生成器函数，用于流式读取文件
-        async def file_generator():
-            async with aiofiles.open(plugin_file_path, mode="rb") as file:
-                # 8KB 块大小
-                while chunk := await file.read(8192):
-                    yield chunk
-
-        return StreamingResponse(
-            file_generator(),
-            media_type=response_type,
+    version = request.query_params.get("v") if request is not None else None
+    current_version = plugin_manager.get_plugin_attr(runtime_id, "plugin_version")
+    versioned = bool(version and current_version and version == str(current_version))
+    cache_control = "private, max-age=31536000, immutable" if versioned else "private, no-cache"
+    response = FileResponse(
+        str(plugin_file_path),
+        stat_result=await plugin_file_path.stat(),
+        media_type=response_type,
+        headers={"Cache-Control": cache_control},
+        filename=plugin_file_path.name,
+        content_disposition_type="inline",
+    )
+    if request is not None and StaticFiles().is_not_modified(response.headers, request.headers):
+        return Response(
+            status_code=304,
             headers={
-                "Content-Disposition": f"inline; filename={plugin_file_path.name}"
+                key: response.headers[key]
+                for key in ("cache-control", "etag", "last-modified")
+                if key in response.headers
             },
         )
-    except Exception as e:
-        logger.error(
-            f"Error creating/sending StreamingResponse for {plugin_file_path}: {e}",
-            exc_info=True,
-        )
-        raise HTTPException(status_code=500, detail="Internal Server Error")
-
+    return response
 
 @router.get("/folders", summary="获取插件文件夹配置", response_model=dict)
 async def get_plugin_folders(

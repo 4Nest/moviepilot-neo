@@ -337,15 +337,18 @@ class SearchChain(ChainBase):
             if cls._OUTCOME_PRIORITY[observation.outcome] > cls._OUTCOME_PRIORITY[site.outcome]:
                 site.outcome = observation.outcome
 
-        explained_rules: List[SearchDiagnosticRuleGroup] = RuleHelper().explain_rule_groups(
+        helper = RuleHelper()
+        group_names = rule_groups or []
+        explained_rules: List[SearchDiagnosticRuleGroup] = helper.explain_rule_groups(
             media=mediainfo,
-            group_names=rule_groups or [],
+            group_names=group_names,
         )
         warnings = [
             SearchDiagnosticWarning(code=rule.reason, rule_group=rule.name)
             for rule in explained_rules
             if rule.reason
         ]
+        warnings.extend(helper.diagnose_rule_groups(media=mediainfo, group_names=group_names))
         warnings.extend(SearchDiagnosticWarning(code=code) for code in sorted(warning_codes))
         detail_counts = Counter()
         for detail in rejection_details or []:

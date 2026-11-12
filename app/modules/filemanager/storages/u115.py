@@ -80,6 +80,8 @@ class U115Pan(StorageBase, metaclass=WeakSingleton):
         self._limit_lock = Lock()
         # 总体 QPS/QPM/QPH 统计
         self._rate_stats = RateStats(source="115")
+        self._usage_cache: Optional[schemas.StorageUsage] = None
+        self._usage_cache_until = 0.0
 
     def _init_session(self):
         """
@@ -328,15 +330,15 @@ class U115Pan(StorageBase, metaclass=WeakSingleton):
             self._api_limiter.acquire()
         self._rate_stats.record()
 
-        # 风控冷却期间阻止所有接口调用，统一等待
+        # 风控冷却期间快速返回失败，避免同步工作线程休眠一小时耗尽线程池。
         with self._limit_lock:
             wait_until = self._limit_until
         if wait_until > time.time():
             wait_secs = wait_until - time.time()
-            logger.info(
-                f"【115】风控冷却中，本请求等待 {wait_secs:.0f} 秒后再调用接口..."
+            logger.warning(
+                f"【115】风控冷却中（剩余 {wait_secs:.0f} 秒），跳过本次请求 {endpoint}"
             )
-            time.sleep(wait_secs)
+            return None
 
         try:
             resp = self.session.request(method, f"{self.base_url}{endpoint}", **kwargs)
@@ -352,29 +354,15 @@ class U115Pan(StorageBase, metaclass=WeakSingleton):
 
         if resp.status_code == 429:
             self._rate_stats.log_stats("warning")
-            if retry_times <= 0:
-                logger.error(
-                    f"【115】{method} 请求 {endpoint} 触发限流(429)，重试次数用尽！"
-                )
-                return None
             with self._limit_lock:
                 self._limit_until = max(
                     self._limit_until,
                     time.time() + self.limit_sleep_seconds,
                 )
             logger.warning(
-                f"【115】触发限流(429)，全体接口进入风控冷却 {self.limit_sleep_seconds} 秒，随后重试..."
+                f"【115】触发限流(429)，全体接口进入风控冷却 {self.limit_sleep_seconds} 秒，本次请求直接返回失败"
             )
-            time.sleep(self.limit_sleep_seconds)
-            kwargs["retry_limit"] = retry_times - 1
-            kwargs["no_error_log"] = no_error_log
-            return self._request_api(
-                method,
-                endpoint,
-                result_key,
-                accepted_codes=accepted_codes,
-                **kwargs,
-            )
+            return None
 
         # 处理请求错误
         try:
@@ -408,29 +396,15 @@ class U115Pan(StorageBase, metaclass=WeakSingleton):
                 logger.warn(f"【115】{method} 请求 {endpoint} 出错：{error_msg}")
             if "已达到当前访问上限" in error_msg:
                 self._rate_stats.log_stats("warning")
-                if retry_times <= 0:
-                    logger.error(
-                        f"【115】{method} 请求 {endpoint} 触发风控(访问上限)，重试次数用尽！"
-                    )
-                    return None
                 with self._limit_lock:
                     self._limit_until = max(
                         self._limit_until,
                         time.time() + self.limit_sleep_seconds,
                     )
                 logger.warning(
-                    f"【115】触发风控(访问上限)，全体接口进入风控冷却 {self.limit_sleep_seconds} 秒，随后重试..."
+                    f"【115】触发风控(访问上限)，全体接口进入风控冷却 {self.limit_sleep_seconds} 秒，本次请求直接返回失败"
                 )
-                time.sleep(self.limit_sleep_seconds)
-                kwargs["retry_limit"] = retry_times - 1
-                kwargs["no_error_log"] = no_error_log
-                return self._request_api(
-                    method,
-                    endpoint,
-                    result_key,
-                    accepted_codes=accepted_codes,
-                    **kwargs,
-                )
+                return None
             return None
 
         if result_key:
@@ -1106,15 +1080,26 @@ class U115Pan(StorageBase, metaclass=WeakSingleton):
 
     def usage(self) -> Optional[schemas.StorageUsage]:
         """
-        存储使用情况
+        查询账号容量，使用 300 秒短期缓存并在风控冷却期返回最后已知容量。
+
+        :return: 以字节计的容量信息；未登录或无可用数据时返回 None
         """
+        now = time.time()
+        if self._usage_cache is not None and now < self._usage_cache_until:
+            return self._usage_cache
+        with self._limit_lock:
+            if self._limit_until > now:
+                return self._usage_cache
         try:
             resp = self._request_api("GET", "/open/user/info", "data")
-            if not resp:
-                return None
+            if not isinstance(resp, dict) or not resp:
+                return self._usage_cache
             space = resp["rt_space_info"]
-            return schemas.StorageUsage(
+            usage = schemas.StorageUsage(
                 total=space["all_total"]["size"], available=space["all_remain"]["size"]
             )
+            self._usage_cache = usage
+            self._usage_cache_until = now + 300.0
+            return usage
         except NoCheckInException:
             return None

@@ -6,7 +6,7 @@ import re
 import shutil
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple, Set, Dict, Union
+from typing import Any, Callable, List, Optional, Tuple, Set, Dict, Union
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 from app import schemas
@@ -578,6 +578,8 @@ class DownloadChain(ChainBase):
         按失败原因确定资源冷却时间。
         """
         error_text = str(error_msg or "").lower()
+        if error_text.startswith(("换票失败：", "临时下载地址失效：")):
+            return DOWNLOAD_FAILURE_TRANSIENT_TTL_SECONDS
         if any(keyword in error_text for keyword in DOWNLOAD_FAILURE_RESOURCE_ERROR_KEYWORDS):
             return DOWNLOAD_FAILURE_RESOURCE_TTL_SECONDS
         return DOWNLOAD_FAILURE_TRANSIENT_TTL_SECONDS
@@ -668,148 +670,212 @@ class DownloadChain(ChainBase):
             logger.error(f"查询下载失败冷却失败：{str(err)}")
             return set()
 
+    @staticmethod
+    def _redact_indirect_download_error(
+            text: str, request_params: Dict[str, Any], cookie: Optional[str],
+    ) -> str:
+        """
+        移除换票错误中的凭据和完整签名地址，并限制诊断长度。
+        """
+        headers = request_params.get("header")
+        secrets = list(headers.values()) if isinstance(headers, dict) else []
+        if cookie:
+            secrets.extend([cookie, *(part.partition("=")[2].strip() for part in cookie.split(";"))])
+        for secret in secrets:
+            if isinstance(secret, str) and secret:
+                text = text.replace(secret, "[已隐藏]")
+                text = text.replace(secret.removeprefix("Bearer "), "[已隐藏]")
+
+        def url_origin(match: re.Match) -> str:
+            """仅保留诊断 URL 的协议和主机。"""
+            parsed = urlparse(match.group())
+            return f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else "[已隐藏]"
+
+        text = re.sub(r"https?://[^\s<>\"'，；（）]+", url_origin, text)
+        text = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer [已隐藏]", text)
+        text = re.sub(
+            r"(?i)\b(token|passkey|api[-_]?key|cookie|password|secret|sign)\s*[:=]\s*[^\s,;]+",
+            r"\1=[已隐藏]", text,
+        )
+        return " ".join(text.split())[:500]
+
+    @classmethod
+    def _indirect_download_failure_reason(
+            cls, response: Any, payload: Any, request_params: Dict[str, Any],
+            cookie: Optional[str], reason: str,
+    ) -> str:
+        """
+        组合换票阶段、HTTP 状态、有限响应摘要和 Cookie 携带状态。
+        """
+        headers = request_params.get("header")
+        header_cookie = isinstance(headers, dict) and any(
+            str(key).lower() == "cookie" and value for key, value in headers.items()
+        )
+        cookie_sent = bool((cookie and request_params.get("cookie")) or header_cookie)
+        details = ["未收到响应（连接失败或超时）"] if response is None else [f"HTTP {response.status_code}"]
+        if response is not None:
+            fields = []
+            if isinstance(payload, dict):
+                for key in ("code", "message", "msg", "error"):
+                    value = payload.get(key)
+                    if isinstance(value, dict):
+                        value = value.get("message")
+                    if isinstance(value, (str, int)):
+                        fields.append(f"{key}={value}")
+            summary = "；".join(fields) or (
+                "空响应" if not response.content else "响应未包含有效下载地址"
+            )
+            details.append(f"响应摘要：{summary}")
+        details.append(f"携带 Cookie：{'是' if cookie_sent else '否'}")
+        error = cls._redact_indirect_download_error(
+            f"{reason}（{'；'.join(details)}）", request_params, cookie,
+        )
+        return f"换票失败：{error}"[:500]
+
+    def _resolve_indirect_download_url(
+            self, url: str, ua: Optional[str] = None, cookie: Optional[str] = None,
+    ) -> Tuple[Optional[str], str]:
+        """
+        解析 [base64]url 换票配方，失败时返回已脱敏的换票诊断。
+        """
+        match = re.search(r"\[(.*)](.*)", url)
+        if not match:
+            return None, "换票失败：请求编码无效"
+        encoded_params, request_url = match.groups()
+        if not encoded_params:
+            return request_url, ""
+        try:
+            request_text = base64.b64decode(encoded_params.encode("utf-8")).decode("utf-8")
+            request_params = json.loads(request_text)
+        except (ValueError, UnicodeError):
+            return None, "换票失败：无法解析请求编码"
+        if not isinstance(request_params, dict):
+            return None, "换票失败：请求参数格式无效"
+
+        original_cookie = cookie
+        request_cookie = cookie if request_params.get("cookie") else None
+        headers = request_params.get("header")
+        proxy = request_params.get("proxy")
+        request = RequestUtils(
+            ua=ua,
+            cookies=request_cookie,
+            headers=headers,
+            proxies=settings.PROXY if proxy else None,
+        )
+        if request_params.get("method") == "get":
+            response = request.get_res(request_url, params=request_params.get("params"))
+        else:
+            response = request.post_res(request_url, params=request_params.get("params"))
+
+        payload = None
+        if response is not None:
+            try:
+                payload = response.json()
+            except (TypeError, ValueError, AttributeError):
+                payload = None
+        if response is None:
+            return None, self._indirect_download_failure_reason(
+                response, payload, request_params, original_cookie, "无法连接站点下载凭证接口",
+            )
+        if not response:
+            return None, self._indirect_download_failure_reason(
+                response, payload, request_params, original_cookie, "站点拒绝换票请求",
+            )
+        if not request_params.get("result"):
+            data = response.text.strip()
+            if data.startswith("magnet:"):
+                return data, ""
+            data = self._normalize_indirect_download_url(
+                url=data, base_url=request_params.get("result_base_url"),
+            )
+            parsed = urlparse(data)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                return None, self._indirect_download_failure_reason(
+                    response, payload, request_params, original_cookie, "接口未返回有效下载地址",
+                )
+            return data, ""
+        if not isinstance(payload, dict):
+            return None, self._indirect_download_failure_reason(
+                response, payload, request_params, original_cookie, "站点下载凭证响应结构无效",
+            )
+        success_key = request_params.get("success")
+        if success_key and not payload.get(success_key):
+            return None, self._indirect_download_failure_reason(
+                response, payload, request_params, original_cookie, "站点返回换票失败",
+            )
+        data = payload
+        for key in str(request_params.get("result")).split("."):
+            if not isinstance(data, dict):
+                data = None
+                break
+            data = data.get(key)
+            if not data:
+                break
+        if not data:
+            return None, self._indirect_download_failure_reason(
+                response, payload, request_params, original_cookie, "站点未返回有效下载地址",
+            )
+        result_path = request_params.get("result_path")
+        result_query_param = request_params.get("result_query_param")
+        if result_path and result_query_param:
+            result_url = urljoin(
+                f"{str(request_params.get('result_base_url')).rstrip('/')}/",
+                str(result_path).lstrip('/'),
+            )
+            return f"{result_url}?{urlencode({result_query_param: data})}", ""
+        if not isinstance(data, str):
+            return None, self._indirect_download_failure_reason(
+                response, payload, request_params, original_cookie, "站点未返回有效下载地址",
+            )
+        if data.startswith("magnet:"):
+            return data, ""
+        data = self._normalize_indirect_download_url(
+            url=data,
+            base_url=request_params.get("result_base_url"),
+        )
+        parsed = urlparse(data)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            return None, self._indirect_download_failure_reason(
+                response, payload, request_params, original_cookie, "接口未返回有效下载地址",
+            )
+        logger.info("已获取到站点临时下载地址")
+        return data, ""
+
     def download_torrent(self, torrent: TorrentInfo,
                          channel: MessageChannel = None,
                          source: Optional[str] = None,
-                         userid: Union[str, int] = None
+                         userid: Union[str, int] = None,
+                         on_failure: Optional[Callable[[str], None]] = None,
                          ) -> Tuple[Optional[Union[str, bytes]], str, list]:
         """
-        下载种子文件，如果是磁力链，会返回磁力链接本身
+        下载种子文件或返回磁力链接，并向调用方透传具体失败原因。
+
+        :param on_failure: 准备或取种失败回调，用于保留瞬态冷却分类
         :return: 种子内容，种子目录名，种子文件清单
         """
-
-        def __extract_redirect_error(res_obj=None, payload_obj=None) -> str:
-            """
-            从两段式下载凭证响应中提取可读错误信息
-            """
-            data_obj = payload_obj
-            if data_obj is None and res_obj is not None:
-                try:
-                    data_obj = res_obj.json()
-                except Exception:
-                    data_obj = None
-            detail = ""
-            if isinstance(data_obj, dict):
-                err_node = data_obj.get("error")
-                if isinstance(err_node, dict):
-                    detail = str(err_node.get("message") or "")
-                elif isinstance(err_node, str):
-                    detail = err_node
-                if not detail:
-                    detail = str(data_obj.get("message") or data_obj.get("msg") or "")
-            detail = detail.strip()
-            if res_obj is not None and res_obj.status_code != 200:
-                if detail:
-                    return f"获取下载凭证失败（HTTP {res_obj.status_code}：{detail}）"
-                return f"获取下载凭证失败（HTTP {res_obj.status_code}）"
-            return detail or "站点未返回有效下载地址"
-
-        def __get_redict_url(
-            url: str,
-            ua: Optional[str] = None,
-            cookie: Optional[str] = None,
-        ) -> Tuple[Optional[str], str]:
-            """
-            获取下载链接，url格式：[base64]url
-            """
-            # 获取[]中的内容
-            m = re.search(r"\[(.*)](.*)", url)
-            if m:
-                # 参数
-                base64_str = m.group(1)
-                # URL
-                url = m.group(2)
-                if not base64_str:
-                    return url, ""
-                # 解码参数
-                req_str = base64.b64decode(base64_str.encode('utf-8')).decode('utf-8')
-                req_params: Dict[str, dict] = json.loads(req_str)
-                # 是否使用cookie
-                if not req_params.get('cookie'):
-                    cookie = None
-                # 代理
-                proxy = req_params.get('proxy')
-                # 请求头
-                if req_params.get('header'):
-                    headers = req_params.get('header')
-                else:
-                    headers = None
-                if req_params.get('method') == 'get':
-                    # GET请求
-                    res = RequestUtils(
-                        ua=ua,
-                        cookies=cookie,
-                        headers=headers,
-                        proxies=settings.PROXY if proxy else None
-                    ).get_res(url, params=req_params.get('params'))
-                else:
-                    # POST请求
-                    res = RequestUtils(
-                        ua=ua,
-                        cookies=cookie,
-                        headers=headers,
-                        proxies=settings.PROXY if proxy else None
-                    ).post_res(url, params=req_params.get('params'))
-                if res is None:
-                    return None, "无法连接站点下载凭证接口"
-                if not res:
-                    return None, __extract_redirect_error(res_obj=res)
-                if not req_params.get('result'):
-                    return res.text, ""
-                try:
-                    payload = res.json()
-                except (TypeError, ValueError):
-                    return None, "站点下载凭证响应不是有效 JSON"
-                if not isinstance(payload, dict):
-                    return None, "站点下载凭证响应结构无效"
-                success_key = req_params.get('success')
-                if success_key and not payload.get(success_key):
-                    return None, __extract_redirect_error(res_obj=res, payload_obj=payload)
-                data = payload
-                for key in str(req_params.get('result')).split("."):
-                    if not isinstance(data, dict):
-                        return None, __extract_redirect_error(res_obj=res, payload_obj=payload)
-                    data = data.get(key)
-                    if not data:
-                        return None, __extract_redirect_error(res_obj=res, payload_obj=payload)
-                result_path = req_params.get('result_path')
-                result_query_param = req_params.get('result_query_param')
-                if result_path and result_query_param:
-                    result_url = urljoin(
-                        f"{str(req_params.get('result_base_url')).rstrip('/')}/",
-                        str(result_path).lstrip('/'),
-                    )
-                    return f"{result_url}?{urlencode({result_query_param: data})}", ""
-                data = self._normalize_indirect_download_url(
-                    url=data,
-                    base_url=req_params.get('result_base_url'),
-                )
-                logger.info("已获取到站点临时下载地址")
-                return data, ""
-            return None, "下载地址格式无效"
-
-        # 获取下载链接
         if not torrent.enclosure:
             return None, "", []
         if torrent.enclosure.startswith("magnet:"):
             return torrent.enclosure, "", []
-        # Cookie
         site_cookie = torrent.site_cookie
         indirect_download = torrent.enclosure.startswith("[")
         redirect_error = ""
         if indirect_download:
-            # 需要解码获取下载地址
-            torrent_url, redirect_error = __get_redict_url(
+            torrent_url, redirect_error = self._resolve_indirect_download_url(
                 url=torrent.enclosure,
                 ua=torrent.site_ua,
                 cookie=site_cookie,
             )
-            # 涉及解析地址的不使用Cookie下载种子，否则MT会出错
+            # 涉及解析地址的不使用 Cookie 下载种子，否则 MT 会出错。
             site_cookie = None
         else:
             torrent_url = torrent.enclosure
         if not torrent_url:
-            reason = redirect_error or "无法获取下载地址"
+            reason = redirect_error or (
+                "换票失败：未获取到下载地址" if indirect_download else "无法获取下载地址"
+            )
+            if on_failure:
+                on_failure(reason)
             logger.error(f"{torrent.title} 无法获取下载地址：{reason}")
             self.post_message(Notification(
                 channel=channel,
@@ -820,30 +886,34 @@ class DownloadChain(ChainBase):
                 userid=userid,
             ))
             return None, "", []
-        # 下载种子文件
         _, content, download_folder, files, error_msg = TorrentHelper().download_torrent(
             url=torrent_url,
             cookie=site_cookie,
             ua=torrent.site_ua or settings.USER_AGENT,
             proxy=torrent.site_proxy,
-            cache_invalid=not indirect_download)
+            cache_invalid=not indirect_download,
+        )
 
         if isinstance(content, str):
-            # 磁力链
             return content, "", []
-
         if not content:
-            logger.error(f"下载种子文件失败：{torrent.title}")
+            if indirect_download:
+                reason = "返回内容不是有效种子，请重新换票" \
+                    if "种子数据有误" in (error_msg or "") else (error_msg or "")
+                error_msg = f"临时下载地址失效：{reason or '未下载到种子数据'}"
+            reason = error_msg or "下载种子内容为空"
+            if on_failure:
+                on_failure(reason)
+            logger.error(f"下载种子文件失败：{torrent.title}，{reason}")
             self.post_message(Notification(
                 channel=channel,
                 source=source if channel else None,
                 mtype=NotificationType.Manual,
                 title=f"{torrent.title} 种子下载失败！",
-                text=f"错误信息：{error_msg}\n站点：{torrent.site_name}",
-                userid=userid))
+                text=f"错误信息：{reason}\n站点：{torrent.site_name}",
+                userid=userid,
+            ))
             return None, "", []
-
-        # 返回 种子文件路径，种子目录名，种子文件清单
         return content, download_folder, files
 
     @staticmethod
@@ -969,12 +1039,16 @@ class DownloadChain(ChainBase):
         else:
             context.selected_episodes = []
         _folder_name = ""
+        download_errors: List[str] = []
         if not torrent_file and not torrent_content:
             # 下载种子文件，得到的可能是文件也可能是磁力链
-            torrent_content, _folder_name, _file_list = self.download_torrent(_torrent,
-                                                                              channel=channel,
-                                                                              source=source,
-                                                                              userid=userid)
+            torrent_content, _folder_name, _file_list = self.download_torrent(
+                _torrent,
+                channel=channel,
+                source=source,
+                userid=userid,
+                on_failure=download_errors.append,
+            )
         elif torrent_file:
             if torrent_file.exists():
                 torrent_content = torrent_file.read_bytes()
@@ -985,14 +1059,15 @@ class DownloadChain(ChainBase):
                 torrent_content = cache_backend.get(torrent_file.as_posix(), region="torrents")
 
         if not torrent_content:
+            error_msg = download_errors[-1] if download_errors else "下载种子内容为空"
             self._record_download_failure(
                 context=context,
-                error_msg="下载种子内容为空",
+                error_msg=error_msg,
                 downloader=_effective_downloader,
                 source=source,
                 episodes=episodes,
             )
-            return (None, "下载种子内容为空") if return_detail else None
+            return (None, error_msg) if return_detail else None
 
         # 获取种子文件的文件夹名和文件清单
         _folder_name, _file_list = TorrentHelper().get_fileinfo_from_torrent_content(torrent_content)
@@ -1080,26 +1155,39 @@ class DownloadChain(ChainBase):
 
             # 登记下载文件
             files_to_add = []
+            unmatched_single_files = []
+            media_file_count = 0
+            media_exts = settings.RMT_MEDIAEXT + settings.RMT_SUBEXT + settings.RMT_AUDIOEXT
             for file in _file_list:
-                if episodes:
-                    # 识别文件集
-                    file_meta = MetaInfo(Path(file).stem)
-                    if not file_meta.begin_episode \
-                            or file_meta.begin_episode not in episodes:
-                        continue
-                # 只处理音视频、字幕格式
-                media_exts = settings.RMT_MEDIAEXT + settings.RMT_SUBEXT + settings.RMT_AUDIOEXT
-                if not Path(file).suffix \
-                        or Path(file).suffix.lower() not in media_exts:
+                suffix = Path(file).suffix.lower()
+                if not suffix or suffix not in media_exts:
                     continue
-                files_to_add.append({
+                if suffix in settings.RMT_MEDIAEXT:
+                    media_file_count += 1
+                file_item = {
                     "download_hash": _hash,
                     "downloader": _downloader,
                     "fullpath": (_save_path / file).as_posix(),
                     "savepath": _save_path.as_posix(),
                     "filepath": file,
                     "torrentname": _meta.org_string,
-                })
+                }
+                if episodes:
+                    file_meta = MetaInfo(
+                        Path(file).stem,
+                        custom_words=custom_words.splitlines() if custom_words else [],
+                    )
+                    file_episodes = set(file_meta.episode_list)
+                    if file_meta.begin_episode and file_meta.begin_episode in episodes:
+                        files_to_add.append(file_item)
+                    elif suffix in settings.RMT_MEDIAEXT and len(file_episodes) <= 1:
+                        unmatched_single_files.append(file_item)
+                else:
+                    files_to_add.append(file_item)
+            if (not files_to_add and episodes and len(episodes) == 1
+                    and media_file_count == 1 and len(unmatched_single_files) == 1):
+                # 下载器已按唯一视频文件兜底选集，历史明细使用同一映射。
+                files_to_add = unmatched_single_files
             if files_to_add:
                 downloadhis.add_files(files_to_add)
 
@@ -1412,12 +1500,15 @@ class DownloadChain(ChainBase):
                             if len(torrent_season) == 1:
                                 # 只有一季的可能是命名错误，需要打开种子鉴别，只有实际集数大于等于总集数才下载
                                 logger.info(f"开始下载种子 {torrent.title} ...")
-                                content, _, torrent_files = self.download_torrent(torrent)
+                                download_errors: List[str] = []
+                                content, _, torrent_files = self.download_torrent(
+                                    torrent, on_failure=download_errors.append,
+                                )
                                 if not content:
                                     logger.warn(f"{torrent.title} 种子下载失败！")
                                     self._record_download_failure(
                                         context=context,
-                                        error_msg="下载种子内容为空",
+                                        error_msg=download_errors[-1] if download_errors else "下载种子内容为空",
                                         downloader=downloader,
                                         source=source,
                                     )
@@ -1458,11 +1549,19 @@ class DownloadChain(ChainBase):
                                         f"{meta.org_string} 解析文件集数发现不是完整合集，先放弃这个种子")
                                     continue
                                 else:
-                                    # 下载
+                                    # 整包超出完整覆盖目标时只选订阅范围内剧集。
+                                    selected_episodes = required_episodes \
+                                        if complete_coverage_matched and required_episodes != torrent_episodes_set else None
+                                    if selected_episodes:
+                                        logger.info(
+                                            f"{meta.org_string} 种子包含目标范围外剧集，仅选择："
+                                            f"{StringUtils.format_ep(sorted(selected_episodes))}"
+                                        )
                                     logger.info(f"开始下载 {torrent.title} ...")
                                     download_id = self.download_single(
                                         context=context,
                                         torrent_content=content,
+                                        episodes=selected_episodes,
                                         save_path=save_path,
                                         channel=channel,
                                         source=source,
@@ -1567,9 +1666,10 @@ class DownloadChain(ChainBase):
                                 # 普通缺集下载保持原语义：候选自身必须是所需集的子集。
                                 match_episodes = torrent_episodes.issubset(effective_need)
                             if match_episodes:
-                                # 下载
+                                selected_episodes = required_episodes if __requires_complete_coverage(tv) else None
                                 logger.info(f"开始下载 {meta.title} ...")
-                                download_id = self.download_single(context, save_path=save_path,
+                                download_id = self.download_single(context, episodes=selected_episodes,
+                                                                   save_path=save_path,
                                                                    channel=channel, source=source,
                                                                    userid=userid, username=username,
                                                                    downloader=downloader,
@@ -1584,10 +1684,12 @@ class DownloadChain(ChainBase):
                                     logger.info(f"{meta.title} 添加下载成功")
                                     downloaded_list.append(context)
                                     # 更新仍需集数
-                                    need_episodes = __update_episodes(_mid=need_mid,
-                                                                      _need=need_episodes,
-                                                                      _sea=need_season,
-                                                                      _current=torrent_episodes)
+                                    need_episodes = __update_episodes(
+                                        _mid=need_mid,
+                                        _need=need_episodes,
+                                        _sea=need_season,
+                                        _current=selected_episodes or torrent_episodes,
+                                    )
                                     logger.info(f"季 {need_season} 剩余需要集：{need_episodes}")
                                 else:
                                     __remember_context_failure(context)
@@ -1650,12 +1752,15 @@ class DownloadChain(ChainBase):
                                 and meta.season_list[0] == need_season:
                             # 检查种子看是否有需要的集
                             logger.info(f"开始下载种子 {torrent.title} ...")
-                            content, _, torrent_files = self.download_torrent(torrent)
+                            download_errors: List[str] = []
+                            content, _, torrent_files = self.download_torrent(
+                                torrent, on_failure=download_errors.append,
+                            )
                             if not content:
                                 logger.info(f"{torrent.title} 种子下载失败！")
                                 self._record_download_failure(
                                     context=context,
-                                    error_msg="下载种子内容为空",
+                                    error_msg=download_errors[-1] if download_errors else "下载种子内容为空",
                                     downloader=downloader,
                                     source=source,
                                 )

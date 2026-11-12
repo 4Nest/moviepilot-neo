@@ -23,6 +23,10 @@ class TmdbEpisode(BaseModel):
     air_date: Optional[str] = None
     episode_number: Optional[int] = None
     episode_type: Optional[str] = None
+    id: Optional[int] = Field(
+        default=None,
+        description="TMDB 单集标识；按剧集组返回时集号为组内序号，该标识仍指向原单集",
+    )
     name: Optional[str] = None
     overview: Optional[str] = None
     runtime: Optional[int] = None

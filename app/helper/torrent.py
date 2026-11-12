@@ -21,6 +21,10 @@ from app.utils.string import StringUtils
 
 
 _SIZE_UNIT = 1024 * 1024
+# NexusPHP 首次下载提示会随站点会话语言返回简体或繁体文案。
+_FIRST_DOWNLOAD_MARKERS = tuple(
+    marker.encode("utf-8") for marker in ("下载种子文件", "下載種子檔案")
+)
 
 
 @lru_cache(maxsize=512)
@@ -124,7 +128,7 @@ class TorrentHelper:
             if req.content.startswith(b"magnet:"):
                 # 磁力链接
                 return cache_path, req.text, "", [], f"获取到磁力链接"
-            if "下载种子文件".encode("utf-8") in req.content:
+            if any(marker in req.content for marker in _FIRST_DOWNLOAD_MARKERS):
                 # 首次下载提示页面
                 skip_flag = False
                 try:

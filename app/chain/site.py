@@ -66,6 +66,8 @@ class SiteChain(ChainBase):
             "rousi.pro": self.__rousi_test,
             "sunnypt.top": self.__sunnypt_test,
             "hdarea.club": self.__hdarea_test,
+            "piggo.me": self.__piggo_test,
+            "hxpt.org": self.__fluxtorrent_test,
         }
 
     @staticmethod
@@ -401,6 +403,23 @@ class SiteChain(ChainBase):
         if payload["data"].get("download_allowed") is False:
             return False, "当前账号没有下载权限"
         return True, "连接成功"
+
+    def __indexer_test(self, site: Site) -> Tuple[bool, str]:
+        """通过索引模块调用当前站点协议适配器的 API 连通性测试。"""
+        indexer = SitesHelper().get_indexer(site.domain) or {}
+        runtime_site = {**indexer, **site.to_dict()}
+        result = self.run_module("test_site", site=runtime_site)
+        if result is None:
+            return False, "当前站点协议不支持 API 连通性测试"
+        return result
+
+    def __piggo_test(self, site: Site) -> Tuple[bool, str]:
+        """通过猪猪实验室 /me 接口校验长期令牌与账号权限。"""
+        return self.__indexer_test(site)
+
+    def __fluxtorrent_test(self, site: Site) -> Tuple[bool, str]:
+        """通过 FluxTorrent user.json 校验开放 API 令牌与用户资料。"""
+        return self.__indexer_test(site)
 
     @staticmethod
     def __hdarea_test(site: Site) -> Tuple[bool, str]:

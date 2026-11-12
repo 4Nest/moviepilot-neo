@@ -180,6 +180,11 @@ class Jellyfin:
                 library_type = MediaType.TV.value
                 link = f"{self._playhost or self._host}web/index.html#!" \
                        f"/tv.html?topParentId={library.get('Id')}"
+            elif library.get("CollectionType") is None and library.get("Type") == "CollectionFolder":
+                # Jellyfin 前端对混合内容库使用 mixed 路由，没有可用的 library 路由。
+                library_type = MediaType.UNKNOWN.value
+                link = f"{self._playhost or self._host}web/index.html#!/mixed" \
+                       f"?topParentId={library.get('Id')}&collectionType=mixed"
             else:
                 library_type = MediaType.UNKNOWN.value
                 link = f"{self._playhost or self._host}web/index.html#!" \

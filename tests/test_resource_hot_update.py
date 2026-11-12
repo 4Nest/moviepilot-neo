@@ -324,3 +324,39 @@ def test_resource_helper_rejects_tampered_sha256_and_path_traversal(
     # 路径穿越检查
     assert SiteResourceRegistry._safe_resolve("../escape.py") is None
     assert SiteResourceRegistry._safe_resolve("/etc/passwd") is None
+
+
+def test_stale_cached_manifest_does_not_downgrade_builtin_sites(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """磁盘遗留低于内置基准版本的旧热更缓存时，不得把新版内置站点协议降级回旧配置。"""
+    monkeypatch.setattr(settings, "CONFIG_DIR", str(tmp_path))
+    res_dir = SiteResourceRegistry.resources_dir()
+    res_dir.mkdir(parents=True, exist_ok=True)
+
+    stale_sites = json.dumps(
+        {
+            "version": "1.0.0",
+            "supplements": {
+                "hdwing.org": {
+                    "id": "hdwing",
+                    "name": "HDWinG",
+                    "url": "https://hdwing.org/",
+                    "domain": "https://hdwing.org/",
+                    "public": False,
+                    "parser": "NexusPhp",
+                    "schema": "NexusPhp",
+                }
+            },
+        }
+    ).encode("utf-8")
+    SiteResourceRegistry.sites_json_path().write_bytes(stale_sites)
+    SiteResourceRegistry.manifest_path().write_text(
+        json.dumps({"version": "1.0.0", "files": {"neo.sites.json": _sha256(stale_sites)}}),
+        encoding="utf-8",
+    )
+    SiteResourceRegistry.reload()
+
+    assert SiteResourceRegistry.current_version() is None
+    assert SiteResourceRegistry.get_supplements()["hdwing.org"]["parser"] == "HDWing"

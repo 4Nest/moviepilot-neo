@@ -39,6 +39,8 @@ _QBITTORRENT_PAUSED_STATES = {
 }
 _TORRENT_FILES_RETRY_TIMES = 5
 _TORRENT_FILES_RETRY_INTERVAL = 1
+_TORRENT_METADATA_RETRY_TIMES = 10
+_TORRENT_METADATA_RETRY_INTERVAL = 1
 
 
 class QbittorrentModule(_ModuleBase, _DownloaderBase[Qbittorrent]):
@@ -114,6 +116,91 @@ class QbittorrentModule(_ModuleBase, _DownloaderBase[Qbittorrent]):
             if server.is_inactive():
                 logger.info(f"Qbittorrent下载器 {name} 连接断开，尝试重连 ...")
                 server.reconnect()
+
+    @staticmethod
+    def _fetch_files_with_metadata(
+            server: Qbittorrent, torrent_hash: str, failure: str,
+    ) -> Tuple[list[dict], bool, Optional[str]]:
+        """
+        暂停磁力先启动并轮询元数据，随后恢复暂停供选集使用。
+        """
+        if not server.start_torrents(torrent_hash):
+            return [], False, f"选集失败，任务 {torrent_hash} 启动任务未确认，请在下载器核实，未记录成功"
+        torrent_files = server.get_files(
+            torrent_hash,
+            retry=_TORRENT_METADATA_RETRY_TIMES,
+            interval=_TORRENT_METADATA_RETRY_INTERVAL,
+        )
+        if not torrent_files:
+            if not server.stop_torrents(torrent_hash):
+                return [], False, f"选集失败，任务 {torrent_hash} 启动任务未确认，请在下载器核实，未记录成功"
+            return [], True, f"{failure}：获取种子文件失败"
+        paused = server.stop_torrents(torrent_hash)
+        if not paused:
+            logger.warning(f"种子 {torrent_hash} 获取元数据后无法重新暂停，继续选集")
+        return torrent_files, paused, None
+
+    @staticmethod
+    def _select_download_files(
+            server: Qbittorrent, torrent_hash: str, episodes: Set[int],
+    ) -> Tuple[bool, str]:
+        """
+        验证目标集数并设置排除文件，唯一视频仅在单集请求时兜底。
+        """
+        failure = f"选集失败，任务 {torrent_hash} 保持暂停，请在下载器检查"
+        paused = True
+        torrent_files = server.get_files(
+            torrent_hash,
+            retry=_TORRENT_FILES_RETRY_TIMES,
+            interval=_TORRENT_FILES_RETRY_INTERVAL,
+        )
+        if not torrent_files:
+            torrent_files, paused, error = QbittorrentModule._fetch_files_with_metadata(
+                server, torrent_hash, failure,
+            )
+            if error:
+                return False, error
+        state_failure = failure if paused else (
+            f"选集失败，任务 {torrent_hash} 启动任务未确认，请在下载器核实，未记录成功"
+        )
+        wanted = []
+        unwanted = []
+        matched = set()
+        media_files = []
+        try:
+            for item in torrent_files:
+                file_id = item.get("id")
+                file_name = Path(item.get("name")).name
+                meta = MetaInfo(file_name)
+                file_episodes = set(meta.episode_list)
+                if Path(file_name).suffix.lower() in getattr(settings, "RMT_MEDIAEXT", []):
+                    media_files.append((file_id, file_episodes))
+                if file_episodes and file_episodes.issubset(episodes):
+                    wanted.append(file_id)
+                    matched.update(file_episodes)
+                else:
+                    unwanted.append(file_id)
+        finally:
+            torrent_files.clear()
+        if not set(episodes).issubset(matched) and len(episodes) == 1 and len(media_files) == 1:
+            file_id, file_episodes = media_files[0]
+            # 多集视频不能当作单集兜底，否则会把合集误选为目标单集。
+            if len(file_episodes) <= 1:
+                if file_id in unwanted:
+                    unwanted.remove(file_id)
+                if file_id not in wanted:
+                    wanted.append(file_id)
+                matched.update(episodes)
+        if not wanted or not set(episodes).issubset(matched):
+            return False, f"{state_failure}：未找到目标集数 {sorted(set(episodes) - matched)}"
+        if unwanted and not server.set_files(torrent_hash=torrent_hash, file_ids=unwanted, priority=0):
+            return False, f"{state_failure}：文件优先级设置未确认"
+        started = server.torrents_set_force_start(torrent_hash) \
+            if server.is_force_resume() else server.start_torrents(torrent_hash)
+        if not started:
+            server.stop_torrents(torrent_hash)
+            return False, f"{failure}：启动任务未确认，未记录成功"
+        return True, f"添加下载成功，已选择集数：{sorted(matched)}"
 
     def download(self, content: Union[Path, str, bytes], download_dir: Path, cookie: str,
                  episodes: Set[int] = None, category: Optional[str] = None, label: Optional[str] = None,
@@ -237,42 +324,9 @@ class QbittorrentModule(_ModuleBase, _DownloaderBase[Qbittorrent]):
                 # 获取种子内容布局: `Original: 原始, Subfolder: 创建子文件夹, NoSubfolder: 不创建子文件夹`
                 torrent_layout = server.get_content_layout()
                 if is_paused:
-                    # 种子文件
-                    torrent_files = server.get_files(
-                        torrent_hash,
-                        retry=_TORRENT_FILES_RETRY_TIMES,
-                        interval=_TORRENT_FILES_RETRY_INTERVAL,
-                    )
-                    if not torrent_files:
-                        return downloader or self.get_default_config_name(), torrent_hash, torrent_layout, "获取种子文件失败，下载任务可能在暂停状态"
-
-                    # 不需要的文件ID
-                    file_ids = []
-                    # 需要的集清单
-                    sucess_epidised = []
-                    try:
-                        for torrent_file in torrent_files:
-                            file_id = torrent_file.get("id")
-                            file_name = torrent_file.get("name")
-                            meta_info = MetaInfo(file_name)
-                            if not meta_info.episode_list \
-                                    or not set(meta_info.episode_list).issubset(episodes):
-                                file_ids.append(file_id)
-                            else:
-                                sucess_epidised = list(set(sucess_epidised).union(set(meta_info.episode_list)))
-                    finally:
-                        torrent_files.clear()
-                        del torrent_files
-                    if sucess_epidised and file_ids:
-                        # 选择文件
-                        server.set_files(torrent_hash=torrent_hash, file_ids=file_ids, priority=0)
-                    # 开始任务
-                    if server.is_force_resume():
-                        # 强制继续
-                        server.torrents_set_force_start(torrent_hash)
-                    else:
-                        server.start_torrents(torrent_hash)
-                    return downloader or self.get_default_config_name(), torrent_hash, torrent_layout, f"添加下载成功，已选择集数：{sucess_epidised}"
+                    selected, message = self._select_download_files(server, torrent_hash, episodes)
+                    return downloader or self.get_default_config_name(), \
+                        torrent_hash if selected else None, torrent_layout, message
                 else:
                     if server.is_force_resume():
                         server.torrents_set_force_start(torrent_hash)

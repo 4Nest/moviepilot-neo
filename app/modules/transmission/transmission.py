@@ -1,3 +1,4 @@
+import time
 from typing import Optional, Union, Tuple, List
 
 import transmission_rpc
@@ -265,29 +266,38 @@ class Transmission:
             logger.error(f"删除种子出错：{str(err)}")
             return False
 
-    def get_files(self, tid: str) -> Optional[List[File]]:
+    def get_files(self, tid: str, retry: int = 1, interval: float = 0) -> Optional[List[File]]:
         """
-        获取种子文件列表
+        获取种子文件列表，可按次数与间隔等待暂停磁力的元数据。
+
+        :param tid: 种子哈希
+        :param retry: 最多查询次数，最少执行一次
+        :param interval: 查询间隔秒数，0 表示立即重试
+        :return: 文件列表；任务不存在、查询失败或始终无文件时返回 None
         """
-        if not self.trc:
+        if not self.trc or not tid:
             return None
-        if not tid:
-            return None
-        try:
-            torrent = self.trc.get_torrent(tid)
-        except Exception as err:
-            logger.error(f"获取种子文件列表出错：{str(err)}")
-            return None
-        if not torrent:
-            return None
-        try:
-            get_files = getattr(torrent, "get_files", None)
-            if callable(get_files):
-                return get_files()
-            return torrent.files()
-        except Exception as err:
-            logger.error(f"获取种子文件列表出错：{str(err)}")
-            return None
+        retry_times = max(retry, 1)
+        last_error = None
+        for index in range(retry_times):
+            try:
+                torrent = self.trc.get_torrent(tid)
+            except Exception as err:
+                last_error = err
+                torrent = None
+            if torrent:
+                try:
+                    get_files = getattr(torrent, "get_files", None)
+                    files = get_files() if callable(get_files) else torrent.files()
+                    if files:
+                        return files
+                except Exception as err:
+                    last_error = err
+            if index < retry_times - 1 and interval:
+                time.sleep(interval)
+        if last_error:
+            logger.error(f"获取种子文件列表出错：{str(last_error)}")
+        return None
 
     def set_files(self, tid: str, file_ids: list) -> bool:
         """

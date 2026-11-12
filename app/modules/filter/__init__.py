@@ -3,9 +3,11 @@ from copy import deepcopy
 from functools import lru_cache
 from typing import Iterator, List, Tuple, Union, Dict, Optional
 
+from pyparsing import ParseBaseException
+
 from app.core.context import TorrentInfo, MediaInfo
 from app.core.metainfo import MetaInfo, clear_rust_parse_options_cache, _rust_parse_options
-from app.helper.rule import RuleHelper
+from app.helper.rule import RuleHelper, RuleStringValidationError, describe_rule_string_error
 from app.log import logger
 from app.modules import _ModuleBase
 from app.modules.filter.RuleParser import RuleParser
@@ -271,30 +273,38 @@ class FilterModule(_ModuleBase):
                           parsed_rule_cache: Dict[str, Union[list, str]],
                           rejection_details: Optional[List[dict]] = None) -> List[TorrentInfo]:
         """
-        过滤种子
+        筛选命中任一优先级层级的种子，并保留输入顺序。
+
+        :raises ValueError: 实际执行的层级无法解析，说明中保留规则组及完整无效 ID
         """
         if not torrent_list:
             return []
         # 只拆分一次规则层级；具体层级仍延迟到真正需要匹配时解析。
         rule_groups = [rule_group.strip() for rule_group in rule_string.split('>')]
-        # 返回种子列表
         ret_torrents = []
-        for torrent in torrent_list:
-            # 能命中优先级的才返回
-            if not self.__get_order(torrent, rule_groups, mediainfo, parser, parsed_rule_cache):
-                logger.debug(f"种子 {torrent.site_name} - {torrent.title} {torrent.description or ''} "
-                             f"不匹配 {rule_name} 过滤规则")
-                if rejection_details is not None:
-                    rejection_details.extend(self.__explain_rule_group(
-                        rule_groups=rule_groups,
-                        rule_name=rule_name,
-                        torrent=torrent,
-                        mediainfo=mediainfo,
-                        parser=parser,
-                        parsed_rule_cache=parsed_rule_cache,
-                    ))
-                continue
-            ret_torrents.append(torrent)
+        try:
+            for torrent in torrent_list:
+                if not self.__get_order(torrent, rule_groups, mediainfo, parser, parsed_rule_cache):
+                    logger.debug(f"种子 {torrent.site_name} - {torrent.title} {torrent.description or ''} "
+                                 f"不匹配 {rule_name} 过滤规则")
+                    if rejection_details is not None:
+                        rejection_details.extend(self.__explain_rule_group(
+                            rule_groups=rule_groups,
+                            rule_name=rule_name,
+                            torrent=torrent,
+                            mediainfo=mediainfo,
+                            parser=parser,
+                            parsed_rule_cache=parsed_rule_cache,
+                        ))
+                    continue
+                ret_torrents.append(torrent)
+        except (ParseBaseException, RuleStringValidationError) as error:
+            # 只在实际解析失败后补充定位，不能预解析未执行的低优先级层级。
+            issue = error if isinstance(error, RuleStringValidationError) else describe_rule_string_error(
+                error.pstr, self.rule_set,
+            )
+            detail = str(issue) if issue is not None else "规则表达式语法错误"
+            raise ValueError(f"过滤规则组 {rule_name!r} 配置错误：{detail}") from error
 
         return ret_torrents
 
@@ -408,14 +418,18 @@ class FilterModule(_ModuleBase):
 
         return None if not matched else torrent
 
-    @staticmethod
-    def __parse_rule_group(rule_group: str, parser: RuleParser,
+    def __parse_rule_group(self, rule_group: str, parser: RuleParser,
                            parsed_rule_cache: Dict[str, Union[list, str]]) -> Union[list, str]:
         """
-        解析单个优先级层级。
-        缓存粒度放在层级表达式上，兼容多个规则组复用相同表达式的情况。
+        解析单个实际执行的优先级层级，并按层级表达式复用结果。
+
+        旧解析器默认允许尾随未消费文本，因此先诊断完整操作数和语法；悬空但合法
+        的 ID 仍沿用原有未命中语义，由搜索诊断单独报告。
         """
         if rule_group not in parsed_rule_cache:
+            issue = describe_rule_string_error(rule_group, self.rule_set)
+            if issue is not None and issue.code != "rule_id_missing":
+                raise issue
             parsed_rule_cache[rule_group] = parser.parse(rule_group).as_list()[0]
         return parsed_rule_cache[rule_group]
 

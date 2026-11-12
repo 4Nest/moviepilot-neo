@@ -45,9 +45,8 @@ SITE_SUPPLEMENTS = {
     "hdwing.org": {
         "id": "hdwing", "name": "HDWinG", "url": "https://hdwing.org/",
         "domain": "https://hdwing.org/", "public": False,
-        "parser": "NexusPhp", "schema": "NexusPhp", "language": "zh",
+        "parser": "HDWing", "schema": "NexusPhp", "language": "zh",
         "encoding": "UTF-8",
-        "alias_of": "hdchina.org",
         "search": {
             "paths": [{"path": "torrents.php", "method": "get"}],
             "params": {"search": "{keyword}", "search_area": 4},
@@ -138,15 +137,41 @@ SITE_SUPPLEMENTS = {
                         "*": 1,
                     }
                 },
+                "freedate": {
+                    "selector": "span.sp_state_placeholder",
+                    "optional": True,
+                },
                 "hr": {"selector": "img.hitandrun"},
             },
         },
+    },
+    "piggo.me": {
+        "id": "piggo", "name": "猪猪", "url": "https://piggo.me/",
+        "domain": "https://piggo.me/", "public": False,
+        "parser": "Piggo", "schema": "Piggo", "language": "zh",
+        "api_url": "https://api.piggo.me/v1/api",
+    },
+    "hxpt.org": {
+        "id": "hxpt", "name": "好学", "url": "https://www.hxpt.org/",
+        "domain": "https://www.hxpt.org/", "public": False,
+        "parser": "FluxTorrent", "schema": "FluxTorrent", "language": "zh",
     },
 }
 
 _OVERRIDE_PROTOCOL_KEYS = ("parser", "schema", "language", "subtitles")
 
 SITE_OVERRIDES = {
+    "piggo.me": {
+        "id": "piggo", "name": "猪猪", "url": "https://piggo.me/",
+        "domain": "https://piggo.me/", "public": False,
+        "parser": "Piggo", "schema": "Piggo", "language": "zh",
+        "api_url": "https://api.piggo.me/v1/api",
+    },
+    "hxpt.org": {
+        "id": "hxpt", "name": "好学", "url": "https://www.hxpt.org/",
+        "domain": "https://www.hxpt.org/", "public": False,
+        "parser": "FluxTorrent", "schema": "FluxTorrent", "language": "zh",
+    },
     "hdarea.club": {
         "id": "HDarea",
         "name": "高清视界",
@@ -327,6 +352,7 @@ class SiteHealthSentinel:
 class SiteResourceRegistry:
     """管理 NEO 站点热更新 JSON 配置与经 SHA-256 校验的动态适配器模块。"""
 
+    BUILTIN_RESOURCE_VERSION = "1.0.1"
     _lock = RLock()
     _cached_signature: Optional[Tuple[Optional[int], Optional[int]]] = None
     _manifest: dict[str, Any] = {}
@@ -382,6 +408,11 @@ class SiteResourceRegistry:
         try:
             manifest = json.loads(m_path.read_text(encoding="utf-8"))
             if not isinstance(manifest, dict):
+                return
+            manifest_ver = str(manifest.get("version") or "").strip()
+            if not manifest_ver or StringUtils.compare_version(
+                manifest_ver, "<", cls.BUILTIN_RESOURCE_VERSION
+            ):
                 return
             files_map = manifest.get("files") or {}
             expected_json_hash = files_map.get("neo.sites.json")

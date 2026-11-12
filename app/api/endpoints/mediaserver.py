@@ -89,6 +89,9 @@ async def exists_local(
     )
     if exist:
         ret_info = {"id": exist.item_id}
+        # 条目标识只在所属服务器内唯一，服务器必须与 ID 取自同一条缓存记录。
+        if exist.server:
+            ret_info["server"] = exist.server
     return schemas.Response(success=True if exist else False, data={"item": ret_info})
 
 

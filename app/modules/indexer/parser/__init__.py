@@ -41,6 +41,8 @@ class SiteSchema(Enum):
     RousiPro = "RousiPro"
     SunnyPT = "SunnyPT"
     HDArea = "HDArea"
+    Piggo = "Piggo"
+    FluxTorrent = "FluxTorrent"
 
 
 class SiteParserBase(metaclass=ABCMeta):

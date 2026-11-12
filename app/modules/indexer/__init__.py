@@ -1,6 +1,6 @@
 import inspect
 from datetime import datetime
-from typing import List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
 from app.core.context import SubtitleInfo, TorrentInfo
 from app.db.site_oper import SiteOper
@@ -15,7 +15,10 @@ from app.modules.indexer.spider.mikan import MikanSpider
 from app.modules.indexer.spider.haidan import HaiDanSpider
 from app.modules.indexer.spider.hdarea import HDAreaSpider
 from app.modules.indexer.spider.hddolby import HddolbySpider
+from app.modules.indexer.spider.hdwing import HDWingPageSpider, HDWingSpider
+from app.modules.indexer.spider.fluxtorrent import FluxTorrentSpider
 from app.modules.indexer.spider.mtorrent import MTorrentSpider
+from app.modules.indexer.spider.piggo import PiggoSpider
 from app.modules.indexer.spider.rousi import RousiSpider
 from app.modules.indexer.spider.sunnypt import SunnyPTSpider
 from app.modules.indexer.spider.tnode import TNodeSpider
@@ -24,6 +27,7 @@ from app.modules.indexer.spider.yema import YemaSpider
 from app.schemas import SiteUserData, report_site_search_outcome
 from app.schemas.types import MediaType, ModuleType, OtherModulesType
 from app.utils.string import StringUtils
+
 
 SPIDER_PARSER_CLASSES = {
     "TNodeSpider": TNodeSpider,
@@ -35,6 +39,9 @@ SPIDER_PARSER_CLASSES = {
     "RousiPro": RousiSpider,
     "SunnyPT": SunnyPTSpider,
     "HDArea": HDAreaSpider,
+    "HDWing": HDWingSpider,
+    "Piggo": PiggoSpider,
+    "FluxTorrent": FluxTorrentSpider,
 }
 
 
@@ -246,6 +253,16 @@ class IndexerModule(_ModuleBase):
             page_size = SiteSpider.default_result_num()
         return page_size if page_size > 0 else SiteSpider.default_result_num()
 
+    @classmethod
+    def test_site(cls, site: dict) -> Optional[Tuple[bool, str]]:
+        """调用支持连通性测试的索引适配器，普通网页站点保持未声明状态。"""
+        site = site or {}
+        for key in ("schema", "parser"):
+            spider_cls = cls._resolve_spider_class(site.get(key))
+            if spider_cls is not None and callable(getattr(spider_cls, "test_connection", None)):
+                return spider_cls(site).test_connection()
+        return None
+
     def search_torrents(self, site: dict,
                         keyword: str = None,
                         mtype: MediaType = None,
@@ -350,6 +367,19 @@ class IndexerModule(_ModuleBase):
                     keyword=search_word,
                     mtype=mtype,
                     cat=cat,
+                    page=page
+                )
+            elif site.get('parser') in ("HDWing", "Piggo"):
+                spider_cls = SPIDER_PARSER_CLASSES[site.get("parser")]
+                error_flag, result = spider_cls(site).search(
+                    keyword=search_word,
+                    mtype=mtype,
+                    cat=cat,
+                    page=page
+                )
+            elif site.get('parser') == "FluxTorrent":
+                error_flag, result = FluxTorrentSpider(site).search(
+                    keyword=search_word,
                     page=page
                 )
             else:
@@ -534,6 +564,19 @@ class IndexerModule(_ModuleBase):
                     keyword=search_word,
                     mtype=mtype,
                     cat=cat,
+                    page=page
+                )
+            elif site.get('parser') in ("HDWing", "Piggo"):
+                spider_cls = SPIDER_PARSER_CLASSES[site.get("parser")]
+                error_flag, result = await spider_cls(site).async_search(
+                    keyword=search_word,
+                    mtype=mtype,
+                    cat=cat,
+                    page=page
+                )
+            elif site.get('parser') == "FluxTorrent":
+                error_flag, result = await FluxTorrentSpider(site).async_search(
+                    keyword=search_word,
                     page=page
                 )
             else:

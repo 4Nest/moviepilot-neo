@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 from urllib.parse import urljoin, quote
 
+from requests.exceptions import RequestException
+
 from app.modules.telegram.compat import ensure_urllib3_header_param_compat
 
 # Must run before importing pyTelegramBotAPI.
@@ -60,6 +62,10 @@ class RetryException(Exception):
     """
 
     pass
+
+
+class _PhotoUploadFailed(Exception):
+    """图片被 Telegram 明确拒绝，调用方应立即回退而不重试上传。"""
 
 
 class Telegram:
@@ -1384,11 +1390,23 @@ class Telegram:
 
     @retry(RetryException, logger=logger)
     def __send_photo(self, photo: Any, caption: Optional[str], **kwargs):
-        """图片上传失败时轻量重试，最多共发送三次。"""
+        """
+        仅对网络、连接和超时异常重试图片上传，最多共发送三次。
+
+        API 拒绝、参数错误及 HTTP 429 使用独立异常退出重试，由调用方立即回退文本。
+        """
         try:
             return self._bot.send_photo(photo=photo, caption=caption, **kwargs)
+        except RequestException as err:
+            response = getattr(err, "response", None)
+            if response is not None and getattr(response, "status_code", None) == 429:
+                raise _PhotoUploadFailed(f"Telegram 图片上传触发 HTTP 429：{err}") from err
+            raise RetryException(f"发送图片消息网络失败：{err}") from err
         except Exception as err:
-            raise RetryException(f"发送图片消息失败：{err}") from err
+            # 兼容旧客户端只给出通用异常、但明确报告网络故障的情形。
+            if re.search(r"network|connection|timeout|timed out|网络|连接|超时", str(err), re.IGNORECASE):
+                raise RetryException(f"发送图片消息网络失败：{err}") from err
+            raise _PhotoUploadFailed(f"Telegram 拒绝图片上传：{err}") from err
 
     @retry(RetryException, logger=logger)
     def __send_short_message(self, image: Optional[bytes], caption: str,
@@ -1405,7 +1423,7 @@ class Telegram:
                         caption=self._prepare_text(caption, parse_mode),
                         **kwargs,
                     )
-                except RetryException as err:
+                except (RetryException, _PhotoUploadFailed) as err:
                     logger.warning(f"Telegram图片发送重试失败，降级为文本消息：{err}")
                     return self._bot.send_message(
                         text=self._prepare_text(caption, parse_mode),
@@ -1449,7 +1467,7 @@ class Telegram:
                             caption=chunk,
                             reply_markup=current_reply_markup,
                         )
-                    except RetryException as err:
+                    except (RetryException, _PhotoUploadFailed) as err:
                         logger.warning(f"Telegram长消息图片发送失败，降级为文本消息：{err}")
                         msg_kwargs = dict(**kwargs)
                         if disable_web_page_preview is not None:
@@ -1519,7 +1537,7 @@ class Telegram:
                             caption=self._telegramify_item_caption(item),
                             reply_markup=current_reply_markup,
                         )
-                    except RetryException as err:
+                    except (RetryException, _PhotoUploadFailed) as err:
                         logger.warning(f"Telegram图文消息发送失败，降级为文本消息：{err}")
                         msg_kwargs = dict(**kwargs)
                         if disable_web_page_preview is not None:
