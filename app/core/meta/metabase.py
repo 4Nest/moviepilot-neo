@@ -25,12 +25,21 @@ SUBTITLE_EPISODE_RE = re.compile(
     r"(?<![全共]\s*)(?<!(?:不包含|不包括|不含)\s*)(?:第|[\s\[【])\s*(?:EP?)?([0-9一二三四五六七八九十百零]+)\s*(?:[集话話期幕]?\s*[-~～–—至]\s*第?\s*([0-9一二三四五六七八九十百零]+)\s*)?([集话話期幕])(?!\s*全(?![0-9一二三四五六七八九十百零]))",
     re.IGNORECASE,
 )
+SUBTITLE_JP_SEASON_PERIOD_RE = re.compile(
+    r"(?<![全共]\s*)(?<!(?:不包含|不包括|不含)\s*)第\s*([0-9一二三四五六七八九十百零弐参]+)\s*(?:期?\s*[-~～–—至]\s*第?\s*([0-9一二三四五六七八九十百零弐参]+)\s*)?期(?!\s*[全共](?![0-9一二三四五六七八九十百零弐参]))",
+    re.IGNORECASE,
+)
+JAPANESE_KANA_RE = re.compile(r"[\u3040-\u30ff]")
 SUBTITLE_EPISODE_ALL_RE = re.compile(
     r"([0-9一二三四五六七八九十百零]+)\s*集\s*全|[全共]\s*([0-9一二三四五六七八九十百零]+)\s*[集话話期幕]",
     re.IGNORECASE,
 )
 SUBTITLE_EPISODE_RANGE_FIN_RE = re.compile(
-    r"(?<!\d)\[?\s*(\d{1,4})\s*[-~～–—至]\s*(\d{1,4})\s*(?:(?:Fin|End)(?![a-z0-9])|完结(?![\u4e00-\u9fff]))(?:\s*\](?!\d)|(?!\s*(?:\]\d|\d))\s*)",
+    r"(?<!\d)\[?\s*(\d{1,4})\s*[-~～–—至]\s*(\d{1,4})\s*(?:(?:Fin|End)(?![a-z0-9])|完[结結](?![\u4e00-\u9fff]))(?:\s*\](?!\d)|(?!\s*(?:\]\d|\d))\s*)",
+    re.IGNORECASE,
+)
+SUBTITLE_BRACKET_EPISODE_RANGE_RE = re.compile(
+    r"(?<!\d)[\[【]\s*(\d{1,3})\s*[-~～–—至]\s*(\d{1,3})\s*(?:(?:Fin|End)(?![a-z0-9])|完[结結])?\s*[\]】](?!\d)",
     re.IGNORECASE,
 )
 DESCRIPTION_INFO_RE = re.compile(
@@ -47,15 +56,47 @@ VIDEO_BIT_RE = re.compile(
 )
 
 
+_JP_KANJI_DIGIT_MAP = str.maketrans({"弐": "二", "参": "三"})
+
+
 def _subtitle_number(value: Optional[str]) -> Optional[int]:
+    """将阿拉伯数字、中文数字或常见日文大写数字转换为整数。"""
     if value is None:
         return None
     try:
-        return int(cn2an.cn2an(value.strip(), mode="smart"))
+        normalized = value.strip().translate(_JP_KANJI_DIGIT_MAP)
+        return int(cn2an.cn2an(normalized, mode="smart"))
     except (ValueError, TypeError) as err:
         logger.debug(f"副标题数字无效：{value} - {err}")
         return None
 
+
+def _is_japanese_season_period(
+    alias_text: str,
+    period_begin: Optional[int],
+    prior_alias_seasons: Optional[set] = None,
+) -> bool:
+    """
+    判断副标题别名片段中的「第N期」是否代表番剧季号而非综艺单期集数。
+
+    同一 `/` 片段含有日文假名，或不含「第M季」但与前序平行译名片段中的「第N季」同号时按季处理；
+    同一片段内直书「第二季 第2期」的国产综艺保持按期数（集数）识别。
+    """
+    if period_begin is None or not 0 <= period_begin <= 100:
+        return False
+    if JAPANESE_KANA_RE.search(alias_text):
+        return True
+    if prior_alias_seasons and period_begin in prior_alias_seasons:
+        if not SUBTITLE_SEASON_RE.search(alias_text):
+            return True
+    return False
+
+
+def needs_subtitle_season_episode_reconcile(subtitle: Optional[str]) -> bool:
+    """判断副标题是否包含可能受自定义识别词或日番「第N期」影响的季集标记。"""
+    if not subtitle:
+        return False
+    return "期" in subtitle or bool(SUBTITLE_BRACKET_EPISODE_RANGE_RE.search(subtitle))
 
 @dataclass
 class MetaBase(object):
@@ -166,13 +207,21 @@ class MetaBase(object):
         """只解析副标题中的资源信息，隔离剧情、更新计划与其他资源说明。"""
         for section in re.split(r"[|｜\n]", description):
             header = DESCRIPTION_INFO_RE.split(section, maxsplit=1)[0]
+            prior_seasons: set[int] = set()
             for alias in header.split("/"):
                 if not DESCRIPTION_NOISE_RE.search(alias):
-                    self.init_subtitle(alias)
-
+                    self._init_subtitle_alias(alias, prior_alias_seasons=prior_seasons)
 
     def init_subtitle(self, title_text: str) -> None:
         """按字段补充季集，已确定的单集或范围不与其他描述拼接。"""
+        self._init_subtitle_alias(title_text, prior_alias_seasons=None)
+
+    def _init_subtitle_alias(
+        self,
+        title_text: str,
+        prior_alias_seasons: Optional[set] = None,
+    ) -> None:
+        """解析单个副标题别名片段中的季号与集数范围。"""
         if not title_text:
             return
         title_text = f" {title_text} "
@@ -182,6 +231,8 @@ class MetaBase(object):
             end = _subtitle_number(season.group(2))
             if begin is None or not 0 <= begin <= 100 or (end is not None and not begin <= end <= 100):
                 return
+            if prior_alias_seasons is not None:
+                prior_alias_seasons.add(begin)
             if self.begin_season is not None and self.begin_season != begin:
                 return
             if self.begin_season is None:
@@ -190,24 +241,44 @@ class MetaBase(object):
                 self.type = MediaType.TV
                 self._subtitle_flag = True
         else:
-            season_all = SUBTITLE_SEASON_ALL_RE.search(title_text)
-            total = _subtitle_number(season_all.group(1)) if season_all else None
-            if total is not None and 1 <= total <= 100 \
-                    and self.begin_season is None and self.begin_episode is None:
-                self.begin_season, self.end_season = 1, total
-                self.total_season = total
-                self.type = MediaType.TV
-                self._subtitle_flag = True
+            jp_period_season = SUBTITLE_JP_SEASON_PERIOD_RE.search(title_text)
+            jp_begin = _subtitle_number(jp_period_season.group(1)) if jp_period_season else None
+            jp_end = _subtitle_number(jp_period_season.group(2)) if jp_period_season else None
+            if jp_period_season and _is_japanese_season_period(
+                title_text, jp_begin, prior_alias_seasons
+            ):
+                if jp_end is not None and not jp_begin <= jp_end <= 100:
+                    return
+                if self.begin_season is not None and self.begin_season != jp_begin:
+                    return
+                if self.begin_season is None:
+                    self.begin_season, self.end_season = jp_begin, jp_end
+                    self.total_season = jp_end - jp_begin + 1 if jp_end is not None else 1
+                    self.type = MediaType.TV
+                    self._subtitle_flag = True
+            else:
+                season_all = SUBTITLE_SEASON_ALL_RE.search(title_text)
+                total = _subtitle_number(season_all.group(1)) if season_all else None
+                if total is not None and 1 <= total <= 100 \
+                        and self.begin_season is None and self.begin_episode is None:
+                    self.begin_season, self.end_season = 1, total
+                    self.total_season = total
+                    self.type = MediaType.TV
+                    self._subtitle_flag = True
         if self.begin_episode is not None or self.total_episode > 0:
             return
 
-        # 集/话优先于日文别名中的期数，同类标记优先读取前面的资源编号。
+        # 集/话及显式范围优先于综艺期数，日文语境或平行译名中的「第N期」按季处理不计入集数。
         candidates = []
         for match in SUBTITLE_EPISODE_RE.finditer(title_text):
             begin = _subtitle_number(match.group(1))
             end = _subtitle_number(match.group(2))
             if begin is None or begin >= 10000 \
                     or (end is not None and not 1 <= begin <= end < 10000):
+                continue
+            if match.group(3) == "期" and end is None and _is_japanese_season_period(
+                title_text, begin, prior_alias_seasons
+            ):
                 continue
             candidates.append((int(match.group(3) == "期"), match.start(), begin, end,
                                end - begin + 1 if end is not None else 1))
@@ -216,6 +287,10 @@ class MetaBase(object):
         for match in SUBTITLE_EPISODE_RANGE_FIN_RE.finditer(title_text):
             begin, end = int(match.group(1)), int(match.group(2))
             if 1 <= begin <= end < 10000 and not (begin >= 1900 and end <= 2155):
+                candidates.append((0, match.start(), begin, end, end - begin + 1))
+        for match in SUBTITLE_BRACKET_EPISODE_RANGE_RE.finditer(title_text):
+            begin, end = int(match.group(1)), int(match.group(2))
+            if 1 <= begin < end < 1000 and not (begin >= 1900 and end <= 2155):
                 candidates.append((0, match.start(), begin, end, end - begin + 1))
         for match in SUBTITLE_EPISODE_ALL_RE.finditer(title_text):
             total = _subtitle_number(match.group(1) or match.group(2))
@@ -226,7 +301,6 @@ class MetaBase(object):
             self.begin_episode, self.end_episode, self.total_episode = begin, end, total
             self.type = MediaType.TV
             self._subtitle_flag = True
-
     @property
     def season(self) -> str:
         """

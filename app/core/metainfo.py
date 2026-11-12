@@ -8,6 +8,7 @@ import anitopy
 
 from app.core.config import settings
 from app.core.meta import MetaAnime, MetaVideo, MetaBase
+from app.core.meta.metabase import needs_subtitle_season_episode_reconcile
 from app.core.meta.metaanime import (
     extract_anime_cn_name,
     extract_anime_resource_type,
@@ -489,6 +490,38 @@ def _meta_from_rust(parsed: dict) -> Optional[MetaBase]:
     return meta
 
 
+def _reconcile_rust_subtitle_season_episode(
+    meta: MetaBase,
+    title: str,
+    subtitle: str,
+    rust_options: Optional[dict],
+) -> None:
+    """
+    在 Rust 快路径上同步日番「第N期」季号与方括号集数区间规则，保留主标题自身季集优先级。
+    """
+    title_only = rust_accel.parse_metainfo(title, None, rust_options)
+    if not isinstance(title_only, dict):
+        return
+    probe = MetaBase(title)
+    probe.begin_season = title_only.get("begin_season")
+    probe.end_season = title_only.get("end_season")
+    probe.total_season = title_only.get("total_season") or 0
+    probe.begin_episode = title_only.get("begin_episode")
+    probe.end_episode = title_only.get("end_episode")
+    probe.total_episode = title_only.get("total_episode") or 0
+    if title_only.get("type") == MediaType.TV.value:
+        probe.type = MediaType.TV
+    probe.init_description(subtitle)
+
+    meta.begin_season = probe.begin_season
+    meta.end_season = probe.end_season
+    meta.total_season = probe.total_season
+    meta.begin_episode = probe.begin_episode
+    meta.end_episode = probe.end_episode
+    meta.total_episode = probe.total_episode
+    if probe.type == MediaType.TV and meta.type != MediaType.COLLECTION:
+        meta.type = MediaType.TV
+
 def _requires_python_metainfo(
     title: str,
     custom_words: Optional[List[str]] = None,
@@ -525,11 +558,20 @@ def MetaInfo(title: str, subtitle: Optional[str] = None, custom_words: List[str]
     # 识别词同时作用于副标题，避免副标题中的描述性集数（如整季跨度）被合并为本次识别的集数范围
     subtitle, subtitle_apply_words = _apply_words_to_subtitle(subtitle, custom_words)
     rust_meta = None
+    rust_options = None
     if not _requires_python_metainfo(title, custom_words):
+        rust_options = _rust_parse_options(custom_words)
         rust_meta = _meta_from_rust(
-            rust_accel.parse_metainfo(title, subtitle, _rust_parse_options(custom_words))
+            rust_accel.parse_metainfo(title, subtitle, rust_options)
         )
     if rust_meta:
+        if subtitle and needs_subtitle_season_episode_reconcile(subtitle):
+            _reconcile_rust_subtitle_season_episode(
+                rust_meta,
+                title=title,
+                subtitle=subtitle,
+                rust_options=rust_options,
+            )
         if subtitle_apply_words:
             rust_meta.apply_words = _merge_apply_words(rust_meta.apply_words, subtitle_apply_words)
         return rust_meta
