@@ -47,6 +47,7 @@ SITE_SUPPLEMENTS = {
         "domain": "https://hdwing.org/", "public": False,
         "parser": "HDWing", "schema": "NexusPhp", "language": "zh",
         "encoding": "UTF-8",
+        "alias_of": "hdchina.org",
         "search": {
             "paths": [{"path": "torrents.php", "method": "get"}],
             "params": {"search": "{keyword}", "search_area": 4},
@@ -652,7 +653,7 @@ class SitesHelper:
         entry.pop("alias_of", None)
         if isinstance(base, dict):
             for key in _TEMPLATE_KEYS:
-                if base.get(key):
+                if base.get(key) and (entry.get(key) is None or isinstance(entry.get(key), bool)):
                     entry[key] = deepcopy(base[key])
         if site:
             entry.update(site.to_dict())
