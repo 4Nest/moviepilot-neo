@@ -109,6 +109,17 @@ async def update_site(
     _scheme, _netloc = StringUtils.get_url_netloc(site_in.url)
     site_in.url = f"{_scheme}://{_netloc}/"
     site_in.domain = StringUtils.get_url_domain(site_in.url)
+    credentials_changed = (
+        (site.url or "") != (site_in.url or "")
+        or (site.domain or "") != (site_in.domain or "")
+        or (site.cookie or "") != (site_in.cookie or "")
+        or (site.apikey or "") != (site_in.apikey or "")
+        or (site.token or "") != (site_in.token or "")
+        or (site.ua or "") != (site_in.ua or "")
+        or int(site.proxy or 0) != int(site_in.proxy or 0)
+        or int(site.render or 0) != int(site_in.render or 0)
+        or bool(site.is_active) != bool(site_in.is_active)
+    )
     await site.async_update(db, site_in.model_dump())
     if old_domain and site_in.domain and old_domain != site_in.domain:
         await SiteOper(db).async_migrate_domain(
@@ -122,6 +133,7 @@ async def update_site(
             "domain": site_in.domain,
             "name": site_in.name,
             "site_url": site_in.url,
+            "credentials_changed": credentials_changed,
         },
     )
     return schemas.Response(success=True)

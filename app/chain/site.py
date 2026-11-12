@@ -1,7 +1,8 @@
 import base64
+import json
 import re
 from datetime import datetime
-from typing import Callable, List, Optional, Tuple, Union, Dict
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from urllib.parse import urljoin
 
 from app.helper.site import SiteHealthSentinel, SiteResourceRegistry, SitesHelper
@@ -35,6 +36,7 @@ from app.utils.site import SiteUtils
 from app.utils.string import StringUtils
 
 site_interaction_manager = SlashInteractionManager()
+_UNSET = object()
 
 
 class SiteChain(ChainBase):
@@ -66,6 +68,31 @@ class SiteChain(ChainBase):
             "hdarea.club": self.__hdarea_test,
         }
 
+    @staticmethod
+    def _parse_site_note_dict(raw_note: Any) -> dict:
+        """将站点 note 字段安全归一化为字典，兼容 JSON 字符串与空值。"""
+        if isinstance(raw_note, dict):
+            return raw_note
+        if isinstance(raw_note, str) and raw_note.strip():
+            try:
+                parsed = json.loads(raw_note)
+                if isinstance(parsed, dict):
+                    return parsed
+            except (TypeError, ValueError):
+                return {}
+        return {}
+
+    def _is_sentinel_alert_enabled(self, domain: str, site_note: Any = _UNSET) -> bool:
+        """判断全局开关与当前单站点配置是否允许发送站点健康预警通知。"""
+        if not settings.SITE_SENTINEL_ALERT:
+            return False
+        if site_note is _UNSET:
+            norm_domain = StringUtils.get_url_domain(domain)
+            site_info = SiteOper().get_by_domain(norm_domain) if norm_domain else None
+            site_note = getattr(site_info, "note", None) if site_info else None
+        note_dict = self._parse_site_note_dict(site_note)
+        return note_dict.get("sentinel_alert") is not False
+
     def _record_site_failure(
         self,
         *,
@@ -73,19 +100,21 @@ class SiteChain(ChainBase):
         site_name: str,
         error_reason: Optional[str],
         count_failure: bool = True,
+        site_note: Any = _UNSET,
     ) -> None:
-        """记录失败原因，并在鉴权异常或触发熔断时按冷却窗口发送告警。"""
+        """记录失败原因，开启或维持熔断，并在开关允许且本轮首次异常时发送告警。"""
         reason = error_reason or "站点请求失败"
         auth_keywords = ("cookie", "api key", "apikey", "cloudflare", "登录失败", "401", "403", "权限")
         auth_failed = any(keyword in reason.lower() for keyword in auth_keywords)
+        alert_enabled = self._is_sentinel_alert_enabled(domain, site_note=site_note)
         should_alert = SiteHealthSentinel.record_failure(
             domain,
             error_reason=reason,
             auth_failed=auth_failed,
             count_failure=count_failure,
-            alert_requested=True,
+            alert_requested=alert_enabled,
         )
-        if not should_alert:
+        if not alert_enabled or not should_alert:
             return
         status = SiteHealthSentinel.get_status(domain)
         if status["circuit_open"]:
@@ -115,12 +144,14 @@ class SiteChain(ChainBase):
             SiteHealthSentinel.record_success(domain)
             return None
         userdata: SiteUserData = self.run_module("refresh_userdata", site=site)
+        site_note = site["note"] if "note" in site else _UNSET
         if userdata is None:
             if site.get("schema"):
                 self._record_site_failure(
                     domain=domain,
                     site_name=site.get("name") or domain,
                     error_reason="未获取到站点用户数据",
+                    site_note=site_note,
                 )
             return None
         if userdata.err_msg:
@@ -128,6 +159,7 @@ class SiteChain(ChainBase):
                 domain=domain,
                 site_name=site.get("name") or domain,
                 error_reason=userdata.err_msg,
+                site_note=site_note,
             )
             return None
         SiteHealthSentinel.record_success(domain)
@@ -637,6 +669,9 @@ class SiteChain(ChainBase):
                         else:
                             logger.warn(errmsg)
                     continue
+                if (cookie or "").strip() == (site_info.cookie or "").strip():
+                    logger.info(f"站点 {domain} Cookie 未发生变化，跳过重复同步")
+                    continue
                 # 更新站点Cookie
                 logger.info(f"更新站点 {domain} Cookie ...")
                 siteoper.update_cookie(domain=domain, cookies=cookie)
@@ -746,10 +781,13 @@ class SiteChain(ChainBase):
 
     @eventmanager.register(EventType.SiteUpdated)
     def reset_site_health(self, event: Event):
-        """用户更新站点 Cookie 或 API Key 后立即清除旧熔断与告警状态。"""
+        """用户更新站点连接凭据后立即清除旧熔断与告警状态。"""
         if not event:
             return
-        domain = (event.event_data or {}).get("domain")
+        event_data = event.event_data or {}
+        if event_data.get("credentials_changed", True) is False:
+            return
+        domain = event_data.get("domain")
         if domain:
             SiteHealthSentinel.record_success(domain)
 
@@ -886,6 +924,7 @@ class SiteChain(ChainBase):
                     site_name=site_info.name or domain,
                     error_reason=message,
                     count_failure=False,
+                    site_note=getattr(site_info, "note", None),
                 )
             return state, message
         except Exception as e:
@@ -894,6 +933,7 @@ class SiteChain(ChainBase):
                 domain=domain,
                 site_name=site_info.name or domain,
                 error_reason=message,
+                site_note=getattr(site_info, "note", None),
             )
             return False, message
 

@@ -345,3 +345,127 @@ def test_public_bt_and_schemaless_sites_never_trigger_userdata_failure_or_circui
     batch = chain.refresh_userdatas()
     assert list(batch.keys()) == ["私有站"]
     assert refreshed_domains == ["私有站"]
+
+
+def test_sentinel_alerts_only_once_across_multi_day_outage_until_recovered(monkeypatch):
+    """同一轮持续数天的站点维护/宕机只推送 1 次告警，恢复正常后再次故障才重新推送。"""
+    domain = "maintenance.example.com"
+    now = {"ts": 1000.0}
+    monkeypatch.setattr("app.helper.site.time.time", lambda: now["ts"])
+    monkeypatch.setattr(SiteOper, "get_by_domain", lambda self, _val: SimpleNamespace(domain=domain, name="维护站", note=None))
+
+    chain = SiteChain()
+    notifications = []
+    monkeypatch.setattr(chain, "post_message", notifications.append)
+    monkeypatch.setattr(chain, "run_module", lambda *_args, **_kwargs: None)
+    site = {"domain": domain, "name": "维护站", "public": False, "schema": "NexusPhp"}
+
+    # 连续维护 3 天（每 6 小时刷新一次，共 12 轮，每轮触发熔断）
+    for cycle in range(12):
+        now["ts"] = 1000.0 + cycle * 21600
+        SiteHealthSentinel.is_circuit_open(domain)
+        for _ in range(3):
+            assert chain.refresh_userdata(site) is None
+
+    assert len(notifications) == 1
+    assert SiteHealthSentinel.is_circuit_open(domain)[0] is True
+
+    # 站点恢复正常后再发生新一轮故障，应能正常发出新告警
+    monkeypatch.setattr(SiteOper, "update_userdata", lambda self, **_kwargs: None)
+    monkeypatch.setattr(chain, "run_module", lambda *_args, **_kwargs: SiteUserData(domain=domain))
+    assert chain.refresh_userdata(site) is not None
+    assert SiteHealthSentinel.get_status(domain)["consecutive_fails"] == 0
+
+    monkeypatch.setattr(chain, "run_module", lambda *_args, **_kwargs: SiteUserData(err_msg="Cookie 已失效"))
+    assert chain.refresh_userdata(site) is None
+    assert len(notifications) == 2
+
+
+def test_global_and_per_site_sentinel_switches_mute_alert_while_keeping_circuit_breaker(monkeypatch):
+    """全局总开关与单站点开关关闭时仅静音通知，仍保留 30 分钟熔断保护；重新开启后可正常补推。"""
+    chain = SiteChain()
+    notifications = []
+    monkeypatch.setattr(chain, "post_message", notifications.append)
+    monkeypatch.setattr(chain, "run_module", lambda *_args, **_kwargs: None)
+
+    # 1. 全局开关关闭：连续失败照常进入熔断，但不推消息
+    monkeypatch.setattr(settings, "SITE_SENTINEL_ALERT", False)
+    global_site = {"domain": "global-mute.org", "name": "全局静音站", "public": False, "schema": "NexusPhp", "note": None}
+    for _ in range(3):
+        chain.refresh_userdata(global_site)
+    assert SiteHealthSentinel.is_circuit_open("global-mute.org")[0] is True
+    assert notifications == []
+
+    # 重新打开全局开关后，因本轮尚未发出过通知，再次失败可正常发出 1 次通知
+    monkeypatch.setattr(settings, "SITE_SENTINEL_ALERT", True)
+    chain.refresh_userdata(global_site)
+    assert len(notifications) == 1
+    assert notifications[0].title == "【站点健康预警】全局静音站"
+
+    # 2. 单站点开关关闭（含从数据库回查 note 与直接传入 JSON 字符串 note）
+    db_sites = {
+        "muted-a.org": SimpleNamespace(domain="muted-a.org", name="单站静音A", note={"sentinel_alert": False}),
+        "active-site.org": SimpleNamespace(domain="active-site.org", name="正常告警站", note={"sentinel_alert": True}),
+    }
+    monkeypatch.setattr(SiteOper, "get_by_domain", lambda self, dom: db_sites.get(dom))
+
+    muted_via_db = {"domain": "muted-a.org", "name": "单站静音A", "public": False, "schema": "NexusPhp"}
+    muted_via_json = {
+        "domain": "muted-b.org",
+        "name": "单站静音B",
+        "public": False,
+        "schema": "NexusPhp",
+        "note": '{"sentinel_alert": false}',
+    }
+    active_site = {"domain": "active-site.org", "name": "正常告警站", "public": False, "schema": "NexusPhp"}
+
+    for target in (muted_via_db, muted_via_json, active_site):
+        for _ in range(3):
+            chain.refresh_userdata(target)
+
+    assert SiteHealthSentinel.is_circuit_open("muted-a.org")[0] is True
+    assert SiteHealthSentinel.is_circuit_open("muted-b.org")[0] is True
+    assert SiteHealthSentinel.is_circuit_open("active-site.org")[0] is True
+    assert [n.title for n in notifications] == ["【站点健康预警】全局静音站", "【站点健康预警】正常告警站"]
+
+
+def test_non_credential_site_update_and_unchanged_cookiecloud_preserve_sentinel_state(monkeypatch):
+    """仅修改非凭据字段或同步未变更的旧 Cookie 不得重置哨兵熔断与单轮告警锁。"""
+    domain = "preserve-site.org"
+    chain = SiteChain()
+    notifications = []
+    monkeypatch.setattr(chain, "post_message", notifications.append)
+    monkeypatch.setattr(chain, "run_module", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        SiteOper,
+        "get_by_domain",
+        lambda self, _dom: SimpleNamespace(
+            id=1, domain=domain, name="保持状态站", url=f"https://{domain}/",
+            cookie="uid=1; pass=same", is_active=True, public=0, rss=f"https://{domain}/rss",
+            note=None,
+        ),
+    )
+    site = {"domain": domain, "name": "保持状态站", "public": False, "schema": "NexusPhp", "note": None}
+    for _ in range(3):
+        chain.refresh_userdata(site)
+    assert len(notifications) == 1
+    assert SiteHealthSentinel.is_circuit_open(domain)[0] is True
+
+    # 仅修改优先级或开关（credentials_changed=False）不应清空状态
+    chain.reset_site_health(SimpleNamespace(event_data={"domain": domain, "credentials_changed": False}))
+    assert SiteHealthSentinel.is_circuit_open(domain)[0] is True
+    chain.refresh_userdata(site)
+    assert len(notifications) == 1
+
+    # CookieCloud 返回未变更的相同 Cookie 时不得覆盖重置哨兵
+    monkeypatch.setattr("app.chain.site.CookieCloudHelper.download", lambda _self: ({domain: "uid=1; pass=same"}, ""))
+    monkeypatch.setattr(chain, "test", lambda _dom: (False, "站点维护 502"))
+    update_cookie_calls = []
+    monkeypatch.setattr(SiteOper, "update_cookie", lambda self, **kw: update_cookie_calls.append(kw))
+
+    ok, _msg = chain.sync_cookies()
+    assert ok is True
+    assert update_cookie_calls == []
+    assert SiteHealthSentinel.is_circuit_open(domain)[0] is True
+    chain.refresh_userdata(site)
+    assert len(notifications) == 1

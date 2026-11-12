@@ -185,7 +185,6 @@ SITE_OVERRIDES = {
 
 CIRCUIT_BREAKER_THRESHOLD = 3
 CIRCUIT_BREAKER_COOLDOWN_SECONDS = 1800
-ALERT_COOLDOWN_SECONDS = 21600
 
 
 class SiteHealthSentinel:
@@ -193,8 +192,6 @@ class SiteHealthSentinel:
 
     CIRCUIT_BREAKER_THRESHOLD = CIRCUIT_BREAKER_THRESHOLD
     CIRCUIT_BREAKER_COOLDOWN_SECONDS = CIRCUIT_BREAKER_COOLDOWN_SECONDS
-    ALERT_COOLDOWN_SECONDS = ALERT_COOLDOWN_SECONDS
-
     _states: dict[str, dict[str, Any]] = {}
     _lock = RLock()
 
@@ -236,7 +233,7 @@ class SiteHealthSentinel:
         :param auth_failed: 是否属于 Cookie、API Key 或权限等鉴权异常
         :param count_failure: 数据库统计入口已计数时可关闭重复递增
         :param alert_requested: 调用方将实际发送告警时记录告警时间
-        :return: 满足告警条件且未处于六小时防轰炸窗口时返回 True
+        :return: 满足告警条件且本轮连续故障尚未发送过告警时返回 True
         """
         normalized_domain = cls._normalize_domain(domain)
         if not normalized_domain:
@@ -247,7 +244,7 @@ class SiteHealthSentinel:
                 "consecutive_fails": 0,
                 "circuit_until_ts": None,
                 "last_error": None,
-                "last_alert_ts": None,
+                "alerted": False,
             })
             if count_failure:
                 state["consecutive_fails"] += 1
@@ -261,12 +258,9 @@ class SiteHealthSentinel:
                     state["circuit_until_ts"] = now + cls.CIRCUIT_BREAKER_COOLDOWN_SECONDS
 
             should_alert = auth_failed or consecutive_fails >= cls.CIRCUIT_BREAKER_THRESHOLD
-            last_alert_ts = state["last_alert_ts"]
-            alert_due = should_alert and (
-                last_alert_ts is None or now - last_alert_ts >= cls.ALERT_COOLDOWN_SECONDS
-            )
+            alert_due = should_alert and not state["alerted"]
             if alert_due and alert_requested:
-                state["last_alert_ts"] = now
+                state["alerted"] = True
             return alert_due
 
     @classmethod

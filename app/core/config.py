@@ -341,6 +341,8 @@ class ConfigModel(BaseModel):
     SITEDATA_REFRESH_INTERVAL: int = 6
     # 读取和发送站点消息
     SITE_MESSAGE: bool = True
+    # 站点健康哨兵预警通知开关
+    SITE_SENTINEL_ALERT: bool = True
     # 不能缓存站点资源的站点域名，多个使用,分隔
     NO_CACHE_SITE_KEY: str = "m-team"
     # OCR服务器地址，用于识别站点验证码
