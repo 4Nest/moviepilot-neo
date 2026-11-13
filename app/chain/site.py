@@ -1,6 +1,8 @@
 import base64
 import json
 import re
+import threading
+import time
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from urllib.parse import urljoin
@@ -37,7 +39,9 @@ from app.utils.string import StringUtils
 
 site_interaction_manager = SlashInteractionManager()
 _UNSET = object()
-
+_ICON_FETCH_COOLDOWN_SECONDS = 600
+_icon_fetch_cooldown: Dict[str, float] = {}
+_icon_fetch_lock = threading.Lock()
 
 class SiteChain(ChainBase):
     """
@@ -556,37 +560,48 @@ class SiteChain(ChainBase):
         cookie: str,
         ua: str,
         api_only: bool = False,
+        proxies: Optional[dict] = None,
     ) -> Tuple[Optional[str], Optional[str]]:
         """
-        解析站点 favicon 并返回图标地址及 Base64 内容；首页受限时继续回退尝试默认 favicon.ico
+        解析站点 favicon 并返回图标地址及 Base64 内容；首页受限或自定义图标失效时继续回退尝试默认 favicon.ico
 
         :param url: 站点地址
         :param cookie: 站点 Cookie
         :param ua: User-Agent
         :param api_only: 是否为无浏览器 Cookie 的纯 API 模式站点
+        :param proxies: 站点代理配置
         :return: (图标 URL, 图标 Base64 内容)
         """
-        favicon_url = urljoin(url, "favicon.ico")
-        res = RequestUtils(cookies=cookie, timeout=30, ua=ua).get_res(url=url)
+        default_favicon_url = urljoin(url, "/favicon.ico") if url.startswith("http") else urljoin(url, "favicon.ico")
+        candidate_urls: List[str] = []
+        res = RequestUtils(cookies=cookie, timeout=30, ua=ua, proxies=proxies).get_res(url=url)
         html = etree.HTML(res.text) if res and res.text else None
         if not res and not api_only:
-            logger.debug(f"获取站点首页失败，继续尝试默认图标地址：{favicon_url}")
+            logger.debug(f"获取站点首页失败，继续尝试默认图标地址：{default_favicon_url}")
         try:
             if html is not None and StringUtils.is_valid_html_element(html):
-                fav_link = html.xpath('//head/link[contains(@rel, "icon")]/@href')
+                fav_link = html.xpath(
+                    '//head/link[contains(translate(@rel, "ICON", "icon"), "icon")]/@href'
+                )
                 if fav_link:
-                    favicon_url = urljoin(url, fav_link[0])
+                    parsed_url = urljoin(url, fav_link[0])
+                    if parsed_url:
+                        candidate_urls.append(parsed_url)
+            if default_favicon_url not in candidate_urls:
+                candidate_urls.append(default_favicon_url)
 
-            res = RequestUtils(cookies=cookie, timeout=15, ua=ua).get_res(url=favicon_url)
-            if res and res.content:
-                content = res.content
+            saw_html = False
+            for favicon_url in candidate_urls:
+                icon_res = RequestUtils(
+                    cookies=cookie, timeout=15, ua=ua, proxies=proxies
+                ).get_res(url=favicon_url)
+                if not icon_res or not icon_res.content:
+                    continue
+                content = icon_res.content
                 leading = content.lstrip()[:16].lower()
                 if leading.startswith((b"<!doctype", b"<html")):
-                    if api_only:
-                        logger.info(f"站点 {url} 图标路径返回网页内容，跳过纯 API 模式图标抓取")
-                        return None, None
-                    logger.warning(f"站点图标响应为 HTML 页面，已忽略：{favicon_url}")
-                    return favicon_url, None
+                    saw_html = True
+                    continue
                 if (
                     len(content) > 22
                     and content[:6] == b"\x00\x00\x01\x00\x01\x00"
@@ -594,14 +609,22 @@ class SiteChain(ChainBase):
                 ):
                     content = content[22:]
                 return favicon_url, base64.b64encode(content).decode()
+
+            primary_url = candidate_urls[0]
+            if saw_html:
+                if api_only:
+                    logger.info(f"站点 {url} 图标路径返回网页内容，跳过纯 API 模式图标抓取")
+                    return None, None
+                logger.warning(f"站点图标响应为 HTML 页面，已忽略：{primary_url}")
+                return primary_url, None
             if api_only:
                 logger.info(f"站点 {url} 使用纯 API 模式且图标受访问防护，跳过图标抓取")
                 return None, None
-            logger.error(f"获取站点图标失败：{favicon_url}")
+            logger.error(f"获取站点图标失败：{primary_url}")
+            return primary_url, None
         finally:
             if html is not None:
                 del html
-        return favicon_url, None
 
     def sync_cookies(
             self,
@@ -810,58 +833,119 @@ class SiteChain(ChainBase):
         if domain:
             SiteHealthSentinel.record_success(domain)
 
-    @eventmanager.register(EventType.SiteUpdated)
-    def cache_site_icon(self, event: Event):
+    @staticmethod
+    def clear_site_icon_cooldown(domain: Optional[str] = None) -> None:
         """
-        缓存站点图标
+        清除站点图标按需补抓的失败冷却记录
+
+        :param domain: 指定站点域名；为空时清空全部冷却记录
         """
-        if not event:
-            return
-        event_data = event.event_data or {}
-        # 主域名
-        domain = event_data.get("domain")
+        with _icon_fetch_lock:
+            if not domain:
+                _icon_fetch_cooldown.clear()
+                return
+            norm_domain = StringUtils.get_url_domain(domain) if str(domain).startswith("http") else domain
+            _icon_fetch_cooldown.pop(norm_domain, None)
+
+    def cache_site_icon_by_domain(self, domain: str) -> Optional[str]:
+        """
+        按站点域名抓取并持久化站点图标
+
+        :param domain: 站点域名或 URL
+        :return: 成功缓存或已存在时返回图标 Base64/URL，否则返回 None
+        """
         if not domain:
-            return
+            return None
         if str(domain).startswith("http"):
             domain = StringUtils.get_url_domain(domain)
-        # 站点信息
         siteoper = SiteOper()
         siteshelper = SitesHelper()
         siteinfo = siteoper.get_by_domain(domain)
         if not siteinfo:
             logger.warn(f"未维护站点 {domain} 信息！")
-            return
-        # Cookie
+            return None
         cookie = siteinfo.cookie
-        # 索引器
-        indexer = siteshelper.get_indexer(domain)
-        if not indexer:
+        indexer = siteshelper.get_indexer(domain) or {}
+        target_url = getattr(siteinfo, "url", None) or indexer.get("domain")
+        if not indexer and not target_url:
             logger.warn(f"站点 {domain} 索引器不存在！")
-            return
+            return None
+        site_name = indexer.get("name") or getattr(siteinfo, "name", None) or domain
         api_only = bool((siteinfo.apikey or siteinfo.token) and not cookie)
         if api_only:
             existing_icon = siteoper.get_icon_by_domain(domain)
             if existing_icon and existing_icon.base64:
-                logger.debug(f"站点 {indexer.get('name')} 已有缓存图标，纯 API 模式下保留现有图标")
-                return
-        # 查询站点图标
-        logger.info(f"开始缓存站点 {indexer.get('name')} 图标 ...")
+                logger.debug(f"站点 {site_name} 已有缓存图标，纯 API 模式下保留现有图标")
+                return existing_icon.base64
+        proxies = settings.PROXY if getattr(siteinfo, "proxy", None) else None
+        logger.info(f"开始缓存站点 {site_name} 图标 ...")
         icon_url, icon_base64 = self.__parse_favicon(
-            url=indexer.get("domain"),
+            url=target_url,
             cookie=cookie,
             ua=siteinfo.ua or settings.USER_AGENT,
             api_only=api_only,
+            proxies=proxies,
         )
         if icon_url:
             siteoper.update_icon(
-                name=indexer.get("name"),
+                name=site_name,
                 domain=domain,
                 icon_url=icon_url,
                 icon_base64=icon_base64,
             )
-            logger.info(f"缓存站点 {indexer.get('name')} 图标成功")
-        elif not api_only:
-            logger.warn(f"缓存站点 {indexer.get('name')} 图标失败")
+            logger.info(f"缓存站点 {site_name} 图标成功")
+            cached = siteoper.get_icon_by_domain(domain)
+            if cached:
+                return cached.base64 if cached.base64 else cached.url
+            return icon_url
+        if not api_only:
+            logger.warn(f"缓存站点 {site_name} 图标失败")
+        return None
+
+    def ensure_site_icon(self, domain: str) -> Optional[str]:
+        """
+        读取站点图标；若缺少 Base64 缓存且未处于失败冷却期，则自动补抓一次
+
+        :param domain: 站点域名
+        :return: 站点图标 Base64 或回退 URL，不存在时返回 None
+        """
+        if not domain:
+            return None
+        norm_domain = StringUtils.get_url_domain(domain) if str(domain).startswith("http") else domain
+        siteoper = SiteOper()
+        existing = siteoper.get_icon_by_domain(norm_domain)
+        if existing and existing.base64:
+            return existing.base64
+
+        now = time.monotonic()
+        with _icon_fetch_lock:
+            cooldown_until = _icon_fetch_cooldown.get(norm_domain, 0.0)
+            if cooldown_until > now:
+                return existing.url if existing and existing.url else None
+            _icon_fetch_cooldown[norm_domain] = now + _ICON_FETCH_COOLDOWN_SECONDS
+
+        self.cache_site_icon_by_domain(norm_domain)
+        updated = SiteOper().get_icon_by_domain(norm_domain)
+        if updated and updated.base64:
+            self.clear_site_icon_cooldown(norm_domain)
+            return updated.base64
+        if updated and updated.url:
+            return updated.url
+        return existing.url if existing and existing.url else None
+
+    @eventmanager.register(EventType.SiteUpdated)
+    def cache_site_icon(self, event: Event):
+        """
+        响应站点更新事件并刷新站点图标缓存
+        """
+        if not event:
+            return
+        event_data = event.event_data or {}
+        domain = event_data.get("domain")
+        if not domain:
+            return
+        self.clear_site_icon_cooldown(domain)
+        self.cache_site_icon_by_domain(domain)
 
     @eventmanager.register(EventType.SiteUpdated)
     def clear_site_data(self, event: Event):

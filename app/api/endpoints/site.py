@@ -2,6 +2,7 @@ from asyncio import Lock
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTasks
@@ -409,7 +410,11 @@ def test_site(
             status_code=404,
             detail=f"站点 {site_id} 不存在",
         )
-    status, message = SiteChain().test(site.domain)
+    site_chain = SiteChain()
+    status, message = site_chain.test(site.domain)
+    if status:
+        site_chain.clear_site_icon_cooldown(site.domain)
+        site_chain.ensure_site_icon(site.domain)
     return schemas.Response(success=status, message=message)
 
 
@@ -429,11 +434,14 @@ async def site_icon(
             detail=f"站点 {site_id} 不存在",
         )
     icon = await SiteIcon.async_get_by_domain(db, site.domain)
-    if not icon:
-        return schemas.Response(success=False, message="站点图标不存在！")
-    return schemas.Response(
-        success=True, data={"icon": icon.base64 if icon.base64 else icon.url}
-    )
+    if icon and icon.base64:
+        return schemas.Response(success=True, data={"icon": icon.base64})
+    resolved_icon = await run_in_threadpool(SiteChain().ensure_site_icon, site.domain)
+    if resolved_icon:
+        return schemas.Response(success=True, data={"icon": resolved_icon})
+    if icon and icon.url:
+        return schemas.Response(success=True, data={"icon": icon.url})
+    return schemas.Response(success=False, message="站点图标不存在！")
 
 
 @router.get(

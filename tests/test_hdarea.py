@@ -872,3 +872,112 @@ def test_rss_helper_and_torrents_chain_parse_extended_attrs_and_ifree_prefix(
     assert second.title == "[ANi] Frieren S01E01 1080p WEB-DL AAC CHS"
     assert second.seeders == 10
     assert second.volume_factor == "普通"
+
+
+def test_site_icon_proxy_fallback_and_lazy_endpoint_cache(monkeypatch):
+    """站点图标抓取应透传站点代理、回退默认 favicon，并在接口读取缺失时按需补抓且遵守失败冷却。"""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.api.endpoints import site as site_endpoint
+    from app.chain import ChainBase
+    from app.chain.site import SiteChain
+    from app.core.config import settings
+    from app.db.models.site import Site
+
+    class RawResp:
+        def __init__(self, status_code: int, content: bytes = b"", text: str = ""):
+            self.status_code = status_code
+            self.content = content
+            self.text = text
+
+        def __bool__(self) -> bool:
+            return self.status_code < 400
+
+    seen_calls = []
+
+    def fake_init(self, **kwargs):
+        seen_calls.append(("init", kwargs.get("proxies")))
+
+    def fake_get_res(self, url, **_kw):
+        seen_calls.append(("get", url))
+        if url == "https://audiences.me/":
+            return RawResp(
+                200,
+                text='<html><head><link rel="SHORTCUT ICON" href="/broken.ico"></head></html>',
+            )
+        if url == "https://audiences.me/broken.ico":
+            return RawResp(200, content=b"<!DOCTYPE html><html>404</html>", text="404")
+        if url == "https://audiences.me/favicon.ico":
+            return RawResp(200, content=b"\x89PNG\r\n\x1a\nPNGDATA")
+        return RawResp(404)
+
+    monkeypatch.setattr("app.chain.site.RequestUtils.__init__", fake_init)
+    monkeypatch.setattr("app.chain.site.RequestUtils.get_res", fake_get_res)
+    monkeypatch.setattr(settings, "PROXY_HOST", "http://127.0.0.1:7890", raising=False)
+    expected_proxy = settings.PROXY
+    monkeypatch.setattr(ChainBase, "__init__", lambda self: None)
+
+    icon_state = {"icon": None}
+    oper = Mock()
+    oper.get_by_domain.return_value = Site(
+        id=3,
+        name="观众",
+        domain="audiences.me",
+        url="https://audiences.me/",
+        apikey="k" * 32,
+        cookie="",
+        proxy=1,
+    )
+    oper.get_icon_by_domain.side_effect = lambda _d: icon_state["icon"]
+
+    def record_update(name, domain, icon_url, icon_base64):
+        assert name == "观众"
+        assert domain == "audiences.me"
+        assert icon_url == "https://audiences.me/favicon.ico"
+        assert icon_base64 is not None
+        icon_state["icon"] = Mock(
+            url=icon_url, base64=f"data:image/png;base64,{icon_base64}"
+        )
+        return True
+
+    oper.update_icon.side_effect = record_update
+    monkeypatch.setattr("app.chain.site.SiteOper", lambda: oper)
+    monkeypatch.setattr("app.chain.site.SitesHelper", lambda: Mock(get_indexer=lambda _d: {}))
+
+    SiteChain.clear_site_icon_cooldown()
+    try:
+        monkeypatch.setattr(
+            site_endpoint.Site,
+            "async_get",
+            AsyncMock(return_value=Site(id=3, name="观众", domain="audiences.me")),
+        )
+        monkeypatch.setattr(
+            site_endpoint.SiteIcon,
+            "async_get_by_domain",
+            AsyncMock(return_value=None),
+        )
+        resp = asyncio.run(site_endpoint.site_icon(site_id=3, db=Mock(), _=Mock()))
+        assert resp.success is True
+        assert resp.data["icon"].startswith("data:image/png;base64,")
+        assert ("get", "https://audiences.me/broken.ico") in seen_calls
+        assert ("get", "https://audiences.me/favicon.ico") in seen_calls
+        assert ("init", expected_proxy) in seen_calls
+
+        # 失败冷却期内重复读取不应再次请求外网
+        icon_state["icon"] = None
+        fetch_count = {"n": 0}
+        monkeypatch.setattr(
+            SiteChain,
+            "cache_site_icon_by_domain",
+            lambda self, _d: (fetch_count.__setitem__("n", fetch_count["n"] + 1) or None),
+        )
+        SiteChain.clear_site_icon_cooldown("blocked.example")
+        assert SiteChain().ensure_site_icon("blocked.example") is None
+        assert SiteChain().ensure_site_icon("blocked.example") is None
+        assert fetch_count["n"] == 1
+        SiteChain.clear_site_icon_cooldown("blocked.example")
+        assert SiteChain().ensure_site_icon("blocked.example") is None
+        assert fetch_count["n"] == 2
+    finally:
+        SiteChain.clear_site_icon_cooldown()
