@@ -49,8 +49,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          gh release download "v0.2.9+neo.5" -R 4Nest/MoviePilot-Rust -p "*cp311*manylinux_2_17_x86_64*.whl" -D /tmp/wheels --clobber
-          pip install --no-index --find-links /tmp/wheels moviepilot-rust==0.2.9+neo.5
+          gh release download "v0.2.9+neo.6" -R 4Nest/MoviePilot-Rust -p "*cp311*manylinux_2_17_x86_64*.whl" -D /tmp/wheels --clobber
+          pip install --no-index --find-links /tmp/wheels moviepilot-rust==0.2.9+neo.6
           pip install -r requirements-dev.in
       - name: Run tests
         run: python -m pytest tests -q

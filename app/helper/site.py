@@ -218,6 +218,7 @@ class SiteHealthSentinel:
 
     CIRCUIT_BREAKER_THRESHOLD = CIRCUIT_BREAKER_THRESHOLD
     CIRCUIT_BREAKER_COOLDOWN_SECONDS = CIRCUIT_BREAKER_COOLDOWN_SECONDS
+    HALF_OPEN_PROBE_TIMEOUT_SECONDS = 120
     _states: dict[str, dict[str, Any]] = {}
     _lock = RLock()
 
@@ -271,7 +272,11 @@ class SiteHealthSentinel:
                 "circuit_until_ts": None,
                 "last_error": None,
                 "alerted": False,
+                "half_open_in_flight": False,
+                "half_open_started_ts": None,
             })
+            state["half_open_in_flight"] = False
+            state["half_open_started_ts"] = None
             if count_failure:
                 state["consecutive_fails"] += 1
             if error_reason:
@@ -292,7 +297,7 @@ class SiteHealthSentinel:
     @classmethod
     def is_circuit_open(cls, domain: str) -> Tuple[bool, Optional[str]]:
         """
-        判断站点是否处于熔断期；冷却到期后清除窗口并保留一次半开试探机会。
+        判断站点是否处于熔断期；冷却到期后仅放行单个半开试探请求，拦截并发跟风请求。
 
         :param domain: 站点地址或规范域名
         :return: 是否拦截请求，以及可供展示的熔断恢复时间
@@ -306,12 +311,20 @@ class SiteHealthSentinel:
             if not state:
                 return False, None
             circuit_until_ts = state["circuit_until_ts"]
-            if circuit_until_ts is None:
+            if circuit_until_ts is not None:
+                if now < circuit_until_ts:
+                    return True, cls._format_timestamp(circuit_until_ts)
+                state["circuit_until_ts"] = None
+                state["consecutive_fails"] = cls.CIRCUIT_BREAKER_THRESHOLD - 1
+                state["half_open_in_flight"] = True
+                state["half_open_started_ts"] = now
                 return False, None
-            if now < circuit_until_ts:
-                return True, cls._format_timestamp(circuit_until_ts)
-            state["circuit_until_ts"] = None
-            state["consecutive_fails"] = cls.CIRCUIT_BREAKER_THRESHOLD - 1
+            if state.get("half_open_in_flight"):
+                started_ts = state.get("half_open_started_ts")
+                if started_ts is not None and now - started_ts < cls.HALF_OPEN_PROBE_TIMEOUT_SECONDS:
+                    return True, cls._format_timestamp(started_ts + cls.HALF_OPEN_PROBE_TIMEOUT_SECONDS)
+                state["half_open_started_ts"] = now
+                return False, None
             return False, None
 
     @classmethod
@@ -353,7 +366,7 @@ class SiteHealthSentinel:
 class SiteResourceRegistry:
     """管理 NEO 站点热更新 JSON 配置与经 SHA-256 校验的动态适配器模块。"""
 
-    BUILTIN_RESOURCE_VERSION = "1.0.1"
+    BUILTIN_RESOURCE_VERSION = "1.0.3"
     _lock = RLock()
     _cached_signature: Optional[Tuple[Optional[int], Optional[int]]] = None
     _manifest: dict[str, Any] = {}

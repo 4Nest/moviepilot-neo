@@ -25,6 +25,7 @@ from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet, InvalidSpecifier
 from packaging.version import Version, InvalidVersion
 from importlib.metadata import distributions
+from cachetools import TTLCache
 from requests import Response
 
 from app.core.cache import cached, is_fresh
@@ -43,6 +44,7 @@ from version import APP_VERSION
 PLUGIN_DIR = Path(settings.ROOT_PATH) / "app" / "plugins"
 LOCAL_REPO_PREFIX = "local://"
 PLUGIN_SYSTEM_VERSION_FIELD = "system_version"
+PLUGIN_REPO_FAILURE_TTL = 300
 
 
 class PluginHelper(metaclass=WeakSingleton):
@@ -51,6 +53,9 @@ class PluginHelper(metaclass=WeakSingleton):
     """
 
     _base_url = "https://raw.githubusercontent.com/{user}/{repo}/main/"
+    # 远端仓库请求失败或超时后的短期负缓存（5分钟），避免市场刷新或详情探测反复阻塞。
+    _repo_failure_lock = threading.Lock()
+    _repo_failures: TTLCache = TTLCache(maxsize=512, ttl=PLUGIN_REPO_FAILURE_TTL)
     # 串行化运行期依赖安装，避免多个 pip 子进程和导入缓存刷新互相踩踏。
     _pip_install_lock = threading.Lock()
     # 同仓库的并发 Release 请求共享任务；事件循环参与键控，避免热重载或测试循环切换后复用失效任务。
@@ -484,6 +489,40 @@ class PluginHelper(metaclass=WeakSingleton):
             if isinstance(release_info, dict)
         ]
 
+    @classmethod
+    def clear_repo_failures(cls) -> None:
+        """
+        清理远端插件仓库短期失败负缓存（供强制刷新或单元测试隔离调用）。
+        """
+        with cls._repo_failure_lock:
+            cls._repo_failures.clear()
+
+    @classmethod
+    def _is_repo_in_failure_cooldown(cls, failure_key: str) -> bool:
+        """
+        检查指定仓库资源键是否处于短期失败冷却期；显式强制刷新时跳过负缓存。
+        """
+        if is_fresh():
+            return False
+        with cls._repo_failure_lock:
+            return failure_key in cls._repo_failures
+
+    @classmethod
+    def _mark_repo_failure(cls, failure_key: str) -> None:
+        """
+        将远端仓库请求失败或超时记录到短期内存负缓存。
+        """
+        with cls._repo_failure_lock:
+            cls._repo_failures[failure_key] = True
+
+    @classmethod
+    def _clear_repo_failure(cls, failure_key: str) -> None:
+        """
+        远端请求恢复正常后移除对应的失败负缓存条目。
+        """
+        with cls._repo_failure_lock:
+            cls._repo_failures.pop(failure_key, None)
+
     @cached(maxsize=128, ttl=1800)
     def get_plugins(self, repo_url: str,
                     package_version: Optional[str] = None) -> Optional[Dict[str, dict]]:
@@ -499,18 +538,30 @@ class PluginHelper(metaclass=WeakSingleton):
         if not user or not repo:
             return None
 
+        failure_key = f"index:{user}/{repo}:{package_version or ''}"
+        if self._is_repo_in_failure_cooldown(failure_key):
+            return None
+
         raw_url = self._base_url.format(user=user, repo=repo)
         package_url = f"{raw_url}package.{package_version}.json" if package_version else f"{raw_url}package.json"
         package_url = self.__append_cache_buster(package_url)
 
         res = self.__request_with_fallback(package_url, headers=settings.REPO_GITHUB_HEADERS(repo=f"{user}/{repo}"))
         if res is None:
+            self._mark_repo_failure(failure_key)
             return None
         if res.status_code == 404:
+            self._clear_repo_failure(failure_key)
             return {}
         if res.status_code != 200:
+            self._mark_repo_failure(failure_key)
             return None
-        return self.__parse_plugin_index_response(res.text)
+        parsed = self.__parse_plugin_index_response(res.text)
+        if parsed is None:
+            self._mark_repo_failure(failure_key)
+            return None
+        self._clear_repo_failure(failure_key)
+        return parsed
 
     @cached(maxsize=32, ttl=1800, shared_key="get_plugin_repo_releases")
     def _get_plugin_repo_releases(self, repo_url: str) -> Optional[List[dict]]:
@@ -525,6 +576,10 @@ class PluginHelper(metaclass=WeakSingleton):
             return []
 
         user_repo = f"{user}/{repo}"
+        failure_key = f"releases:{user_repo}"
+        if self._is_repo_in_failure_cooldown(failure_key):
+            return None
+
         releases = []
         for page in range(1, 11):
             release_api = f"https://api.github.com/repos/{user_repo}/releases?per_page=100&page={page}"
@@ -536,6 +591,7 @@ class PluginHelper(metaclass=WeakSingleton):
                 is_api=True,
             )
             if res is None or res.status_code != 200:
+                self._mark_repo_failure(failure_key)
                 return None
 
             try:
@@ -543,13 +599,16 @@ class PluginHelper(metaclass=WeakSingleton):
                 if not payload:
                     break
                 if not isinstance(payload, list):
+                    self._mark_repo_failure(failure_key)
                     return None
                 releases.extend(self.__normalize_plugin_release_response(payload))
                 if len(payload) < 100:
                     break
             except Exception as e:
                 logger.error(f"解析插件仓库 {repo_url} Release 列表失败：{e}")
+                self._mark_repo_failure(failure_key)
                 return None
+        self._clear_repo_failure(failure_key)
         return releases
 
     def get_plugin_release_versions(self, pid: str, repo_url: str) -> List[dict]:
@@ -2199,6 +2258,10 @@ class PluginHelper(metaclass=WeakSingleton):
         if not user or not repo:
             return None
 
+        failure_key = f"index:{user}/{repo}:{package_version or ''}"
+        if self._is_repo_in_failure_cooldown(failure_key):
+            return None
+
         raw_url = self._base_url.format(user=user, repo=repo)
         package_url = f"{raw_url}package.{package_version}.json" if package_version else f"{raw_url}package.json"
         package_url = self.__append_cache_buster(package_url)
@@ -2206,12 +2269,20 @@ class PluginHelper(metaclass=WeakSingleton):
         res = await self.__async_request_with_fallback(package_url,
                                                        headers=settings.REPO_GITHUB_HEADERS(repo=f"{user}/{repo}"))
         if res is None:
+            self._mark_repo_failure(failure_key)
             return None
         if res.status_code == 404:
+            self._clear_repo_failure(failure_key)
             return {}
         if res.status_code != 200:
+            self._mark_repo_failure(failure_key)
             return None
-        return self.__parse_plugin_index_response(res.text)
+        parsed = self.__parse_plugin_index_response(res.text)
+        if parsed is None:
+            self._mark_repo_failure(failure_key)
+            return None
+        self._clear_repo_failure(failure_key)
+        return parsed
 
     @cached(maxsize=32, ttl=1800, shared_key="get_plugin_repo_releases")
     async def _async_get_plugin_repo_releases(self, repo_url: str) -> Optional[List[dict]]:
@@ -2226,6 +2297,10 @@ class PluginHelper(metaclass=WeakSingleton):
             return []
 
         user_repo = f"{user}/{repo}"
+        failure_key = f"releases:{user_repo}"
+        if self._is_repo_in_failure_cooldown(failure_key):
+            return None
+
         releases = []
         for page in range(1, 11):
             release_api = f"https://api.github.com/repos/{user_repo}/releases?per_page=100&page={page}"
@@ -2237,6 +2312,7 @@ class PluginHelper(metaclass=WeakSingleton):
                 is_api=True,
             )
             if res is None or res.status_code != 200:
+                self._mark_repo_failure(failure_key)
                 return None
 
             try:
@@ -2244,13 +2320,16 @@ class PluginHelper(metaclass=WeakSingleton):
                 if not payload:
                     break
                 if not isinstance(payload, list):
+                    self._mark_repo_failure(failure_key)
                     return None
                 releases.extend(self.__normalize_plugin_release_response(payload))
                 if len(payload) < 100:
                     break
             except Exception as e:
                 logger.error(f"解析插件仓库 {repo_url} Release 列表失败：{e}")
+                self._mark_repo_failure(failure_key)
                 return None
+        self._clear_repo_failure(failure_key)
         return releases
 
     async def async_get_plugin_release_versions(self, pid: str, repo_url: str) -> List[dict]:

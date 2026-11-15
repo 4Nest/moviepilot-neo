@@ -1,23 +1,36 @@
+import asyncio
+import json
+import threading
 from datetime import date
-from typing import Optional
+from math import isfinite
+from time import time
+from typing import Any, Optional
 
-from app.core.cache import cached
+from app.core.cache import AsyncFileCache, FileCache, cached
 from app.core.config import settings
 from app.log import logger
 from app.utils.http import AsyncRequestUtils, RequestUtils
+from app.utils.url import UrlUtils
 
 
 class AniListApi:
     """
-    AniList 中文 GraphQL API 客户端
+    通过官方 GraphQL 接口查询 AniList，并结合本地持久化缓存补充中文标题。
+
+    中文标题映射表默认缓存 24 小时，远端下载失败时保留旧缓存并在 5 分钟后重试。
     """
 
-    _base_url = "https://trace.moe/anilist/"
     _official_url = "https://graphql.anilist.co"
     _translations_url = (
         "https://raw.githubusercontent.com/soruly/anilist-chinese/"
         "master/anilist-chinese.json"
     )
+    _translations_ttl = 24 * 60 * 60
+    _translations_retry = 5 * 60
+    _translations_region = "anilist"
+    _translations_key = "anilist-chinese.json"
+    _translations_sync_lock = threading.Lock()
+    _translations_async_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
     _media_summary_fields = """
         id
         idMal
@@ -99,7 +112,7 @@ class AniListApi:
     """
 
     def __init__(self) -> None:
-        """初始化同步与异步请求客户端"""
+        """初始化同步与异步请求客户端及中文标题文件缓存。"""
         headers = {
             "User-Agent": settings.NORMAL_USER_AGENT,
             "Accept": "application/json",
@@ -113,8 +126,28 @@ class AniListApi:
             proxies=settings.PROXY,
             headers=headers,
         )
-        self._proxy_available = True
-        self._translations: Optional[dict[int, dict]] = None
+        self._translations: Optional[dict[Any, dict[str, Any]]] = None
+        self._translations_expires_at = 0.0
+        self._file_cache: Optional[FileCache] = None
+        self._async_file_cache: Optional[AsyncFileCache] = None
+        try:
+            self._file_cache = FileCache(base=settings.CACHE_PATH)
+            self._async_file_cache = AsyncFileCache(base=settings.CACHE_PATH)
+        except OSError as err:
+            logger.warning(f"初始化 anilist-chinese 磁盘缓存失败：{err}")
+
+    @classmethod
+    def _get_async_lock(cls) -> asyncio.Lock:
+        """
+        按当前事件循环获取中文标题异步缓存刷新锁。
+        """
+        loop = asyncio.get_running_loop()
+        with cls._translations_sync_lock:
+            lock = cls._translations_async_locks.get(loop)
+            if lock is None:
+                lock = asyncio.Lock()
+                cls._translations_async_locks[loop] = lock
+            return lock
 
     @staticmethod
     def _extract_response(response) -> Optional[dict]:
@@ -138,39 +171,28 @@ class AniListApi:
 
     def _invoke(self, query: str, variables: dict) -> Optional[dict]:
         """
-        执行同步 GraphQL 请求。
+        通过官方 GraphQL 端点执行同步查询并合并中文标题。
 
         :param query: GraphQL 查询
         :param variables: 查询变量
         :return: GraphQL data 字段
         """
         payload = {"query": query, "variables": variables}
-        if self._proxy_available:
-            response = self._request.post_res(self._base_url, json=payload)
-            result = self._extract_response(response)
-            if result is not None:
-                return self._inject_chinese(result, self._translation_map())
-            self._disable_proxy(response)
         response = self._request.post_res(self._official_url, json=payload)
         result = self._extract_response(response)
-        return self._inject_chinese(result, self._translation_map()) if result else result
+        if not result:
+            return result
+        return self._inject_chinese(result, self._translation_map())
 
     async def _async_invoke(self, query: str, variables: dict) -> Optional[dict]:
         """
-        执行异步 GraphQL 请求。
+        通过官方 GraphQL 端点执行异步查询并合并中文标题。
 
         :param query: GraphQL 查询
         :param variables: 查询变量
         :return: GraphQL data 字段
         """
         payload = {"query": query, "variables": variables}
-        if self._proxy_available:
-            response = await self._async_request.post_res(self._base_url, json=payload)
-            result = self._extract_response(response)
-            if result is not None:
-                translations = await self._async_translation_map()
-                return self._inject_chinese(result, translations)
-            self._disable_proxy(response)
         response = await self._async_request.post_res(self._official_url, json=payload)
         result = self._extract_response(response)
         if not result:
@@ -178,21 +200,8 @@ class AniListApi:
         translations = await self._async_translation_map()
         return self._inject_chinese(result, translations)
 
-    def _disable_proxy(self, response) -> None:
-        """
-        标记中文代理不可用，避免当前进程持续请求已失效的上游。
-
-        :param response: 中文代理响应对象
-        """
-        self._proxy_available = False
-        status_code = getattr(response, "status_code", None)
-        logger.warning(
-            f"anilist-chinese 代理不可用（HTTP {status_code}），"
-            "改用 AniList 官方接口并合并中文数据集"
-        )
-
     @staticmethod
-    def _build_translation_map(items) -> dict[int, dict]:
+    def _build_translation_map(items) -> dict[Any, dict[str, Any]]:
         """
         将 anilist-chinese 数据集转换为按 AniList ID 索引的字典。
 
@@ -204,34 +213,145 @@ class AniListApi:
         return {
             item.get("id"): item
             for item in items
-            if isinstance(item, dict) and item.get("id")
+            if isinstance(item, dict)
+            and isinstance(item.get("id"), (int, str)) and item.get("id")
+            and isinstance(item.get("title"), str)
+            and isinstance(item.get("synonyms", []), list)
+            and all(isinstance(alias, str) for alias in item.get("synonyms", []))
         }
 
-    def _translation_map(self) -> dict[int, dict]:
+    def _translation_routes(self) -> list[tuple[str, bool]]:
         """
-        同步加载并复用 anilist-chinese 中文标题数据。
+        返回中文标题数据集下载路由（GITHUB_PROXY 镜像优先且不叠加 HTTP 代理，失败回退原地址）。
+        """
+        mirror = str(getattr(settings, "GITHUB_PROXY", "") or "").strip()
+        routes = [(self._translations_url, False)]
+        if mirror:
+            routes.insert(0, (f"{UrlUtils.standardize_base_url(mirror)}{self._translations_url}", True))
+        return routes
+
+    @classmethod
+    def _decode_translation_cache(cls, content: Optional[bytes | str]) -> tuple[dict[Any, dict[str, Any]], float]:
+        """
+        校验并解析本地磁盘缓存快照及过期时间戳。
+        """
+        if content:
+            try:
+                raw_text = content.decode("utf-8") if isinstance(content, bytes) else content
+                payload = json.loads(raw_text)
+                if isinstance(payload, dict):
+                    expires_at = payload.get("expires_at")
+                    if isinstance(expires_at, (int, float)) and isfinite(expires_at):
+                        return cls._build_translation_map(payload.get("items")), float(expires_at)
+            except (ValueError, TypeError, UnicodeDecodeError) as err:
+                logger.warning(f"解析 anilist-chinese 磁盘缓存失败：{err}")
+        return {}, 0.0
+
+    def _translation_snapshot(self, items: object) -> Optional[bytes]:
+        """
+        校验远端下载数据并编码为带过期时间的磁盘快照字节流。
+        """
+        translations = self._build_translation_map(items)
+        if not translations:
+            return None
+        self._translations = translations
+        self._translations_expires_at = time() + self._translations_ttl
+        return json.dumps({
+            "expires_at": self._translations_expires_at,
+            "items": list(translations.values()),
+        }, ensure_ascii=False).encode("utf-8")
+
+    def _reuse_translation_cache(self, translations: dict[Any, dict[str, Any]], expires_at: float) -> bool:
+        """
+        优先复用有效内存缓存；若磁盘快照存在则载入内存，过期数据保留作网络失败回退。
+        """
+        if self._translations is not None and time() < self._translations_expires_at:
+            return True
+        if translations and (not self._translations or expires_at > self._translations_expires_at):
+            self._translations = translations
+            self._translations_expires_at = expires_at
+            return time() < expires_at
+        return False
+
+    def _translation_fallback(self) -> dict[Any, dict[str, Any]]:
+        """
+        远端下载失败时保留已有中文标题数据，并设置 5 分钟重试退避窗口。
+        """
+        logger.warning("加载 anilist-chinese 中文数据集失败，暂用已有数据，五分钟后重试")
+        self._translations = self._translations or {}
+        self._translations_expires_at = time() + self._translations_retry
+        return self._translations
+
+    def _translation_map(self) -> dict[Any, dict[str, Any]]:
+        """
+        同步加载并复用 anilist-chinese 中文标题数据（内存 + 本地文件持久化）。
 
         :return: 中文标题数据索引
         """
-        if self._translations is None:
-            items = self._request.get_json(self._translations_url)
-            self._translations = self._build_translation_map(items)
-            if not self._translations:
-                logger.warning("加载 anilist-chinese 中文数据集失败")
-        return self._translations
+        with self._translations_sync_lock:
+            if self._reuse_translation_cache({}, 0.0):
+                return self._translations or {}
+            content = None
+            try:
+                if self._file_cache is not None:
+                    content = self._file_cache.get(self._translations_key, region=self._translations_region)
+            except OSError as err:
+                logger.warning(f"读取 anilist-chinese 磁盘缓存失败：{err}")
+            if self._reuse_translation_cache(*self._decode_translation_cache(content)):
+                return self._translations or {}
+            for url, direct in self._translation_routes():
+                request = RequestUtils(ua=settings.NORMAL_USER_AGENT) if direct else self._request
+                snapshot = self._translation_snapshot(request.get_json(url))
+                if snapshot is None:
+                    continue
+                try:
+                    if self._file_cache is not None:
+                        self._file_cache.set(
+                            self._translations_key,
+                            snapshot,
+                            region=self._translations_region,
+                        )
+                except OSError as err:
+                    logger.warning(f"写入 anilist-chinese 磁盘缓存失败：{err}")
+                return self._translations or {}
+            return self._translation_fallback()
 
-    async def _async_translation_map(self) -> dict[int, dict]:
+    async def _async_translation_map(self) -> dict[Any, dict[str, Any]]:
         """
-        异步加载并复用 anilist-chinese 中文标题数据。
+        异步加载并复用 anilist-chinese 中文标题数据（内存 + 本地文件持久化）。
 
         :return: 中文标题数据索引
         """
-        if self._translations is None:
-            items = await self._async_request.get_json(self._translations_url)
-            self._translations = self._build_translation_map(items)
-            if not self._translations:
-                logger.warning("加载 anilist-chinese 中文数据集失败")
-        return self._translations
+        async with self._get_async_lock():
+            if self._reuse_translation_cache({}, 0.0):
+                return self._translations or {}
+            content = None
+            try:
+                if self._async_file_cache is not None:
+                    content = await self._async_file_cache.get(
+                        self._translations_key,
+                        region=self._translations_region,
+                    )
+            except OSError as err:
+                logger.warning(f"读取 anilist-chinese 磁盘缓存失败：{err}")
+            if self._reuse_translation_cache(*self._decode_translation_cache(content)):
+                return self._translations or {}
+            for url, direct in self._translation_routes():
+                request = AsyncRequestUtils(ua=settings.NORMAL_USER_AGENT) if direct else self._async_request
+                snapshot = self._translation_snapshot(await request.get_json(url))
+                if snapshot is None:
+                    continue
+                try:
+                    if self._async_file_cache is not None:
+                        await self._async_file_cache.set(
+                            self._translations_key,
+                            snapshot,
+                            region=self._translations_region,
+                        )
+                except OSError as err:
+                    logger.warning(f"写入 anilist-chinese 磁盘缓存失败：{err}")
+                return self._translations or {}
+            return self._translation_fallback()
 
     @classmethod
     def _inject_chinese(cls, value, translations: dict[int, dict]):

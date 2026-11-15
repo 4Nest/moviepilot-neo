@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 
 import click
 from pydantic import BaseModel, ConfigDict
@@ -106,16 +106,42 @@ class CustomFormatter(logging.Formatter):
         return super().format(record)
 
 
+def _normalize_exc_info(exc_info: Any) -> Optional[Tuple[Any, Any, Any]]:
+    """
+    在调用方线程把异常信息规范化为标准异常三元组。
+    """
+    if not exc_info:
+        return None
+    if isinstance(exc_info, BaseException):
+        return (type(exc_info), exc_info, exc_info.__traceback__)
+    if isinstance(exc_info, tuple) and len(exc_info) == 3:
+        if exc_info[0] is None and exc_info[1] is None and exc_info[2] is None:
+            return None
+        return exc_info
+    current = sys.exc_info()
+    if current[0] is None and current[1] is None and current[2] is None:
+        return None
+    return current
+
+
 class LogEntry:
     """
     日志条目
     """
 
-    def __init__(self, level: str, message: str, file_path: Path, timestamp: datetime = None):
+    def __init__(
+        self,
+        level: str,
+        message: str,
+        file_path: Path,
+        timestamp: datetime = None,
+        exc_info: Optional[Tuple[Any, Any, Any]] = None,
+    ):
         self.level = level
         self.message = message
         self.file_path = file_path
         self.timestamp = timestamp or datetime.now()
+        self.exc_info = exc_info
 
 
 class NonBlockingFileHandler:
@@ -175,11 +201,17 @@ class NonBlockingFileHandler:
 
             return self._rotating_handlers[file_path]
 
-    def write_log(self, level: str, message: str, file_path: Path) -> None:
+    def write_log(
+        self,
+        level: str,
+        message: str,
+        file_path: Path,
+        exc_info: Optional[Tuple[Any, Any, Any]] = None,
+    ) -> None:
         """
         写入日志 - 自动检测协程环境并使用合适的方式
         """
-        entry = LogEntry(level, message, file_path)
+        entry = LogEntry(level, message, file_path, exc_info=exc_info)
 
         # 检测是否在协程环境中
         if self._is_in_event_loop():
@@ -233,7 +265,7 @@ class NonBlockingFileHandler:
                 lineno=0,
                 msg=entry.message,
                 args=(),
-                exc_info=None,
+                exc_info=entry.exc_info,
                 created=entry.timestamp.timestamp()
             ))
         except Exception as e:
@@ -298,7 +330,7 @@ class NonBlockingFileHandler:
                         lineno=0,
                         msg=entry.message,
                         args=(),
-                        exc_info=None,
+                        exc_info=entry.exc_info,
                         created=entry.timestamp.timestamp()
                     ))
             except Exception as e:
@@ -478,9 +510,10 @@ class LoggerManager:
 
     def logger(self, method: str, msg: str, *args, **kwargs):
         """
-        获取模块的logger
-        :param method: 日志方法
-        :param msg: 日志信息
+        路由并输出日志记录，传入 exc_info 时在调用方线程规范化异常堆栈并同步写入日志文件。
+
+        :param method: 日志方法名
+        :param msg: 日志消息模板或正文
         """
         # 获取当前日志级别
         current_level = self.__get_log_level()
@@ -502,6 +535,9 @@ class LoggerManager:
                 # 如果格式化失败，直接拼接
                 formatted_msg = f"{formatted_msg} {' '.join(str(arg) for arg in args)}"
 
+        raw_exc_info = kwargs.pop("exc_info", None)
+        file_exc_info = _normalize_exc_info(raw_exc_info)
+
         # 区分插件日志
         if plugin_name:
             # 使用插件日志文件
@@ -514,7 +550,10 @@ class LoggerManager:
         log_file_path = log_settings.LOG_PATH / logfile
 
         # 使用非阻塞文件处理器写入文件日志
-        self._file_handler.write_log(method.upper(), formatted_msg, log_file_path)
+        if file_exc_info is not None:
+            self._file_handler.write_log(method.upper(), formatted_msg, log_file_path, exc_info=file_exc_info)
+        else:
+            self._file_handler.write_log(method.upper(), formatted_msg, log_file_path)
 
         # 同时保持控制台输出（使用标准 logging）
         with LoggerManager._lock:
@@ -526,7 +565,13 @@ class LoggerManager:
         # 只在控制台输出，文件写入已由 _file_handler 处理
         if hasattr(_logger, method):
             log_method = getattr(_logger, method)
-            log_method(formatted_msg)
+            console_kwargs = {}
+            if file_exc_info is not None:
+                console_kwargs["exc_info"] = file_exc_info
+            for passthrough_key in ("stack_info", "stacklevel", "extra"):
+                if passthrough_key in kwargs:
+                    console_kwargs[passthrough_key] = kwargs[passthrough_key]
+            log_method(formatted_msg, **console_kwargs)
 
     def info(self, msg: str, *args, **kwargs):
         """
@@ -556,6 +601,13 @@ class LoggerManager:
         """
         输出错误级别日志
         """
+        self.logger("error", msg, *args, **kwargs)
+
+    def exception(self, msg: str, *args, **kwargs):
+        """
+        输出带异常堆栈的错误级别日志。
+        """
+        kwargs.setdefault("exc_info", True)
         self.logger("error", msg, *args, **kwargs)
 
     def critical(self, msg: str, *args, **kwargs):

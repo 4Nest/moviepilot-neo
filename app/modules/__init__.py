@@ -1,6 +1,6 @@
 import threading
 from abc import abstractmethod, ABCMeta
-from typing import Generic, Tuple, Union, TypeVar, Type, Dict, Optional, Callable
+from typing import Any, Generic, Tuple, Union, TypeVar, Type, Dict, Optional, Callable
 from pathlib import Path
 
 from app.helper.service import ServiceConfigHelper
@@ -355,6 +355,22 @@ class _DownloaderBase(ServiceBase[TService, DownloaderConf]):
                     normalized_path = mapped_path
                     break
         return self.__strip_storage_prefix(normalized_path)
+
+    @staticmethod
+    def _discard_failed_selection(server: Any, torrent_hash: str, message: str) -> str:
+        """
+        清理本次新增但选集失败的任务，保留文件并交回下载链通知、退避和换源。
+
+        只由新增任务分支调用；已有任务不暂停、不重选也不删除。
+
+        :param server: 下载器客户端实例
+        :param torrent_hash: 本次新增的任务哈希
+        :param message: 选集失败原因描述
+        :return: 附带清理状态说明的错误消息
+        """
+        if server.delete_torrents(delete_file=False, ids=torrent_hash):
+            return f"{message}；已请求移除本次新增任务（保留文件），等待后续重试或换源"
+        return f"{message}；移除本次新增任务失败，请在下载器核实（保留文件）"
 
     def normalize_return_path(self, path: Path, downloader: Optional[str]) -> str:
         """

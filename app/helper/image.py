@@ -13,6 +13,10 @@ from app.utils.http import RequestUtils, AsyncRequestUtils
 from app.utils.ip import IpUtils
 from app.utils.security import SecurityUtils
 from app.utils.singleton import Singleton
+from app.utils.url import UrlUtils
+from urllib.parse import parse_qsl, urlsplit
+
+_GITHUB_IMAGE_MIRROR_TIMEOUT = 15
 
 
 class WallpaperHelper(metaclass=Singleton):
@@ -171,6 +175,9 @@ class WallpaperHelper(metaclass=Singleton):
 
 
 class ImageHelper(metaclass=Singleton):
+    """
+    外部图片抓取、内容校验与本地文件缓存辅助类。
+    """
 
     def __init__(self):
         _base_path = settings.CACHE_PATH
@@ -186,6 +193,50 @@ class ImageHelper(metaclass=Singleton):
         if not cache_path.suffix:
             cache_path = cache_path.with_suffix(".jpg")
         return cache_path.as_posix()
+
+    @staticmethod
+    def _build_github_mirror_url(url: str, cookies: Optional[str | dict]) -> Optional[str]:
+        """
+        为公开的 GitHub 静态图片资源构造 GITHUB_PROXY 镜像地址。
+        """
+        prefix = str(getattr(settings, "GITHUB_PROXY", "") or "").strip()
+        if not prefix or cookies:
+            return None
+        try:
+            parts = urlsplit(url)
+            static_host = parts.hostname in {
+                "raw.githubusercontent.com",
+                "avatars.githubusercontent.com",
+                "user-images.githubusercontent.com",
+            }
+            blob_image = parts.hostname == "github.com" and "/blob/" in parts.path and (
+                ("raw", "true") in parse_qsl(parts.query)
+            )
+            if (
+                parts.scheme != "https"
+                or parts.port not in (None, 443)
+                or parts.username
+                or parts.password
+                or not (static_host or blob_image)
+                or any(key.lower() != "raw" for key, _ in parse_qsl(parts.query))
+            ):
+                return None
+        except ValueError:
+            return None
+        return f"{UrlUtils.standardize_base_url(prefix)}{url}"
+
+    @staticmethod
+    def _mirror_request_params(params: dict) -> dict:
+        """
+        生成镜像站请求参数，不透传原始代理、Cookie 与 Referer。
+        """
+        return {
+            **params,
+            "proxies": None,
+            "cookies": None,
+            "referer": None,
+            "timeout": _GITHUB_IMAGE_MIRROR_TIMEOUT,
+        }
 
     @staticmethod
     def get_image_mime_type(content: bytes, verify: bool = True) -> Optional[str]:
@@ -230,6 +281,26 @@ class ImageHelper(metaclass=Singleton):
             "accept_type": "image/avif,image/webp,image/apng,*/*",
         }
 
+    def _validate_fetched_response(
+        self,
+        url: str,
+        response,
+        *,
+        warn_on_failure: bool = True,
+    ) -> Optional[tuple[bytes, str]]:
+        """
+        统一校验远端图片响应状态码与图片格式。
+        """
+        if response is None or response.status_code != 200:
+            if warn_on_failure:
+                logger.warn(f"Failed to fetch image from URL: {url}")
+            return None
+        content = response.content
+        mime_type = self.get_image_mime_type(content)
+        if not mime_type:
+            return None
+        return content, mime_type
+
     def fetch_image(
         self,
         url: str,
@@ -272,18 +343,24 @@ class ImageHelper(metaclass=Singleton):
                 if mime_type:
                     return content, mime_type
 
-        # 请求远程图片
+        # 请求远程图片（GitHub 静态资源优先走 GITHUB_PROXY，失败回退直连/原配置出口）
         params = self._get_request_params(url, proxy, cookies)
-        response = RequestUtils(**params).get_res(url=url)
-        if response is None or response.status_code != 200:
-            logger.warn(f"Failed to fetch image from URL: {url}")
+        validated = None
+        mirror_url = self._build_github_mirror_url(url, cookies)
+        if mirror_url:
+            try:
+                mirror_resp = RequestUtils(**self._mirror_request_params(params)).get_res(url=mirror_url)
+                validated = self._validate_fetched_response(url, mirror_resp, warn_on_failure=False)
+            except Exception as err:
+                logger.debug(f"GitHub 图片镜像请求失败：{err}")
+
+        if validated is None:
+            response = RequestUtils(**params).get_res(url=url)
+            validated = self._validate_fetched_response(url, response, warn_on_failure=True)
+        if validated is None:
             return None
 
-        content = response.content
-        mime_type = self.get_image_mime_type(content)
-        if not mime_type:
-            return None
-
+        content, mime_type = validated
         # 保存缓存
         self.file_cache.set(cache_path, content, region="images")
         return content, mime_type
@@ -330,18 +407,24 @@ class ImageHelper(metaclass=Singleton):
                 if mime_type:
                     return content, mime_type
 
-        # 请求远程图片
+        # 请求远程图片（GitHub 静态资源优先走 GITHUB_PROXY，失败回退直连/原配置出口）
         params = self._get_request_params(url, proxy, cookies)
-        response = await AsyncRequestUtils(**params).get_res(url=url)
-        if response is None or response.status_code != 200:
-            logger.warn(f"Failed to fetch image from URL: {url}")
+        validated = None
+        mirror_url = self._build_github_mirror_url(url, cookies)
+        if mirror_url:
+            try:
+                mirror_resp = await AsyncRequestUtils(**self._mirror_request_params(params)).get_res(url=mirror_url)
+                validated = self._validate_fetched_response(url, mirror_resp, warn_on_failure=False)
+            except Exception as err:
+                logger.debug(f"GitHub 图片镜像请求失败：{err}")
+
+        if validated is None:
+            response = await AsyncRequestUtils(**params).get_res(url=url)
+            validated = self._validate_fetched_response(url, response, warn_on_failure=True)
+        if validated is None:
             return None
 
-        content = response.content
-        mime_type = self.get_image_mime_type(content)
-        if not mime_type:
-            return None
-
+        content, mime_type = validated
         # 保存缓存
         await self.async_file_cache.set(cache_path, content, region="images")
         return content, mime_type

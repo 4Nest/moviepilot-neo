@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -47,6 +48,7 @@ class FakeResponse:
         """保存固定响应信封和 HTTP 状态。"""
         self.status_code = status_code
         self._payload = {"code": code, "message": message, "data": data}
+        self.text = json.dumps(self._payload)
         self.closed = False
 
     def json(self):
@@ -76,6 +78,7 @@ def test_fluxtorrent_search_maps_fields_and_promotions(monkeypatch):
     request.get_res.assert_called_once_with(
         url="https://www.hxpt.org/api/v1/compat/nexusphp/torrents.json",
         params={"page": 2, "pagesize": 50, "keyword": "Example"},
+        allow_redirects=False,
     )
     assert constructor.call_args.kwargs["headers"]["Authorization"] == "Token flux-test-key"
     assert torrents == [{
@@ -175,3 +178,118 @@ def test_fluxtorrent_requires_api_token(monkeypatch):
     assert asyncio.run(spider.async_search("Example")) == (True, [])
     assert spider.test_connection()[0] is False
     request.get_res.assert_not_called()
+
+
+def test_fluxtorrent_replaces_default_ua_and_retries_gateway_503(monkeypatch):
+    """默认 MoviePilot UA 应替换为标准浏览器 UA，且网关偶发 503 最多退避重试两次后恢复。"""
+    from app.core.config import settings
+    from app.helper.site import SiteResourceRegistry
+    from app.helper.torrent import TorrentHelper
+
+    assert SiteResourceRegistry.BUILTIN_RESOURCE_VERSION == "1.0.3"
+    assert FluxTorrentSpider.get_user_agent(None) == settings.NORMAL_USER_AGENT
+    assert FluxTorrentSpider.get_user_agent(settings.USER_AGENT) == settings.NORMAL_USER_AGENT
+    assert FluxTorrentSpider.get_user_agent("Custom-Browser/1.0") == "Custom-Browser/1.0"
+
+    sleeps = []
+    monkeypatch.setattr("app.modules.indexer.spider.fluxtorrent.time.sleep", sleeps.append)
+    responses = [
+        FakeResponse(None, code=503, status_code=503, message="gateway busy"),
+        FakeResponse(None, code=503, status_code=503, message="gateway busy"),
+        FakeResponse({"items": [ITEM]}),
+    ]
+    seen_uas = []
+
+    def fake_request_ctor(**kwargs):
+        seen_uas.append((kwargs.get("headers") or {}).get("User-Agent") or kwargs.get("ua"))
+        client = Mock()
+        client.get_res.side_effect = lambda **_kw: responses.pop(0)
+        return client
+
+    monkeypatch.setattr("app.modules.indexer.spider.fluxtorrent.RequestUtils", fake_request_ctor)
+    site_with_default_ua = dict(SITE, ua=settings.USER_AGENT)
+    failed, torrents = FluxTorrentSpider(site_with_default_ua).search("Example", page=0)
+    assert failed is False
+    assert len(torrents) == 1
+    assert sleeps == [3, 6]
+    assert seen_uas == [settings.NORMAL_USER_AGENT]
+
+    # 连续三次 503 应终止并返回失败
+    sleeps.clear()
+    always_503 = [
+        FakeResponse(None, code=503, status_code=503),
+        FakeResponse(None, code=503, status_code=503),
+        FakeResponse(None, code=503, status_code=503),
+    ]
+    monkeypatch.setattr(
+        "app.modules.indexer.spider.fluxtorrent.RequestUtils",
+        lambda **_kwargs: Mock(get_res=lambda **_kw: always_503.pop(0)),
+    )
+    assert FluxTorrentSpider(site_with_default_ua).search("Example", page=0) == (True, [])
+    assert sleeps == [3, 6]
+
+    # FluxTorrent 下载链接在 TorrentHelper 中也应自动替换为标准浏览器 UA
+    captured_download_ua = []
+    fake_dl_resp = Mock(status_code=200, content=b"", headers={})
+    monkeypatch.setattr(
+        "app.helper.torrent.RequestUtils",
+        lambda **kwargs: (captured_download_ua.append(kwargs.get("ua")) or Mock(get_res=lambda *_a, **_kw: fake_dl_resp)),
+    )
+    helper = TorrentHelper()
+    monkeypatch.setattr(helper, "is_invalid", lambda _url: False)
+    helper.download_torrent(
+        "https://www.hxpt.org/api/v1/compat/nexusphp/download.php?id=123&apikey=k",
+        ua=settings.USER_AGENT,
+    )
+    assert captured_download_ua == [settings.NORMAL_USER_AGENT]
+
+
+def test_fluxtorrent_parser_disables_fallback_and_shares_throttle(monkeypatch):
+    """FluxTorrent 用户解析器禁用 HTML 回退并在鉴权失败时清空流量页，且与爬虫共享域名流控。"""
+    from app.core.config import settings
+
+    assert FluxTorrentSiteUserInfo.allow_schema_fallback is False
+    assert FluxTorrentSpider.manages_request_throttle is True
+
+    clock = {"now": 100.0}
+    waited = []
+    monkeypatch.setattr("app.modules.indexer.spider.fluxtorrent.time.monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        "app.modules.indexer.spider.fluxtorrent.time.sleep",
+        lambda sec: (waited.append(round(sec, 2)), clock.__setitem__("now", clock["now"] + sec)),
+    )
+    monkeypatch.setattr(
+        "app.modules.indexer.spider.fluxtorrent.SiteOper.get_by_domain",
+        lambda self, _dom: SimpleNamespace(
+            domain="hxpt.org", url=SITE["url"], limit_interval=10, limit_count=1, limit_seconds=5
+        ),
+    )
+    monkeypatch.setattr(
+        "app.modules.indexer.spider.fluxtorrent.RequestUtils",
+        lambda **_kw: Mock(get_res=lambda **_k: FakeResponse({"items": []})),
+    )
+
+    throttled_site = dict(SITE, limit_interval=10, limit_count=1, limit_seconds=5)
+    assert FluxTorrentSpider(throttled_site).search("A") == (False, [])
+
+    parser_uas = []
+    monkeypatch.setattr(
+        "app.modules.indexer.parser.fluxtorrent.RequestUtils",
+        lambda **kwargs: (
+            parser_uas.append((kwargs.get("headers") or {}).get("User-Agent") or kwargs.get("ua"))
+            or Mock(get_res=lambda **_kw: FakeResponse(None, code=401, status_code=401, message="bad key"))
+        ),
+    )
+    parser = FluxTorrentSiteUserInfo(
+        site_name="好学",
+        url=SITE["url"],
+        site_cookie=None,
+        apikey="expired-key",
+        token=None,
+        ua=settings.USER_AGENT,
+    )
+    parser.parse()
+    assert waited == [10.0]
+    assert parser_uas == [settings.NORMAL_USER_AGENT]
+    assert parser._user_traffic_page is None
+    assert parser.err_msg is not None

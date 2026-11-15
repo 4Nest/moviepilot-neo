@@ -21,15 +21,24 @@ import pytest  # noqa: E402
 def _reset_site_health_sentinel():
     """隔离每个测试前后的站点健康哨兵与热更注册表缓存，避免跨用例状态泄漏。"""
     from app.api.endpoints.plugin import reset_plugin_metrics_cache_for_tests
+    from app.chain.site import SiteChain
+    from app.chain.torrents import reset_rss_renew_state_for_tests
+    from app.helper.plugin import PluginHelper
     from app.helper.site import SiteHealthSentinel, SiteResourceRegistry
+    from app.modules.indexer.spider.fluxtorrent import reset_fluxtorrent_throttle_for_tests
 
-    SiteHealthSentinel.reset_for_tests()
-    SiteResourceRegistry.reset_for_tests()
-    reset_plugin_metrics_cache_for_tests()
+    def _clear_runtime_caches() -> None:
+        SiteHealthSentinel.reset_for_tests()
+        SiteResourceRegistry.reset_for_tests()
+        reset_plugin_metrics_cache_for_tests()
+        reset_fluxtorrent_throttle_for_tests()
+        reset_rss_renew_state_for_tests()
+        SiteChain.clear_site_icon_cooldown()
+        PluginHelper.clear_repo_failures()
+
+    _clear_runtime_caches()
     yield
-    SiteHealthSentinel.reset_for_tests()
-    SiteResourceRegistry.reset_for_tests()
-    reset_plugin_metrics_cache_for_tests()
+    _clear_runtime_caches()
 
 def _report_session_cleanup_error(session, name: str, err: Exception) -> None:
     """记录收尾错误；原测试绿色时将会话标记为失败。"""

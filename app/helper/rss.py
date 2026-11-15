@@ -1,7 +1,9 @@
+from html import unescape
+from io import BytesIO
 import re
 import traceback
-from typing import List, Tuple, Union, Optional
-from urllib.parse import parse_qs, urljoin, urlsplit
+from typing import List, Literal, Optional, Tuple, Union
+from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from lxml import etree
 
@@ -12,6 +14,179 @@ from app.log import logger
 from app.utils import rust_accel
 from app.utils.http import RequestUtils
 from app.utils.string import StringUtils
+
+_RSS_AUTH_PARAMS = frozenset({
+    "passkey", "rsskey", "authkey", "key", "token", "auth", "auth_token",
+    "access_token", "apikey", "api_key", "sign", "signature", "par", "uid", "userid", "user_id",
+})
+_RSS_TIME_PARAMS = frozenset({"timestamp", "expires", "expire", "expiry", "exp", "t"})
+_RSS_EXPIRED_MESSAGES = (
+    "RSS 链接已过期, 您需要获得一个新的!",
+    "RSS Link has expired, You need to get a new one!",
+    "RSS Link has expired, You need to get new!",
+    "invalid passkey",
+    "passkey is invalid",
+    "passkey error",
+)
+
+
+def _normalize_http_url(value: Optional[str]) -> Optional[str]:
+    """
+    将字符串规范化为合法的 HTTP(S) URL，拒绝其他协议与内嵌凭据。
+    """
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    try:
+        parts = urlsplit(cleaned)
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in {"http", "https"} or not parts.netloc:
+        return None
+    if parts.username is not None or parts.password is not None:
+        return None
+    return urlunsplit((parts.scheme.lower(), parts.netloc, parts.path, parts.query, parts.fragment))
+
+
+def is_rss_document(content: str) -> bool:
+    """
+    读取 XML 首个根元素，区分合法订阅文档（含空订阅）与 HTML 登录页或错误页。
+
+    :param content: 解码后的响应文本
+    :return: 根元素为 rss、feed 或 rdf 时返回 True
+    """
+    if not content or not content.strip():
+        return False
+    try:
+        with BytesIO(content.encode("utf-8")) as stream:
+            parser = etree.iterparse(
+                stream,
+                events=("start",),
+                recover=True,
+                resolve_entities=False,
+                no_network=True,
+                huge_tree=False,
+            )
+            try:
+                _event, root = next(parser)
+                return etree.QName(root).localname.lower() in {"rss", "feed", "rdf"}
+            finally:
+                del parser
+    except (ValueError, StopIteration, etree.XMLSyntaxError):
+        return False
+
+
+def _normalize_expiration_text(text: str) -> str:
+    """
+    统一过期提示中的 HTML 实体、空白、全半角标点与大小写。
+    """
+    normalized = " ".join(unescape(text or "").replace("，", ",").replace("！", "!").split())
+    return re.sub(r"\s*([,!])\s*", r"\1", normalized).casefold()
+
+
+_NORMALIZED_EXPIRED_MESSAGES = tuple(_normalize_expiration_text(msg) for msg in _RSS_EXPIRED_MESSAGES)
+
+
+def is_rss_expired_text(text: str) -> bool:
+    """
+    识别站点返回的 RSS 过期文案或 HTML 登录重定向页。
+
+    :param text: 原始 RSS 响应文本
+    :return: 明确属于 RSS 链接过期或登录页时返回 True
+    """
+    if not text or not text.strip():
+        return False
+    if is_rss_document(text):
+        return False
+    plain_text = text
+    if "<" in text:
+        root = etree.HTML(text)
+        if root is not None:
+            try:
+                if root.xpath(
+                    "//input[@type='password'] | "
+                    "//form[contains(translate(@action, 'LOGIN', 'login'), 'login') or "
+                    "contains(translate(@action, 'TAKELOGIN', 'takelogin'), 'takelogin')]"
+                ):
+                    return True
+                bodies = root.xpath("//body")
+                body = bodies[0] if bodies else root
+                plain_text = " ".join(
+                    body.xpath(".//text()[not(ancestor::script) and not(ancestor::style)]")
+                )
+            finally:
+                del root
+    normalized = _normalize_expiration_text(plain_text)
+    if not normalized:
+        return False
+    if normalized in _NORMALIZED_EXPIRED_MESSAGES:
+        return True
+    return any(msg in normalized for msg in _NORMALIZED_EXPIRED_MESSAGES)
+
+
+def normalize_rss_link(value: object, base_url: str, *, broad: bool = False) -> Optional[str]:
+    """
+    将生成页提取的候选链接补全为完整 HTTP(S) RSS 地址。
+
+    :param value: XPath 提取出的链接文本
+    :param base_url: 生成页基准地址
+    :param broad: 宽选择器（如 //a/@href）时额外要求路径或参数带订阅标识
+    :return: 规范化后的 RSS 地址；无效时返回 None
+    """
+    if not isinstance(value, str) or not value.strip() or value.strip().startswith("#"):
+        return None
+    if value.strip().lower().startswith("javascript:"):
+        return None
+    candidate = _normalize_http_url(urljoin(base_url, value.strip()))
+    if candidate is None:
+        return None
+    parts = urlsplit(candidate)
+    if broad and not (
+        any(marker in parts.path.lower() for marker in ("rss", "feed"))
+        or any(key.lower() in _RSS_AUTH_PARAMS for key, _val in parse_qsl(parts.query))
+    ):
+        return None
+    return candidate
+
+
+def renew_rss_link(previous: Optional[str], generated: str) -> str:
+    """
+    使用生成页返回的新认证参数更新订阅地址，同时保留原有的分类与条数筛选参数。
+
+    :param previous: 旧 RSS 地址；为空或无效时直接采用生成结果
+    :param generated: 新生成的规范化 RSS 地址
+    :return: 合并用户筛选与新认证参数后的 RSS 地址
+    """
+    old_url = _normalize_http_url(previous)
+    if old_url is None:
+        return generated
+    old_parts, new_parts = urlsplit(old_url), urlsplit(generated)
+    generated_params = parse_qsl(new_parts.query, keep_blank_values=True)
+    refreshed_keys = _RSS_AUTH_PARAMS | {
+        key.lower() for key, _val in generated_params if key.lower() in _RSS_TIME_PARAMS
+    }
+    old_filters = [
+        (key, val)
+        for key, val in parse_qsl(old_parts.query, keep_blank_values=True)
+        if key.lower() not in refreshed_keys
+    ]
+    if old_filters:
+        new_params = [
+            (key, val)
+            for key, val in generated_params
+            if key.lower() in refreshed_keys
+        ]
+    else:
+        new_params = generated_params
+    return urlunsplit((
+        new_parts.scheme,
+        new_parts.netloc,
+        new_parts.path,
+        urlencode(old_filters + new_params),
+        new_parts.fragment,
+    ))
 
 
 class RssHelper:
@@ -461,18 +636,36 @@ class RssHelper:
                 item["description"] = StringUtils.strip_html(item["description"])
         return items
 
+    def _response_status(self, response, url: str) -> Literal["valid", "expired", "error"]:
+        """
+        在解析前统一检查响应体积、登录/过期特征与 HTTP 状态码。
+        """
+        raw_data = getattr(response, "content", None) or b""
+        if len(raw_data) > self.MAX_RSS_SIZE:
+            logger.warning(f"RSS文件过大: {len(raw_data) / 1024 / 1024:.1f}MB，跳过解析")
+            return "error"
+        text = getattr(response, "text", None) or ""
+        status_code = getattr(response, "status_code", 0)
+        if status_code in (200, 401, 403) or "rss" in text.casefold() or "login" in text.casefold():
+            if is_rss_expired_text(text):
+                return "expired"
+        if status_code != 200:
+            logger.error(f"RSS请求失败，状态码: {status_code}, URL: {url}")
+            return "error"
+        return "valid"
+
     def parse(self, url, proxy: bool = False,
               timeout: Optional[int] = 15, headers: dict = None, ua: str = None) -> Union[List[dict], None, bool]:
         """
-        解析RSS订阅URL，获取RSS中的种子信息
-        :param url: RSS地址
+        解析 RSS 订阅 URL，获取种子条目列表。
+
+        :param url: RSS 地址
         :param proxy: 是否使用代理
-        :param timeout: 请求超时
+        :param timeout: 请求超时时间
         :param headers: 自定义请求头
-        :param ua: 自定义User-Agent
-        :return: 种子信息列表，如为None代表Rss过期，如果为False则为错误
+        :param ua: 自定义 User-Agent
+        :return: 种子信息列表；返回 None 表示 RSS 已过期或跳转至登录页，返回 False 表示临时网络或格式错误
         """
-        # 开始处理
         ret_array: list = []
         if not url:
             return False
@@ -481,37 +674,28 @@ class RssHelper:
             ret = RequestUtils(ua=ua,
                                proxies=settings.PROXY if proxy else None,
                                timeout=timeout or 30, headers=headers).get_res(url)
-            if not ret:
+            if ret is None:
                 logger.error(f"获取RSS失败：请求返回空值，URL: {url}")
                 return False
         except Exception as err:
             logger.error(f"获取RSS失败：{str(err)} - {traceback.format_exc()}")
             return False
 
-        if ret:
-            # 检查HTTP状态码
-            if ret.status_code != 200:
-                logger.error(f"RSS请求失败，状态码: {ret.status_code}, URL: {url}")
-                return False
+        if ret is not None:
             ret_xml = None
             root = None
             try:
-                # 检查响应大小，避免处理过大的RSS文件
-                raw_data = ret.content
-                if raw_data and len(raw_data) > self.MAX_RSS_SIZE:
-                    logger.warning(f"RSS文件过大: {len(raw_data) / 1024 / 1024:.1f}MB，跳过解析")
-                    return False
+                status = self._response_status(ret, url)
+                if status != "valid":
+                    return None if status == "expired" else False
 
+                raw_data = ret.content
                 if raw_data:
                     ret_xml = RequestUtils.get_decoded_xml_content(
                         ret,
                         performance_mode=settings.ENCODING_DETECTION_PERFORMANCE_MODE,
                         confidence_threshold=settings.ENCODING_DETECTION_MIN_CONFIDENCE
                     )
-                    rust_items = self.__parse_with_rust(ret_xml)
-                    if rust_items is not None:
-                        self._enrich_extended_rss_attrs(ret_xml, rust_items)
-                        return self._normalize_items(rust_items, url)
                 if not ret_xml:
                     ret_xml = ret.text
 
@@ -520,10 +704,11 @@ class RssHelper:
                     logger.error("RSS内容为空")
                     return False
 
-                # 检查是否包含基本的RSS/XML结构
-                ret_xml_stripped = ret_xml.strip()
-                if not ret_xml_stripped.startswith('<'):
-                    logger.error("RSS内容不是有效的XML格式")
+                if is_rss_expired_text(ret_xml):
+                    return None
+
+                if not is_rss_document(ret_xml):
+                    logger.error("RSS内容不是有效的订阅文档，可能是登录页或错误页")
                     return False
 
                 rust_items = self.__parse_with_rust(ret_xml)
@@ -674,13 +859,7 @@ class RssHelper:
 
             except Exception as e2:
                 logger.error(f"解析RSS失败：{str(e2)} - {traceback.format_exc()}")
-                # RSS过期检查
-                _rss_expired_msg = [
-                    "RSS 链接已过期, 您需要获得一个新的!",
-                    "RSS Link has expired, You need to get a new one!",
-                    "RSS Link has expired, You need to get new!"
-                ]
-                if ret_xml in _rss_expired_msg:
+                if ret_xml and is_rss_expired_text(ret_xml):
                     return None
                 return False
             finally:
@@ -690,6 +869,26 @@ class RssHelper:
                     del ret_xml
 
         return self._normalize_items(ret_array, url)
+
+    @staticmethod
+    def _extract_rss_link(html_text: str, base_url: str, xpath_expr: str) -> Optional[str]:
+        """
+        从生成页面提取规范化后的完整 HTTP(S) RSS 链接，宽选择器自动跳过页面导航链接。
+        """
+        html = etree.HTML(html_text)
+        if not StringUtils.is_valid_html_element(html):
+            if html is not None:
+                del html
+            return None
+        try:
+            broad = xpath_expr == "//a/@href"
+            for candidate_raw in reversed(html.xpath(xpath_expr)):
+                candidate = normalize_rss_link(candidate_raw, base_url, broad=broad)
+                if candidate:
+                    return candidate
+            return None
+        finally:
+            del html
 
     def get_rss_link(
         self,
@@ -701,14 +900,15 @@ class RssHelper:
         apikey: Optional[str] = None,
     ) -> Tuple[str, str]:
         """
-        获取站点rss地址
+        获取站点 RSS 订阅地址。
+
         :param url: 站点地址
-        :param cookie: 站点cookie
-        :param ua: 站点ua
+        :param cookie: 站点 Cookie
+        :param ua: 站点 User-Agent
         :param proxy: 是否使用代理
         :param timeout: 请求超时时间
         :param apikey: 站点 API Key（支持免 Cookie RSS 的站点优先使用）
-        :return: rss地址、错误信息
+        :return: RSS 地址与错误信息的二元组
         """
         try:
             # 获取站点域名
@@ -739,7 +939,7 @@ class RssHelper:
                     ua=ua,
                     proxies=settings.PROXY if proxy else None
                 ).post_res(url=rss_url, data=rss_params)
-                if res:
+                if res is not None and res.status_code == 200:
                     html_text = res.text
                 elif res is not None:
                     return "", f"获取 {url} RSS链接失败，错误码：{res.status_code}，错误原因：{res.reason}"
@@ -748,16 +948,9 @@ class RssHelper:
 
             # 解析HTML
             if html_text:
-                html = None
-                try:
-                    html = etree.HTML(html_text)
-                    if StringUtils.is_valid_html_element(html):
-                        rss_link = html.xpath(site_conf.get("xpath"))
-                        if rss_link:
-                            return str(rss_link[-1]), ""
-                finally:
-                    if html is not None:
-                        del html
+                extracted = self._extract_rss_link(html_text, rss_url, site_conf.get("xpath"))
+                if extracted:
+                    return extracted, ""
 
             return "", f"获取RSS链接失败：{url}"
         except Exception as e:

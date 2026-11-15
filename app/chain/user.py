@@ -2,9 +2,15 @@ import secrets
 from dataclasses import dataclass
 from typing import Literal, Optional, Tuple, Union
 
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
 from app.chain import ChainBase
 from app.core.config import settings
 from app.core.security import get_password_hash, verify_password
+from app.db import db_update
+from app.db.models.subscribe import Subscribe
+from app.db.models.subscribehistory import SubscribeHistory
 from app.db.models.user import User
 from app.db.user_oper import UserOper
 from app.log import logger
@@ -25,10 +31,83 @@ class MfaRequired:
     methods: Tuple[MfaMethod, ...]
 
 
+@db_update
+def _migrate_emby_user_identity(
+    db: Session,
+    user_id: int,
+    old_username: str,
+    new_username: str,
+    emby_user_id: str,
+) -> bool:
+    """在同一事务中迁移 Emby 改名用户的用户名、个性化绑定与订阅归属。"""
+    target_user = db.query(User).filter(User.id == user_id).first()
+    if not target_user:
+        return False
+    conflict_user = (
+        db.query(User)
+        .filter(User.name == new_username, User.id != user_id)
+        .first()
+    )
+    if conflict_user:
+        return False
+    merged_settings = dict(target_user.settings or {}) if isinstance(target_user.settings, dict) else {}
+    merged_settings["emby_user_id"] = emby_user_id
+    target_user.name = new_username
+    target_user.settings = merged_settings
+    if old_username and old_username != new_username:
+        db.query(Subscribe).filter(Subscribe.username == old_username).update(
+            {Subscribe.username: new_username},
+            synchronize_session=False,
+        )
+        db.query(SubscribeHistory).filter(SubscribeHistory.username == old_username).update(
+            {SubscribeHistory.username: new_username},
+            synchronize_session=False,
+        )
+    return True
+
+
 class UserChain(ChainBase):
     """
-    用户链，处理多种认证协议
+    用户链，处理本地密码与媒体服务器辅助认证协议
     """
+
+    @staticmethod
+    def _has_local_password_auth(user: Optional[User]) -> bool:
+        """判断账号是否允许通过本地密码哈希认证（排除 Emby 自动创建的随机密码账号）。"""
+        if not user:
+            return False
+        if user.name == settings.SUPERUSER:
+            return True
+        user_settings = user.settings if isinstance(user.settings, dict) else {}
+        if user_settings.get("auth_source") == "emby":
+            return False
+        return bool(user.hashed_password)
+
+    @staticmethod
+    def _find_user_by_emby_id(user_oper: UserOper, emby_user_id: str) -> Optional[User]:
+        """根据持久化的不可变 emby_user_id 查找本地绑定用户。"""
+        if not emby_user_id:
+            return None
+        for item in user_oper.list():
+            if not item:
+                continue
+            user_settings = item.settings if isinstance(item.settings, dict) else {}
+            if str(user_settings.get("emby_user_id") or "").strip() == emby_user_id:
+                return item
+        return None
+
+    @staticmethod
+    def _persist_emby_user_id(user_oper: UserOper, user: User, emby_user_id: Optional[str]) -> User:
+        """将不可变 emby_user_id 记录到用户 settings，保留原有密码与非 Emby 认证来源标记。"""
+        if not user or not emby_user_id:
+            return user
+        current_settings = dict(user.settings or {}) if isinstance(user.settings, dict) else {}
+        if current_settings.get("emby_user_id") == emby_user_id:
+            return user
+        current_settings["emby_user_id"] = emby_user_id
+        user.update(db=user_oper._db, payload={"settings": current_settings})
+        refreshed = user_oper.get_by_name(name=user.name)
+        return refreshed or user
 
     def user_authenticate(
             self,
@@ -38,7 +117,7 @@ class UserChain(ChainBase):
             grant_type: Optional[str] = "password"
     ) -> Tuple[bool, Union[str, User, MfaRequired, None]]:
         """
-        认证用户，唯一账号为 canonical admin，仅支持密码+OTP 认证
+        认证用户，支持超级管理员、本地有密码账号及 Emby 辅助认证账号
 
         :param username: 用户名
         :param password: 用户密码
@@ -61,7 +140,15 @@ class UserChain(ChainBase):
         if credentials.username == settings.SUPERUSER:
             success, user_or_message = self.password_authenticate(credentials=credentials)
         else:
-            success, user_or_message = self.emby_authenticate(credentials=credentials)
+            existing_user = UserOper().get_by_name(name=credentials.username)
+            if existing_user and not existing_user.is_active:
+                return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
+            if self._has_local_password_auth(existing_user):
+                success, user_or_message = self.password_authenticate(credentials=credentials)
+                if not success and not existing_user.is_superuser:
+                    success, user_or_message = self.emby_authenticate(credentials=credentials)
+            else:
+                success, user_or_message = self.emby_authenticate(credentials=credentials)
         if not success:
             return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
         mfa_result = self._verify_mfa(user_or_message, credentials.mfa_code)
@@ -69,7 +156,7 @@ class UserChain(ChainBase):
             return False, mfa_result
         if not mfa_result:
             return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
-        logger.info(f"用户 {username} 认证成功")
+        logger.info(f"用户 {getattr(user_or_message, 'name', username)} 认证成功")
         return True, user_or_message
 
     @staticmethod
@@ -87,13 +174,17 @@ class UserChain(ChainBase):
             return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
 
         user = UserOper().get_by_name(name=credentials.username)
-        if not user or user.name != settings.SUPERUSER:
-            logger.info(f"密码认证拒绝：非 canonical admin 用户 {credentials.username}")
+        if not user or not UserChain._has_local_password_auth(user):
+            logger.info(f"密码认证拒绝：用户 {credentials.username} 未启用本地密码认证")
             return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
         if not user.is_active:
             logger.info(f"密码认证失败，用户 {credentials.username} 已被禁用")
             return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
-        if not verify_password(credentials.password, str(user.hashed_password)):
+        try:
+            verified = verify_password(credentials.password, str(user.hashed_password))
+        except (ValueError, TypeError):
+            verified = False
+        if not verified:
             logger.info(f"密码认证失败，用户 {credentials.username} 的密码验证不通过")
             return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
         return True, user
@@ -114,12 +205,13 @@ class UserChain(ChainBase):
             or not credentials.password
         ):
             return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
-        if credentials.username == settings.SUPERUSER:
+        input_username = credentials.username.strip()
+        if not input_username or input_username.lower() == settings.SUPERUSER.lower():
             return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
 
         user_oper = UserOper()
-        user = user_oper.get_by_name(name=credentials.username)
-        if user and (not user.is_active or user.is_superuser):
+        pre_user = user_oper.get_by_name(name=credentials.username)
+        if pre_user and (not pre_user.is_active or pre_user.is_superuser):
             logger.info(f"Emby 辅助认证拒绝：用户 {credentials.username} 已禁用或角色不允许")
             return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
 
@@ -130,8 +222,14 @@ class UserChain(ChainBase):
             logger.info(f"Emby 辅助认证失败：用户 {credentials.username} 凭证校验未通过")
             return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
 
+        canonical_username = (auth_result.canonical_username or credentials.username or "").strip()
+        emby_user_id = (auth_result.emby_user_id or "").strip() or None
+        if not canonical_username or canonical_username.lower() == settings.SUPERUSER.lower():
+            logger.warning(f"Emby 辅助认证拒绝：规范用户名 {canonical_username!r} 非法或与管理员冲突")
+            return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
+
         intercept_data = AuthInterceptCredentials(
-            username=credentials.username,
+            username=canonical_username,
             channel=auth_result.channel or "Emby",
             service=auth_result.service or "",
             token=auth_result.token,
@@ -141,19 +239,63 @@ class UserChain(ChainBase):
         event_data = getattr(event, "event_data", event) or intercept_data
         if getattr(event_data, "cancel", False):
             logger.info(
-                f"Emby 辅助认证完成后被拦截：user={credentials.username}, "
+                f"Emby 辅助认证完成后被拦截：user={canonical_username}, "
                 f"source={getattr(event_data, 'source', None)}, reason={getattr(event_data, 'reason', None)}"
             )
             return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
 
+        user: Optional[User] = None
+        if emby_user_id:
+            bound_user = self._find_user_by_emby_id(user_oper, emby_user_id)
+            if bound_user:
+                if not bound_user.is_active or bound_user.is_superuser:
+                    logger.info(f"Emby 辅助认证拒绝：绑定用户 {bound_user.name} 已禁用或角色不允许")
+                    return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
+                if bound_user.name != canonical_username:
+                    old_name = bound_user.name
+                    migrated = _migrate_emby_user_identity(
+                        db=user_oper._db,
+                        user_id=bound_user.id,
+                        old_username=old_name,
+                        new_username=canonical_username,
+                        emby_user_id=emby_user_id,
+                    )
+                    if not migrated:
+                        logger.warning(
+                            f"Emby 用户改名迁移失败：{old_name} -> {canonical_username}（目标用户名冲突或记录不存在）"
+                        )
+                        return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
+                    logger.info(f"Emby 用户改名已自动对齐迁移：{old_name} -> {canonical_username}")
+                    user = user_oper.get_by_name(name=canonical_username)
+                else:
+                    user = bound_user
+
         if not user:
-            user_oper.add(
-                name=credentials.username,
-                is_active=True,
-                is_superuser=False,
-                hashed_password=get_password_hash(secrets.token_urlsafe(16)),
-            )
-            user = user_oper.get_by_name(name=credentials.username)
+            user = user_oper.get_by_name(name=canonical_username)
+            if user:
+                if not user.is_active or user.is_superuser:
+                    logger.info(f"Emby 辅助认证拒绝：用户 {canonical_username} 已禁用或角色不允许")
+                    return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
+                user = self._persist_emby_user_id(user_oper, user, emby_user_id)
+
+        if not user:
+            initial_settings = {"auth_source": "emby"}
+            if emby_user_id:
+                initial_settings["emby_user_id"] = emby_user_id
+            try:
+                user_oper.add(
+                    name=canonical_username,
+                    is_active=True,
+                    is_superuser=False,
+                    hashed_password=get_password_hash(secrets.token_urlsafe(16)),
+                    settings=initial_settings,
+                )
+            except IntegrityError:
+                logger.info(f"Emby 用户 {canonical_username} 并发建号冲突，回查已创建记录")
+            user = user_oper.get_by_name(name=canonical_username)
+            if user and emby_user_id:
+                user = self._persist_emby_user_id(user_oper, user, emby_user_id)
+
         if not user or not user.is_active or user.is_superuser:
             return False, PASSWORD_INVALID_CREDENTIALS_MESSAGE
         return True, user

@@ -4954,7 +4954,8 @@ class SubscribeChain(ChainBase):
                 exist_flag, no_exists = DownloadChain().get_no_exists_info(
                     meta=meta,
                     mediainfo=mediainfo,
-                    totals=totals
+                    totals=totals,
+                    totals_are_episode_numbers=bool(subscribe.manual_total_episode),
                 )
         elif meta.type != MediaType.TV and self.__is_best_version_complete(subscribe):
             return True, {}
@@ -5089,7 +5090,7 @@ class SubscribeChain(ChainBase):
         该查询接口只需要同样避免旧 total 造成误判，因此仅使用当前 mediainfo 中更大的
         季集数作为临时目标范围。
         """
-        current_total = subscribe.total_episode or 0
+        current_total = max(subscribe.total_episode or 0, 0)
         if subscribe.type != MediaType.TV.value:
             return current_total
         if subscribe.manual_total_episode:

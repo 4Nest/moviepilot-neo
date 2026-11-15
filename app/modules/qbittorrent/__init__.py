@@ -8,6 +8,7 @@ from app import schemas
 from app.core.cache import FileCache
 from app.core.config import settings
 from app.core.metainfo import MetaInfo
+from app.helper.torrent import EpisodeSelection, select_torrent_files
 from app.log import logger
 from app.modules import _ModuleBase, _DownloaderBase
 from app.modules.qbittorrent.qbittorrent import Qbittorrent
@@ -142,10 +143,14 @@ class QbittorrentModule(_ModuleBase, _DownloaderBase[Qbittorrent]):
 
     @staticmethod
     def _select_download_files(
-            server: Qbittorrent, torrent_hash: str, episodes: Set[int],
+            server: Qbittorrent,
+            torrent_hash: str,
+            episodes: Set[int],
+            custom_words: Optional[str] = None,
+            episode_selection: Optional[EpisodeSelection] = None,
     ) -> Tuple[bool, str]:
         """
-        验证目标集数并设置排除文件，唯一视频仅在单集请求时兜底。
+        验证目标集数并设置排除文件，视频按目标集交集选择，保留无集号附件；单集请求保留唯一视频兜底。
         """
         failure = f"选集失败，任务 {torrent_hash} 保持暂停，请在下载器检查"
         paused = True
@@ -163,36 +168,22 @@ class QbittorrentModule(_ModuleBase, _DownloaderBase[Qbittorrent]):
         state_failure = failure if paused else (
             f"选集失败，任务 {torrent_hash} 启动任务未确认，请在下载器核实，未记录成功"
         )
-        wanted = []
-        unwanted = []
-        matched = set()
-        media_files = []
+        media_extensions = {
+            str(extension).lower()
+            for extension in getattr(settings, "RMT_MEDIAEXT", [])
+        }
         try:
-            for item in torrent_files:
-                file_id = item.get("id")
-                file_name = Path(item.get("name")).name
-                meta = MetaInfo(file_name)
-                file_episodes = set(meta.episode_list)
-                if Path(file_name).suffix.lower() in getattr(settings, "RMT_MEDIAEXT", []):
-                    media_files.append((file_id, file_episodes))
-                if file_episodes and file_episodes.issubset(episodes):
-                    wanted.append(file_id)
-                    matched.update(file_episodes)
-                else:
-                    unwanted.append(file_id)
+            wanted, unwanted, matched = select_torrent_files(
+                ((item.get("id"), item.get("name")) for item in torrent_files),
+                set(episodes or set()),
+                media_extensions,
+                custom_words,
+                episode_selection,
+            )
         finally:
             torrent_files.clear()
-        if not set(episodes).issubset(matched) and len(episodes) == 1 and len(media_files) == 1:
-            file_id, file_episodes = media_files[0]
-            # 多集视频不能当作单集兜底，否则会把合集误选为目标单集。
-            if len(file_episodes) <= 1:
-                if file_id in unwanted:
-                    unwanted.remove(file_id)
-                if file_id not in wanted:
-                    wanted.append(file_id)
-                matched.update(episodes)
-        if not wanted or not set(episodes).issubset(matched):
-            return False, f"{state_failure}：未找到目标集数 {sorted(set(episodes) - matched)}"
+        if not wanted or not episodes or not set(episodes).issubset(matched):
+            return False, f"{state_failure}：未找到目标集数 {sorted(set(episodes or set()) - matched)}，请检查季集映射"
         if unwanted and not server.set_files(torrent_hash=torrent_hash, file_ids=unwanted, priority=0):
             return False, f"{state_failure}：文件优先级设置未确认"
         started = server.torrents_set_force_start(torrent_hash) \
@@ -204,17 +195,22 @@ class QbittorrentModule(_ModuleBase, _DownloaderBase[Qbittorrent]):
 
     def download(self, content: Union[Path, str, bytes], download_dir: Path, cookie: str,
                  episodes: Set[int] = None, category: Optional[str] = None, label: Optional[str] = None,
-                 downloader: Optional[str] = None) -> Optional[Tuple[Optional[str], Optional[str], Optional[str], str]]:
+                 downloader: Optional[str] = None, custom_words: Optional[str] = None,
+                 episode_selection: Optional[EpisodeSelection] = None,
+                 ) -> Optional[Tuple[Optional[str], Optional[str], Optional[str], str]]:
         """
-        根据种子文件，选择并添加下载任务
-        :param content:  种子文件地址或者磁力链接或者种子内容
-        :param download_dir:  下载目录
-        :param cookie:  cookie
-        :param episodes:  需要下载的集数
-        :param category:  分类
-        :param label:  标签
-        :param downloader:  下载器
-        :return: 下载器名称、种子Hash、种子文件布局、错误原因
+        根据种子文件，选择并添加下载任务。已有任务直接返回存在标志，不暂停或重选文件。
+
+        :param content: 种子文件地址或者磁力链接或者种子内容
+        :param download_dir: 下载目录
+        :param cookie: 站点 Cookie
+        :param episodes: 需要下载的集数
+        :param category: 分类
+        :param label: 标签
+        :param downloader: 下载器名称
+        :param custom_words: 来源识别词，按行参与文件名识别
+        :param episode_selection: 目标季与已确认的季集对应关系；选集失败清理本次新增任务并保留文件
+        :return: 下载器名称、种子 Hash、种子文件布局、错误原因
         """
 
         def __get_torrent_info() -> Tuple[Optional[Torrent], Optional[bytes]]:
@@ -324,9 +320,12 @@ class QbittorrentModule(_ModuleBase, _DownloaderBase[Qbittorrent]):
                 # 获取种子内容布局: `Original: 原始, Subfolder: 创建子文件夹, NoSubfolder: 不创建子文件夹`
                 torrent_layout = server.get_content_layout()
                 if is_paused:
-                    selected, message = self._select_download_files(server, torrent_hash, episodes)
-                    return downloader or self.get_default_config_name(), \
-                        torrent_hash if selected else None, torrent_layout, message
+                    selected, message = self._select_download_files(
+                        server, torrent_hash, episodes, custom_words, episode_selection,
+                    )
+                    if not selected:
+                        return None, None, None, self._discard_failed_selection(server, torrent_hash, message)
+                    return downloader or self.get_default_config_name(), torrent_hash, torrent_layout, message
                 else:
                     if server.is_force_resume():
                         server.torrents_set_force_start(torrent_hash)

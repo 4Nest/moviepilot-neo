@@ -124,12 +124,14 @@ class IndexerModule(_ModuleBase):
             report_site_search_outcome(attempted=False, outcome="circuit_open")
             return False
 
-        # 站点流控
-        state, msg = SitesHelper().check(domain)
-        if state:
-            logger.warn(msg)
-            report_site_search_outcome(attempted=False, outcome="cooldown")
-            return False
+        # 站点流控：已自行管理流控配额的适配器不在模块入口提前丢弃请求
+        spider_cls = IndexerModule._resolve_spider_class(site.get("parser"))
+        if not getattr(spider_cls, "manages_request_throttle", False):
+            state, msg = SitesHelper().check(domain)
+            if state:
+                logger.warn(msg)
+                report_site_search_outcome(attempted=False, outcome="cooldown")
+                return False
 
         return True
 
@@ -167,6 +169,15 @@ class IndexerModule(_ModuleBase):
         else:
             await SiteOper().async_success(domain=domain, seconds=seconds)
 
+    @classmethod
+    def _site_user_agent(cls, site: dict) -> Optional[str]:
+        """使用索引适配器声明的规则规范化下载上下文中的 User-Agent。"""
+        spider_cls = cls._resolve_spider_class((site or {}).get("parser"))
+        get_user_agent = getattr(spider_cls, "get_user_agent", None)
+        if callable(get_user_agent):
+            return get_user_agent((site or {}).get("ua"))
+        return (site or {}).get("ua")
+
     @staticmethod
     def __parse_result(site: dict, result_array: list, seconds: int) -> TorrentInfo:
         """
@@ -178,13 +189,14 @@ class IndexerModule(_ModuleBase):
         logger.info(
             f"{site.get('name')} 搜索完成，耗时 {seconds} 秒，返回数据：{len(result_array)}")
         site_cookie = None if (AniBTSpider.matches(site) or MikanSpider.matches(site)) else site.get("cookie")
+        site_ua = IndexerModule._site_user_agent(site)
         for result in result_array:
             if result.get("description"):
                 result["description"] = StringUtils.strip_html(result["description"])
         return [TorrentInfo(site=site.get("id"),
                             site_name=site.get("name"),
                             site_cookie=site_cookie,
-                            site_ua=site.get("ua"),
+                            site_ua=site_ua,
                             site_proxy=site.get("proxy"),
                             site_order=site.get("pri"),
                             site_downloader=site.get("downloader"),
@@ -201,10 +213,11 @@ class IndexerModule(_ModuleBase):
             return []
         logger.info(
             f"{site.get('name')} 字幕搜索完成，耗时 {seconds} 秒，返回数据：{len(result_array)}")
+        site_ua = IndexerModule._site_user_agent(site)
         return [SubtitleInfo(site=site.get("id"),
                              site_name=site.get("name"),
                              site_cookie=site.get("cookie"),
-                             site_ua=site.get("ua"),
+                             site_ua=site_ua,
                              site_proxy=site.get("proxy"),
                              site_order=site.get("pri"),
                              **result) for result in result_array if

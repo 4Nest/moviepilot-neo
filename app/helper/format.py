@@ -1,3 +1,5 @@
+import ast
+import operator
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -12,6 +14,68 @@ from app.core.metainfo import MetaInfoPath
 from app.core.meta.metabase import MetaBase
 from app.log import logger
 from app.schemas import EpisodeFormatRule, FileItem
+
+_SAFE_BINARY_OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+}
+_SAFE_UNARY_OPERATORS = {
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+}
+
+
+def safe_eval_arithmetic(expr: str) -> int:
+    """
+    基于 AST 对算术表达式执行安全求值并转为整数。
+
+    仅允许加、减、乘、除、整除、取模、正负号、括号与数字字面量，拒绝任意函数调用、属性访问或变量引用。
+    :param expr: 算术表达式字符串
+    :return: 计算结果的整数值
+    """
+    if not isinstance(expr, str) or not expr.strip():
+        raise ValueError("算术表达式不能为空")
+    try:
+        parsed = ast.parse(expr.strip(), mode="eval")
+    except SyntaxError as err:
+        raise ValueError(f"非法算术表达式：{expr}") from err
+
+    def _eval_node(node: ast.AST) -> Union[int, float]:
+        if isinstance(node, ast.Expression):
+            return _eval_node(node.body)
+        if isinstance(node, ast.Constant):
+            value = node.value
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"不支持的常量类型：{expr}")
+            return value
+        if isinstance(node, ast.UnaryOp):
+            unary_op = _SAFE_UNARY_OPERATORS.get(type(node.op))
+            if unary_op is None:
+                raise ValueError(f"不支持的一元运算符：{expr}")
+            return unary_op(_eval_node(node.operand))
+        if isinstance(node, ast.BinOp):
+            binary_op = _SAFE_BINARY_OPERATORS.get(type(node.op))
+            if binary_op is None:
+                raise ValueError(f"不支持的二元运算符：{expr}")
+            return binary_op(_eval_node(node.left), _eval_node(node.right))
+        raise ValueError(f"包含不允许的语法节点：{expr}")
+
+    return int(_eval_node(parsed))
+
+
+def calculate_episode_offset(offset_expr: str, episode: Union[int, str]) -> int:
+    """
+    根据偏移表达式计算目标集号。
+
+    :param offset_expr: 包含 EP 占位符或纯数值的偏移表达式
+    :param episode: 原始集号
+    :return: 偏移计算后的整数集号
+    """
+    return safe_eval_arithmetic(offset_expr.replace("EP", str(episode)))
 
 
 @dataclass(frozen=True)
@@ -79,17 +143,22 @@ def _match_template(
 
 
 class FormatParser(object):
+    """
+    集数定位模板与偏移计算解析器。
+    """
     _key = ""
     _split_chars = r"\.|\s+|\(|\)|\[|]|-|\+|【|】|/|～|;|&|\||#|_|「|」|~"
 
     def __init__(self, eformat: str, details: Optional[str] = None, part: Optional[str] = None,
                  offset: Optional[str] = None, key: Optional[str] = "ep"):
         """
-        :params eformat: 格式化字符串
-        :params details: 格式化详情
-        :params part: 分集
-        :params offset: 偏移量 -10/EP*2
-        :prams key: EP关键字
+        初始化集数格式化解析器。
+
+        :param eformat: 格式化字符串
+        :param details: 格式化详情
+        :param part: 分集标识
+        :param offset: 偏移量表达式（如 -10 或 EP*2）
+        :param key: 模板中的集号占位符名称
         """
         self._format = eformat
         self._start_ep = None
@@ -126,29 +195,50 @@ class FormatParser(object):
 
     @property
     def format(self):
+        """
+        返回集数定位模板字符串。
+        """
         return self._format
 
     @property
     def start_ep(self):
+        """
+        返回限定的起始集号。
+        """
         return self._start_ep
 
     @property
     def end_ep(self):
+        """
+        返回限定的结束集号。
+        """
         return self._end_ep
 
     @property
     def part(self):
+        """
+        返回分集标识。
+        """
         return self._part
 
     @property
     def offset(self):
+        """
+        返回标准化后的偏移表达式。
+        """
         return self.__offset
 
     def match(self, file: str) -> bool:
+        """
+        判断文件名是否满足模板及集数范围约束。
+
+        :param file: 待匹配的文件名
+        :return: 未设置模板或集号满足范围时返回 True，集号 0 正常参与匹配
+        """
         if not self._format:
             return True
-        s, e = self.__handle_single(file)
-        if not s:
+        s, _ = self.__handle_single(file)
+        if s is None:
             return False
         if self._start_ep is None:
             return True
@@ -158,7 +248,11 @@ class FormatParser(object):
 
     def split_episode(self, file_name: str, file_meta: MetaBase) -> Tuple[Optional[int], Optional[int], Optional[str]]:
         """
-        拆分集数，返回开始集数，结束集数，Part信息
+        按指定集数、定位模板或已有元数据计算偏移后的集数和分段。
+
+        :param file_name: 使用定位模板时待解析的文件名
+        :param file_meta: 未指定定位模板时提供原始起止集号的元数据
+        :return: 起始集号、结束集号及分段，缺失集号为 None，集号 0 保留并参与偏移
         """
         # 指定的具体集数，直接返回
         if self._start_ep is not None:
@@ -167,31 +261,41 @@ class FormatParser(object):
                 if isinstance(self._start_ep, str):
                     # `details` 格式为 `X-X`
                     s, e = self._start_ep.split("-")
-                    start_ep = self.__offset.replace("EP", s)
-                    end_ep = self.__offset.replace("EP", e)
+                    start_ep = calculate_episode_offset(self.__offset, s)
+                    end_ep = calculate_episode_offset(self.__offset, e)
                     if int(s) == int(e):
-                        return int(eval(start_ep)), None, self.part
-                    return int(eval(start_ep)), int(eval(end_ep)), self.part
-                else:
-                    # `details` 格式为 `X`
-                    start_ep = self.__offset.replace("EP", str(self._start_ep))
-                    return int(eval(start_ep)), None, self.part
-            elif not self._format:
+                        return start_ep, None, self.part
+                    return start_ep, end_ep, self.part
+                # `details` 格式为 `X`
+                start_ep = calculate_episode_offset(self.__offset, self._start_ep)
+                return start_ep, None, self.part
+            if not self._format:
                 # `details` 格式为 `X,X`
-                start_ep = self.__offset.replace("EP", str(self._start_ep))
-                end_ep = self.__offset.replace("EP", str(self._end_ep))
-                return int(eval(start_ep)), int(eval(end_ep)), self.part
+                start_ep = calculate_episode_offset(self.__offset, self._start_ep)
+                end_ep = calculate_episode_offset(self.__offset, self._end_ep)
+                return start_ep, end_ep, self.part
         if not self._format:
             # 未填入`集数定位` 且没有`指定集数` 仅处理`集数偏移`
-            start_ep = eval(self.__offset.replace("EP", str(file_meta.begin_episode))) if file_meta.begin_episode else None
-            end_ep = eval(self.__offset.replace("EP", str(file_meta.end_episode))) if file_meta.end_episode else None
-            return int(start_ep) if start_ep else None, int(end_ep) if end_ep else None, self.part
-        else:
-            # 有`集数定位`
-            s, e = self.__handle_single(file_name)
-            start_ep = self.__offset.replace("EP", str(s)) if s else None
-            end_ep = self.__offset.replace("EP", str(e)) if e else None
-            return int(eval(start_ep)) if start_ep else None, int(eval(end_ep)) if end_ep else None, self.part
+            start_ep = (
+                calculate_episode_offset(self.__offset, file_meta.begin_episode)
+                if file_meta.begin_episode is not None else None
+            )
+            end_ep = (
+                calculate_episode_offset(self.__offset, file_meta.end_episode)
+                if file_meta.end_episode is not None else None
+            )
+            return start_ep, end_ep, self.part
+        # 有`集数定位`
+        matched_start, matched_end = self.__handle_single(file_name)
+        start_ep = (
+            calculate_episode_offset(self.__offset, matched_start)
+            if matched_start is not None else None
+        )
+        end_ep = (
+            calculate_episode_offset(self.__offset, matched_end)
+            if matched_end is not None else None
+        )
+        return start_ep, end_ep, self.part
 
     def __handle_single(self, file: str) -> Tuple[Optional[int], Optional[int]]:
         """

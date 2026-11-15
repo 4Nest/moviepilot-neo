@@ -15,6 +15,10 @@ from app.schemas import MediaServerItem
 
 
 class Jellyfin:
+    """
+    Jellyfin 媒体服务器客户端，负责认证、媒体库同步、元数据查询与播放交互
+    """
+
     _host: Optional[str] = None
     _apikey: Optional[str] = None
     _playhost: Optional[str] = None
@@ -928,16 +932,57 @@ class Jellyfin:
             logger.error(f"查询媒体库 {parent} 的媒体总数出错：{str(e)}")
             return None
 
+    _ITEMS_PAGE_SIZE = 200
+
+    @classmethod
+    def _iter_paged_items(
+        cls,
+        request: RequestUtils,
+        url: str,
+        params: dict,
+        *,
+        start_index: Optional[int] = 0,
+        limit: Optional[int] = -1,
+    ) -> Generator[dict, None, None]:
+        """
+        按固定页大小循环分页拉取 Jellyfin 媒体条目，避免全量同步时单次大 JSON 响应撑爆内存。
+        """
+        unlimited = limit is None or limit == -1
+        page_size = cls._ITEMS_PAGE_SIZE if unlimited else limit
+        offset = 0 if unlimited else (start_index or 0)
+        while True:
+            page_params = {**params, "StartIndex": offset, "Limit": page_size}
+            res = request.get_res(url, page_params)
+            if not res or res.status_code != 200:
+                return
+            try:
+                payload = res.json() or {}
+            finally:
+                res.close()
+            items = payload.get("Items") or []
+            total = payload.get("TotalRecordCount")
+            total_count = int(total) if total is not None else None
+            count = len(items)
+            yield from items
+            del items
+            offset += count
+            if not unlimited or not count:
+                return
+            if total_count is not None:
+                if offset >= total_count:
+                    return
+            elif count < cls._ITEMS_PAGE_SIZE:
+                return
+
     def get_items(self, parent: Union[str, int], start_index: Optional[int] = 0, limit: Optional[int] = -1) \
             -> Generator[MediaServerItem | None | Any, Any, None]:
         """
-        获取媒体服务器项目列表，支持分页和不分页逻辑，默认不分页获取所有数据
+        获取媒体服务器项目列表；当 limit 为 None 或 -1 时内部按 200 条/页循环拉取全部数据。
 
-        :param parent: 媒体库ID，用于标识要获取的媒体库
-        :param start_index: 起始索引，用于分页获取数据。默认为 0，即从第一个项目开始获取
-        :param limit: 每次请求的最大项目数，用于分页。如果为 None 或 -1，则表示一次性获取所有数据，默认为 -1
-
-        :return: 返回一个生成器对象，用于逐步获取媒体服务器中的项目
+        :param parent: 媒体库 ID
+        :param start_index: 显式分页时的起始索引，全量拉取时从 0 开始
+        :param limit: 单页条数；为 None 或 -1 时内部分页拉取全库
+        :return: 逐步返回媒体服务器项目的生成器
         """
         if not parent or not self._host or not self._apikey:
             return None
@@ -947,23 +992,20 @@ class Jellyfin:
             "api_key": self._apikey,
             "Fields": "ProviderIds,OriginalTitle,ProductionYear,Path,UserDataPlayCount,UserDataLastPlayedDate,ParentId",
         }
-        if limit is not None and limit != -1:
-            params.update({
-                "StartIndex": start_index,
-                "Limit": limit
-            })
         try:
-            res = self._request().get_res(url, params)
-            if not res or res.status_code != 200:
-                return None
-            items = res.json().get("Items") or []
-            for item in items:
+            for item in self._iter_paged_items(
+                self._request(),
+                url,
+                params,
+                start_index=start_index,
+                limit=limit,
+            ):
                 if not item:
                     continue
-                if "Folder" in item.get("Type"):
-                    for items in self.get_items(item.get("Id")):
-                        yield items
-                elif item.get("Type") in ["Movie", "Series"]:
+                item_type = item.get("Type") or ""
+                if "Folder" in item_type or item_type == "BoxSet":
+                    yield from self.get_items(item.get("Id"))
+                elif item_type in ["Movie", "Series"]:
                     yield self.__format_item_info(item)
         except Exception as e:
             logger.error(f"连接Users/Items出错：" + str(e))

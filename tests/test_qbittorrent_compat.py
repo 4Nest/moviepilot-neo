@@ -8,6 +8,9 @@ from unittest.mock import call, MagicMock, patch
 import pytest
 
 
+from app.modules import _DownloaderBase as ProductionDownloaderBase
+
+
 def _load_qbittorrent_modules():
     repo_root = Path(__file__).resolve().parents[1]
 
@@ -86,6 +89,8 @@ def _load_qbittorrent_modules():
         pass
 
     class _DownloaderBase:
+        _discard_failed_selection = staticmethod(ProductionDownloaderBase._discard_failed_selection)
+
         def __class_getitem__(cls, _item):
             return cls
 
@@ -122,7 +127,10 @@ def _load_qbittorrent_modules():
 
     log_module.logger = _Logger()
     cache_module.FileCache = _FileCache
-    config_module.settings = types.SimpleNamespace(TORRENT_TAG="moviepilot-tag")
+    config_module.settings = types.SimpleNamespace(
+        TORRENT_TAG="moviepilot-tag",
+        RMT_MEDIAEXT=[".mkv", ".mp4"],
+    )
     metainfo_module.MetaInfo = _MetaInfo
     schemas_module.DownloaderInfo = object
     schemas_module.TransferTorrent = object

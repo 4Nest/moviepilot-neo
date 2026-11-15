@@ -23,6 +23,10 @@ class RetryException(Exception):
 
 
 class WeChat:
+    """
+    企业微信应用消息与菜单交互客户端
+    """
+
     # 企业微信Token
     _access_token = None
     # 企业微信Token过期时间
@@ -183,7 +187,7 @@ class WeChat:
             return False
         if text:
             formatted_text = text.replace("\n\n", "\n")
-            content = f"{title}\n{formatted_text}"
+            content = f"{title}\n{formatted_text}" if title else formatted_text
         else:
             content = title
         if link:

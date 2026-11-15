@@ -17,6 +17,10 @@ from app.utils.url import UrlUtils
 
 
 class Emby:
+    """
+    Emby 媒体服务器客户端，负责认证、媒体库同步、元数据查询与播放交互
+    """
+
     _host: Optional[str] = None
     _playhost: Optional[str] = None
     _apikey: Optional[str] = None
@@ -479,12 +483,15 @@ class Emby:
             logger.error(f"删除Emby用户出错 ({user_id})：{str(e)}")
             return False, str(e)
 
-    def authenticate(self, username: str, password: str) -> Optional[str]:
+    def authenticate_user(
+        self, username: str, password: str
+    ) -> Optional[Dict[str, Optional[str]]]:
         """
-        用户认证
-        :param username: 用户名
+        使用 Emby 用户名密码认证并提取规范用户信息
+
+        :param username: 登录输入的用户名
         :param password: 密码
-        :return: 认证token
+        :return: 包含 token、规范 username 与不可变 user_id 的字典；认证失败返回 None
         """
         if not self._host or not self._apikey:
             return None
@@ -506,14 +513,39 @@ class Emby:
                 })
             )
             if res:
-                auth_token = res.json().get("AccessToken")
-                if auth_token:
-                    logger.info(f"用户 {username} Emby认证成功")
-                    return auth_token
+                payload = res.json()
+                if isinstance(payload, dict):
+                    auth_token = payload.get("AccessToken")
+                    if auth_token:
+                        user_info = payload.get("User")
+                        if not isinstance(user_info, dict):
+                            user_info = {}
+                        canonical_name = str(user_info.get("Name") or username).strip() or username
+                        raw_user_id = user_info.get("Id")
+                        emby_user_id = str(raw_user_id).strip() if raw_user_id is not None else ""
+                        logger.info(f"用户 {canonical_name} Emby认证成功")
+                        return {
+                            "token": str(auth_token),
+                            "username": canonical_name,
+                            "user_id": emby_user_id or None,
+                        }
             else:
-                logger.error(f"Users/AuthenticateByName 未获取到返回数据")
+                logger.error("Users/AuthenticateByName 未获取到返回数据")
         except Exception as e:
-            logger.error(f"连接Users/AuthenticateByName出错：" + str(e))
+            logger.error("连接Users/AuthenticateByName出错：" + str(e))
+        return None
+
+    def authenticate(self, username: str, password: str) -> Optional[str]:
+        """
+        用户认证
+
+        :param username: 用户名
+        :param password: 密码
+        :return: 认证token
+        """
+        auth_info = self.authenticate_user(username, password)
+        if auth_info:
+            return auth_info.get("token")
         return None
 
     def get_server_id(self) -> Optional[str]:
@@ -1025,16 +1057,57 @@ class Emby:
             logger.error(f"查询媒体库 {parent} 的媒体总数出错：{str(e)}")
             return None
 
+    _ITEMS_PAGE_SIZE = 200
+
+    @classmethod
+    def _iter_paged_items(
+        cls,
+        request: RequestUtils,
+        url: str,
+        params: Dict[str, Any],
+        *,
+        start_index: Optional[int] = 0,
+        limit: Optional[int] = -1,
+    ) -> Generator[dict, None, None]:
+        """
+        按固定页大小循环分页拉取媒体条目，避免全量同步时单次大 JSON 响应撑爆内存。
+        """
+        unlimited = limit is None or limit == -1
+        page_size = cls._ITEMS_PAGE_SIZE if unlimited else limit
+        offset = 0 if unlimited else (start_index or 0)
+        while True:
+            page_params = {**params, "StartIndex": offset, "Limit": page_size}
+            res = request.get_res(url, page_params)
+            if not res or res.status_code != 200:
+                return
+            try:
+                payload = res.json() or {}
+            finally:
+                res.close()
+            items = payload.get("Items") or []
+            total = payload.get("TotalRecordCount")
+            total_count = int(total) if total is not None else None
+            count = len(items)
+            yield from items
+            del items
+            offset += count
+            if not unlimited or not count:
+                return
+            if total_count is not None:
+                if offset >= total_count:
+                    return
+            elif count < cls._ITEMS_PAGE_SIZE:
+                return
+
     def get_items(self, parent: Union[str, int], start_index: Optional[int] = 0,
                   limit: Optional[int] = -1) -> Generator[MediaServerItem | None | Any, Any, None]:
         """
-        获取媒体服务器项目列表，支持分页和不分页逻辑，默认不分页获取所有数据
+        获取媒体服务器项目列表；当 limit 为 None 或 -1 时内部按 200 条/页循环拉取全部数据。
 
-        :param parent: 媒体库ID，用于标识要获取的媒体库
-        :param start_index: 起始索引，用于分页获取数据。默认为 0，即从第一个项目开始获取
-        :param limit: 每次请求的最大项目数，用于分页。如果为 None 或 -1，则表示一次性获取所有数据，默认为 -1
-
-        :return: 返回一个生成器对象，用于逐步获取媒体服务器中的项目
+        :param parent: 媒体库 ID
+        :param start_index: 显式分页时的起始索引，全量拉取时从 0 开始
+        :param limit: 单页条数；为 None 或 -1 时内部分页拉取全库
+        :return: 逐步返回媒体服务器项目的生成器
         """
         if not parent or not self._host or not self._apikey:
             return None
@@ -1044,23 +1117,20 @@ class Emby:
             "api_key": self._apikey,
             "Fields": "ProviderIds,OriginalTitle,ProductionYear,Path,UserDataPlayCount,UserDataLastPlayedDate,ParentId"
         }
-        if limit is not None and limit != -1:
-            params.update({
-                "StartIndex": start_index,
-                "Limit": limit
-            })
         try:
-            res = RequestUtils().get_res(url, params)
-            if not res or res.status_code != 200:
-                return None
-            items = res.json().get("Items") or []
-            for item in items:
+            for item in self._iter_paged_items(
+                RequestUtils(),
+                url,
+                params,
+                start_index=start_index,
+                limit=limit,
+            ):
                 if not item:
                     continue
-                if "Folder" in item.get("Type"):
-                    for items in self.get_items(parent=item.get('Id')):
-                        yield items
-                elif item.get("Type") in ["Movie", "Series"]:
+                item_type = item.get("Type") or ""
+                if "Folder" in item_type:
+                    yield from self.get_items(parent=item.get("Id"))
+                elif item_type in ["Movie", "Series"]:
                     yield self.__format_item_info(item)
         except Exception as e:
             logger.error(f"连接Users/Items出错：" + str(e))

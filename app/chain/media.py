@@ -1513,7 +1513,7 @@ class MediaChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
         """
         # 重新识别季集信息
         file_meta = MetaInfoPath(filepath)
-        if not file_meta.begin_episode:
+        if file_meta.begin_episode is None:
             logger.warn(f"{filepath.name} 无法识别文件集数！")
             return
 

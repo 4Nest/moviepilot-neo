@@ -89,13 +89,15 @@ RUN python3 -m venv ${VENV_PATH} \
     && ln -sf /usr/local/bin/uv-pip-compat ${VENV_PATH}/bin/pip-compile \
     && ln -sf /usr/local/bin/uv-pip-compat ${VENV_PATH}/bin/pip-sync \
     && mkdir -p /tmp/wheels \
-    && RUST_ASSET_URL=$(curl -fsSL "https://api.github.com/repos/4Nest/MoviePilot-Rust/releases/tags/v0.2.9+neo.5" | jq -r '.assets[] | select(.name | test("cp311.*manylinux_2_17_x86_64")) | .url' | head -n 1) \
-    && curl -fsSL --retry 6 --retry-delay 5 --retry-all-errors -H "Accept: application/octet-stream" "${RUST_ASSET_URL}" -o "/tmp/wheels/moviepilot_rust-0.2.9+neo.5-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" \
+    && RUST_RELEASE_JSON=$(curl -fsSL "https://api.github.com/repos/4Nest/MoviePilot-Rust/releases/tags/v0.2.9+neo.6") \
+    && RUST_ASSET_NAME=$(printf '%s' "${RUST_RELEASE_JSON}" | jq -r '.assets[] | select(.name | test("cp311.*manylinux_2_17_x86_64")) | .name' | head -n 1) \
+    && RUST_ASSET_URL=$(printf '%s' "${RUST_RELEASE_JSON}" | jq -r '.assets[] | select(.name | test("cp311.*manylinux_2_17_x86_64")) | .url' | head -n 1) \
+    && curl -fsSL --retry 6 --retry-delay 5 --retry-all-errors -H "Accept: application/octet-stream" "${RUST_ASSET_URL}" -o "/tmp/wheels/${RUST_ASSET_NAME}" \
     && sed 's|^--find-links .*|--find-links /tmp/wheels|' requirements.in > /tmp/requirements-local.in \
     && pip-compile --emit-find-links /tmp/requirements-local.in -o requirements.txt \
     && pip install -r requirements.txt \
     && rm -rf /tmp/wheels /tmp/requirements-local.in \
-    && python -c 'import moviepilot_rust as m; assert m.BT_PT_RECOGNITION_REVISION >= 4, "missing Neo subtitle recognition fixes"'
+    && python -c 'import moviepilot_rust as m; assert m.BT_PT_RECOGNITION_REVISION >= 5, "missing Neo subtitle recognition fixes"'
 
 # 下载准备代码
 FROM prepare_package AS prepare_code

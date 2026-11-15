@@ -184,7 +184,7 @@ class _BatchTorrentHelper:
         """保持测试候选顺序。"""
         return contexts
 
-    def get_torrent_episodes(self, _files):
+    def get_torrent_episodes(self, _files, **_kwargs):
         """返回预设的种子内离散集号。"""
         return list(self.episodes)
 

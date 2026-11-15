@@ -35,8 +35,16 @@ from app.helper.interaction import (
 )
 from app.helper.service import ServiceConfigHelper
 from app.helper.thread import ThreadHelper
-from app.helper.torrent import TorrentHelper
+from app.helper.torrent import (
+    TorrentHelper,
+    episode_selection_for_context,
+    select_torrent_files,
+)
 from app.log import logger
+from app.modules.indexer.spider.fluxtorrent import (
+    FluxTorrentSpider,
+    is_fluxtorrent_download_url,
+)
 from app.schemas import ExistMediaInfo, FileURI, NotExistMediaInfo, DownloaderTorrent, Notification, ResourceSelectionEventData, \
     ResourceDownloadEventData
 from app.schemas.types import MediaType, TorrentStatus, EventType, MessageChannel, NotificationType, ContentType, \
@@ -754,10 +762,22 @@ class DownloadChain(ChainBase):
 
         original_cookie = cookie
         request_cookie = cookie if request_params.get("cookie") else None
-        headers = request_params.get("header")
+        raw_headers = request_params.get("header")
         proxy = request_params.get("proxy")
+        effective_ua = (
+            FluxTorrentSpider.get_user_agent(ua)
+            if is_fluxtorrent_download_url(request_url) and (not ua or ua == settings.USER_AGENT)
+            else ua
+        )
+        headers = dict(raw_headers) if isinstance(raw_headers, dict) else raw_headers
+        if (
+            isinstance(headers, dict)
+            and effective_ua
+            and not any(str(k).lower() == "user-agent" for k in headers)
+        ):
+            headers["User-Agent"] = effective_ua
         request = RequestUtils(
-            ua=ua,
+            ua=effective_ua,
             cookies=request_cookie,
             headers=headers,
             proxies=settings.PROXY if proxy else None,
@@ -886,10 +906,15 @@ class DownloadChain(ChainBase):
                 userid=userid,
             ))
             return None, "", []
+        download_ua = torrent.site_ua or settings.USER_AGENT
+        if is_fluxtorrent_download_url(torrent_url) and (
+            not torrent.site_ua or torrent.site_ua == settings.USER_AGENT
+        ):
+            download_ua = FluxTorrentSpider.get_user_agent(torrent.site_ua)
         _, content, download_folder, files, error_msg = TorrentHelper().download_torrent(
             url=torrent_url,
             cookie=site_cookie,
-            ua=torrent.site_ua or settings.USER_AGENT,
+            ua=download_ua,
             proxy=torrent.site_proxy,
             cache_invalid=not indirect_download,
         )
@@ -1089,13 +1114,18 @@ class DownloadChain(ChainBase):
         download_dir = Path(file_uri.uri)
 
         # 添加下载
-        result: Optional[tuple] = self.download(content=torrent_content,
-                                                cookie=_torrent.site_cookie,
-                                                episodes=episodes,
-                                                download_dir=download_dir,
-                                                category=_media.category,
-                                                label=label,
-                                                downloader=_effective_downloader)
+        episode_selection = episode_selection_for_context(context) if episodes else None
+        result: Optional[tuple] = self.download(
+            content=torrent_content,
+            cookie=_torrent.site_cookie,
+            episodes=episodes,
+            download_dir=download_dir,
+            category=_media.category,
+            label=label,
+            downloader=_effective_downloader,
+            custom_words=custom_words,
+            episode_selection=episode_selection,
+        )
         if result:
             _downloader, _hash, _layout, error_msg = result
         else:
@@ -1153,9 +1183,8 @@ class DownloadChain(ChainBase):
                 version_settings=version_settings,
             )
 
-            # 登记下载文件
+            # 登记下载文件（支持多集单文件全部集数、E00、季集映射、无集号附件与唯一视频兜底）
             files_to_add = []
-            unmatched_single_files = []
             media_file_count = 0
             media_exts = settings.RMT_MEDIAEXT + settings.RMT_SUBEXT + settings.RMT_AUDIOEXT
             for file in _file_list:
@@ -1164,30 +1193,24 @@ class DownloadChain(ChainBase):
                     continue
                 if suffix in settings.RMT_MEDIAEXT:
                     media_file_count += 1
-                file_item = {
+                files_to_add.append({
                     "download_hash": _hash,
                     "downloader": _downloader,
                     "fullpath": (_save_path / file).as_posix(),
                     "savepath": _save_path.as_posix(),
                     "filepath": file,
                     "torrentname": _meta.org_string,
-                }
-                if episodes:
-                    file_meta = MetaInfo(
-                        Path(file).stem,
-                        custom_words=custom_words.splitlines() if custom_words else [],
-                    )
-                    file_episodes = set(file_meta.episode_list)
-                    if file_meta.begin_episode and file_meta.begin_episode in episodes:
-                        files_to_add.append(file_item)
-                    elif suffix in settings.RMT_MEDIAEXT and len(file_episodes) <= 1:
-                        unmatched_single_files.append(file_item)
-                else:
-                    files_to_add.append(file_item)
-            if (not files_to_add and episodes and len(episodes) == 1
-                    and media_file_count == 1 and len(unmatched_single_files) == 1):
-                # 下载器已按唯一视频文件兜底选集，历史明细使用同一映射。
-                files_to_add = unmatched_single_files
+                })
+            if episodes and files_to_add:
+                wanted, _unwanted, _matched = select_torrent_files(
+                    ((index, item["filepath"]) for index, item in enumerate(files_to_add)),
+                    set(episodes),
+                    settings.RMT_MEDIAEXT,
+                    custom_words,
+                    episode_selection,
+                    allow_single_fallback=media_file_count == 1,
+                )
+                files_to_add = [files_to_add[index] for index in wanted]
             if files_to_add:
                 downloadhis.add_files(files_to_add)
 
@@ -1282,22 +1305,17 @@ class DownloadChain(ChainBase):
 
         def __update_seasons(_mid: Union[int, str], _need: list, _current: list) -> list:
             """
-            更新need_tvs季数，返回剩余季数
-            :param _mid: TMDBID
-            :param _need: 需要下载的季数
-            :param _current: 已经下载的季数
+            更新 need_tvs 季数，返回剩余季数。
+
+            就地移除本次成功下载的季，保留同剧其他季的显式缺集；媒体条目清空后整体删除。
             """
-            # 剩余季数
             need = list(set(_need).difference(set(_current)))
-            # 清除已下载的季信息
-            seas = copy.deepcopy(no_exists.get(_mid))
-            if seas:
-                for _sea in list(seas):
-                    if _sea not in need:
-                        no_exists[_mid].pop(_sea)
-                    if not no_exists.get(_mid) and no_exists.get(_mid) is not None:
-                        no_exists.pop(_mid)
-                        break
+            seasons = no_exists.get(_mid)
+            if seasons:
+                for _sea in _current:
+                    seasons.pop(_sea, None)
+                if not seasons:
+                    no_exists.pop(_mid, None)
             return need
 
         def __update_episodes(_mid: Union[int, str], _sea: int, _need: list, _current: set) -> list:
@@ -1517,7 +1535,11 @@ class DownloadChain(ChainBase):
                                 if isinstance(content, str):
                                     logger.warn(f"{meta.org_string} 下载地址是磁力链，无法确定种子文件集数")
                                     continue
-                                torrent_episodes = TorrentHelper().get_torrent_episodes(torrent_files)
+                                torrent_episodes = TorrentHelper().get_torrent_episodes(
+                                    torrent_files,
+                                    custom_words=custom_words.splitlines() if custom_words else None,
+                                    episode_selection=episode_selection_for_context(context),
+                                )
                                 logger.info(f"{meta.org_string} 解析种子文件集数为 {torrent_episodes}")
                                 if not torrent_episodes:
                                     continue
@@ -1770,7 +1792,11 @@ class DownloadChain(ChainBase):
                                 logger.warn(f"{meta.org_string} 下载地址是磁力链，无法解析种子文件集数")
                                 continue
                             # 种子全部集
-                            torrent_episodes = TorrentHelper().get_torrent_episodes(torrent_files)
+                            torrent_episodes = TorrentHelper().get_torrent_episodes(
+                                torrent_files,
+                                custom_words=custom_words.splitlines() if custom_words else None,
+                                episode_selection=episode_selection_for_context(context),
+                            )
                             logger.info(f"{torrent.site_name} - {meta.org_string} 解析种子文件集数：{torrent_episodes}")
                             # 选中的集
                             selected_episodes = set(torrent_episodes).intersection(effective_need)
@@ -1817,17 +1843,47 @@ class DownloadChain(ChainBase):
         logger.info(f"成功下载种子数：{len(downloaded_list)}，剩余未下载的剧集：{no_exists}")
         return downloaded_list, no_exists
 
+    @staticmethod
+    def _whole_season_missing(episodes: List[int], total: int, episode_end: int = 0) -> List[int]:
+        """
+        计算一季完全未入库时的缺集列表。
+
+        手工订阅末集号裁短本季，或恰好覆盖累计编号的整季时，写出目标范围；
+        超过本季已知末集号时沿用整季标记。仅提供集数的调用继续在季初连续且两种口径一致时写出显式目标集。
+
+        :param episodes: 本季全部集号
+        :param total: 本季有效总集数，调用方已保证为正
+        :param episode_end: 显式末集号；未指定或早于季首时为 0
+        :return: 显式目标集；空列表表示按整季处理
+        """
+        if episode_end:
+            first = min(episodes)
+            last = max(episodes)
+            if episode_end < last or (first != 1 and episode_end == last):
+                return list(range(first, episode_end + 1))
+            return []
+        if total >= len(episodes):
+            return []
+        target = sorted(episodes)[:total]
+        if target[-1] != total:
+            return []
+        return target
+
     def get_no_exists_info(self, meta: MetaBase,
                            mediainfo: MediaInfo,
                            no_exists: Dict[int, Dict[int, NotExistMediaInfo]] = None,
-                           totals: Dict[int, int] = None
+                           totals: Dict[int, int] = None,
+                           *,
+                           totals_are_episode_numbers: bool = False,
                            ) -> Tuple[bool, Dict[Union[int, str], Dict[int, NotExistMediaInfo]]]:
         """
-        检查媒体库，查询是否存在，对于剧集同时返回不存在的季集信息
+        检查媒体库，查询是否存在，对于剧集同时返回不存在的季集信息。
+
         :param meta: 元数据
-        :param mediainfo: 已识别的媒体信息
+        :param mediainfo: 已识别的媒体信息，指定剧集组时重新识别对应的季集结构
         :param no_exists: 在调用该方法前已经存储的不存在的季集信息，有传入时该函数搜索的内容将会叠加后输出
-        :param totals: 电视剧每季的总集数
+        :param totals: 电视剧每季的总集数；非正数视为未指定
+        :param totals_are_episode_numbers: 指定的总集数为季内末集号；早于季首时沿用原有集数口径
         :return: 当前媒体是否缺失，各标题总的季集和缺失的季集
         """
         media_source, media_id = resolve_media_identity(media=mediainfo)
@@ -1878,8 +1934,9 @@ class DownloadChain(ChainBase):
                 return True, {}
             return False, {}
         else:
-            if not mediainfo.seasons:
-                # 补充媒体信息
+            # 请求中的季信息可能来自默认排序，选择剧集组后必须按该组重新识别。
+            episode_group = getattr(mediainfo, "episode_group", None)
+            if not mediainfo.seasons or episode_group:
                 mediainfo: MediaInfo = self.recognize_media(mtype=mediainfo.type,
                                                             tmdbid=mediainfo.tmdb_id,
                                                             doubanid=mediainfo.douban_id,
@@ -1887,7 +1944,7 @@ class DownloadChain(ChainBase):
                                                             anilistid=mediainfo.anilist_id,
                                                             source=media_source,
                                                             mediaid=media_id,
-                                                            episode_group=mediainfo.episode_group)
+                                                            episode_group=episode_group)
                 if not mediainfo:
                     logger.error(f"媒体信息识别失败！")
                     return False, {}
@@ -1904,58 +1961,33 @@ class DownloadChain(ChainBase):
             if isinstance(exists_tvs, ExistMediaInfo) and exists_tvs.query_failed:
                 logger.warning(f"媒体库季集查询失败，暂不更新缺集信息：{mediainfo.title_year}")
                 return False, {}
-            if not exists_tvs:
-                # 所有季集均缺失
-                for season, episodes in mediainfo.seasons.items():
-                    if not episodes:
+            existing_seasons = (exists_tvs.seasons or {}) if exists_tvs else {}
+            for season, episodes in mediainfo.seasons.items():
+                if not episodes or (meta.sea and season not in meta.season_list):
+                    continue
+                first = min(episodes)
+                total_override = max(totals.get(season) or 0, 0)
+                season_total = total_override or len(episodes)
+                episode_end = total_override if totals_are_episode_numbers and total_override >= first else 0
+                exist_episodes = existing_seasons.get(season)
+                if exist_episodes:
+                    episode_range = range(first, (episode_end or first + season_total - 1) + 1)
+                    target_episodes = episode_range if total_override else episodes
+                    lack_episodes = sorted(set(target_episodes).difference(set(exist_episodes)))
+                    if not lack_episodes:
                         continue
-                    # 全季不存在
-                    if meta.sea \
-                            and season not in meta.season_list:
-                        continue
-                    # 总集数
-                    total_ep = totals.get(season) or len(episodes)
-                    __append_no_exists(_season=season, _episodes=[],
-                                       _total=total_ep, _start=min(episodes))
-                return False, no_exists
-            else:
-                # 存在一些，检查每季缺失的季集
-                for season, episodes in mediainfo.seasons.items():
-                    if meta.sea \
-                            and season not in meta.season_list:
-                        continue
-                    if not episodes:
-                        continue
-                    # 该季总集数
-                    season_total = totals.get(season) or len(episodes)
-                    # 该季已存在的集
-                    exist_episodes = exists_tvs.seasons.get(season)
-                    if exist_episodes:
-                        # 已存在取差集
-                        if totals.get(season):
-                            # 按总集数计算缺失集（开始集为TMDB中的最小集）
-                            lack_episodes = list(set(range(min(episodes),
-                                                           season_total + min(episodes))
-                                                     ).difference(set(exist_episodes)))
-                        else:
-                            # 按TMDB集数计算缺失集
-                            lack_episodes = list(set(episodes).difference(set(exist_episodes)))
-                        if not lack_episodes:
-                            # 全部集存在
-                            continue
-                        # 添加不存在的季集信息
-                        __append_no_exists(_season=season, _episodes=lack_episodes,
-                                           _total=season_total, _start=min(lack_episodes))
-                    else:
-                        # 全季不存在
-                        __append_no_exists(_season=season, _episodes=[],
-                                           _total=season_total, _start=min(episodes))
-            # 存在不完整的剧集
-            if no_exists:
+                    first = lack_episodes[0]
+                else:
+                    lack_episodes = self._whole_season_missing(episodes, season_total, episode_end)
+                __append_no_exists(
+                    _season=season,
+                    _episodes=lack_episodes,
+                    _total=season_total,
+                    _start=first,
+                )
+            if exists_tvs and no_exists:
                 logger.debug(f"媒体库中已存在部分剧集，缺失：{no_exists}")
-                return False, no_exists
-            # 全部存在
-            return True, no_exists
+            return bool(exists_tvs) and not no_exists, no_exists
 
     _download_page_size = 5
 

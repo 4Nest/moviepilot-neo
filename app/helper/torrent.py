@@ -1,8 +1,10 @@
+from collections.abc import Iterable
+from dataclasses import dataclass
 import datetime
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Tuple, Optional, List, Union, Dict, Any
+from typing import Tuple, Optional, List, Set, Union, Dict, Any
 from urllib.parse import unquote
 
 from torrentool.api import Torrent
@@ -15,9 +17,203 @@ from app.core.metainfo import MetaInfo
 from app.db.site_oper import SiteOper
 from app.db.systemconfig_oper import SystemConfigOper
 from app.log import logger
+from app.modules.indexer.spider.fluxtorrent import (
+    FluxTorrentSpider,
+    is_fluxtorrent_download_url,
+)
 from app.schemas.types import MediaType, SystemConfigKey
 from app.utils.http import RequestUtils
 from app.utils.string import StringUtils
+
+
+@dataclass(frozen=True)
+class EpisodeSelection:
+    """
+    下载目标季与识别阶段已经确认的季集对应关系，不推算未确认的集数。
+
+    :param season: 目标季号，0 表示特别篇
+    :param source_season: 种子标题识别修正前的季号；None 表示未标季
+    :param episode_map: 标题原集号与目标集号的对应项；空元组表示没有额外换算依据
+    """
+
+    season: int
+    source_season: Optional[int] = None
+    episode_map: Tuple[Tuple[int, int], ...] = ()
+
+
+def episode_selection_for_context(context: Optional[Context]) -> Optional[EpisodeSelection]:
+    """
+    从单季候选冻结季集依据，只有等长的明确集号列表才建立逐集对应关系。
+
+    不根据目标季号或单个差值外推整包偏移。来源识别词由文件解析自行应用，
+    此处保留应用来源临时词之前的标题坐标，避免标题专用词无法命中文件名。
+
+    :param context: 下载候选上下文
+    :return: 单季候选返回冻结的选集依据，否则返回 None
+    """
+    if context is None:
+        return None
+    meta = getattr(context, "meta_info", None)
+    torrent = getattr(context, "torrent_info", None)
+    if meta is None or len(getattr(meta, "season_list", None) or []) != 1:
+        return None
+    season = meta.season_list[0]
+    title = getattr(torrent, "title", None) if torrent else None
+    description = getattr(torrent, "description", None) if torrent else None
+    original = MetaInfo(title or "", description) if torrent and (title or description) else None
+    source_season = original.begin_season if original else None
+    source_episodes = original.episode_list if original else []
+    target_episodes = list(getattr(meta, "episode_list", None) or [])
+    mapping: Tuple[Tuple[int, int], ...] = ()
+    if (
+        original
+        and len(original.season_list) == 1
+        and source_episodes
+        and len(source_episodes) == len(target_episodes)
+        and (source_season != season or source_episodes != target_episodes)
+    ):
+        mapping = tuple(zip(source_episodes, target_episodes))
+    return EpisodeSelection(season=season, source_season=source_season, episode_map=mapping)
+
+
+def _file_episode_coordinates(
+    name: str,
+    custom_words: Optional[List[str]],
+    selection: Optional[EpisodeSelection],
+) -> Tuple[Optional[Set[int]], bool]:
+    """
+    解析文件并应用明确映射；None 表示季集冲突，布尔值区分无集号附件。
+    """
+    file_name = Path(name).name
+    original = MetaInfo(file_name)
+    meta = MetaInfo(file_name, custom_words=custom_words) if custom_words else original
+    episodes = set(meta.episode_list)
+    numbered = bool(episodes)
+    if selection is None:
+        return episodes, numbered
+    corrected = (meta.begin_season, meta.episode_list) != (
+        original.begin_season,
+        original.episode_list,
+    )
+    if (
+        not corrected
+        and selection.episode_map
+        and original.begin_season in (None, selection.source_season)
+    ):
+        mapping = dict(selection.episode_map)
+        mapped = {mapping[episode] for episode in episodes if episode in mapping}
+        return mapped or None, numbered
+    if meta.begin_season is not None and meta.season_list != [selection.season]:
+        return None, numbered
+    return episodes, numbered
+
+
+def torrent_file_episodes(
+    name: str,
+    custom_words: Optional[List[str]] = None,
+    episode_selection: Optional[EpisodeSelection] = None,
+) -> Set[int]:
+    """
+    返回文件在目标季中的已确认集号，供下载候选检查复用；冲突不贡献集数。
+
+    :param name: 种子内文件路径或文件名
+    :param custom_words: 当前下载来源的临时识别词列表
+    :param episode_selection: 冻结的目标季与映射关系
+    :return: 已确认的目标集号集合
+    """
+    episodes, _numbered = _file_episode_coordinates(name, custom_words, episode_selection)
+    return episodes or set()
+
+
+def select_episode_files(
+    files: Iterable[Tuple[int, Set[int], bool]],
+    episodes: Set[int],
+    *,
+    excluded: Optional[Set[int]] = None,
+    allow_single_fallback: bool = True,
+) -> Tuple[List[int], List[int], Set[int]]:
+    """
+    按视频覆盖集数选择文件，保留无集号的非视频附属文件。
+
+    多集文件与目标集有交集即选中，允许一并下载同文件中的其它集。仅请求一集且
+    只有一个单集或无集号视频时，沿用识别修正后的唯一视频兜底；附属文件不证明视频覆盖。
+
+    :param files: 文件索引、已按来源识别词解析的集数、是否为视频组成的条目
+    :param episodes: 本次需要完整覆盖的目标集数
+    :param excluded: 季集依据冲突的文件，不能参与匹配或唯一视频兜底
+    :param allow_single_fallback: 是否允许唯一视频兜底
+    :return: 需要下载的索引、不下载的索引、已选视频覆盖的集数；输入条目不会被修改
+    """
+    target_episodes = set(episodes or set())
+    wanted: List[int] = []
+    unwanted: List[int] = []
+    matched: Set[int] = set()
+    media_files: List[Tuple[int, Set[int]]] = []
+    for file_id, file_episodes, is_video in files:
+        if is_video:
+            media_files.append((file_id, file_episodes))
+        if excluded and file_id in excluded:
+            unwanted.append(file_id)
+        elif file_episodes.intersection(target_episodes):
+            wanted.append(file_id)
+            if is_video:
+                matched.update(file_episodes)
+        elif not file_episodes and not is_video:
+            wanted.append(file_id)
+        else:
+            unwanted.append(file_id)
+    if (
+        allow_single_fallback
+        and not target_episodes.issubset(matched)
+        and len(target_episodes) == 1
+        and len(media_files) == 1
+    ):
+        file_id, file_episodes = media_files[0]
+        # 无交集的多集视频不能用唯一视频规则冒充目标单集。
+        if len(file_episodes) <= 1 and (not excluded or file_id not in excluded):
+            unwanted.remove(file_id)
+            wanted.append(file_id)
+            matched.update(target_episodes)
+    return wanted, unwanted, matched
+
+
+def select_torrent_files(
+    files: Iterable[Tuple[int, str]],
+    episodes: Set[int],
+    media_extensions: Iterable[str],
+    custom_words: Optional[str] = None,
+    episode_selection: Optional[EpisodeSelection] = None,
+    *,
+    allow_single_fallback: bool = True,
+) -> Tuple[List[int], List[int], Set[int]]:
+    """
+    按目标季和已确认映射选择真实文件，下载器与历史结算共用相同规则。
+
+    :param files: 下载器文件索引和路径；仅解析文件名，父目录不作为季集依据
+    :param episodes: 必须由视频完整覆盖的目标集号
+    :param media_extensions: 视频后缀；历史调用方可传入其媒体后缀集合
+    :param custom_words: 来源临时识别词，先于明确映射应用，避免重复换算
+    :param episode_selection: 冻结的目标季与映射；None 保留旧调用方的集号选集行为
+    :param allow_single_fallback: 历史去重后不能用剩余唯一文件冒充原始单文件种子
+    :return: 需要下载的索引、不下载的索引和已选视频覆盖的目标集号
+    """
+    extensions = {str(extension).lower() for extension in media_extensions}
+    words = custom_words.splitlines() if custom_words else None
+    entries: List[Tuple[int, Set[int], bool]] = []
+    excluded: Set[int] = set()
+    for file_id, name in files:
+        safe_name = str(name or "")
+        is_video = Path(safe_name).suffix.lower() in extensions
+        mapped, numbered = _file_episode_coordinates(safe_name, words, episode_selection)
+        if mapped is None and (is_video or numbered):
+            excluded.add(file_id)
+        entries.append((file_id, mapped or set(), is_video))
+    return select_episode_files(
+        entries,
+        set(episodes or set()),
+        excluded=excluded,
+        allow_single_fallback=allow_single_fallback,
+    )
 
 
 _SIZE_UNIT = 1024 * 1024
@@ -105,8 +301,13 @@ class TorrentHelper:
             except Exception as err:
                 logger.error(f"处理缓存的种子文件 {cache_path} 时出错: {err}，将重新下载")
         # 下载种子文件
+        effective_ua = (
+            FluxTorrentSpider.get_user_agent(ua)
+            if is_fluxtorrent_download_url(url) and (not ua or ua == settings.USER_AGENT)
+            else ua
+        )
         req = RequestUtils(
-            ua=ua,
+            ua=effective_ua,
             cookies=cookie,
             referer=referer,
             proxies=settings.PROXY if proxy else None
@@ -115,8 +316,13 @@ class TorrentHelper:
             url = req.headers['Location']
             if url and url.startswith("magnet:"):
                 return None, url, "", [], f"获取到磁力链接"
+            effective_ua = (
+                FluxTorrentSpider.get_user_agent(ua)
+                if is_fluxtorrent_download_url(url) and (not ua or ua == settings.USER_AGENT)
+                else effective_ua
+            )
             req = RequestUtils(
-                ua=ua,
+                ua=effective_ua,
                 cookies=cookie,
                 referer=referer,
                 proxies=settings.PROXY if proxy else None
@@ -145,7 +351,7 @@ class TorrentHelper:
                                 data[item[0]] = item[1]
                             # 改写req
                             req = RequestUtils(
-                                ua=ua,
+                                ua=effective_ua,
                                 cookies=cookie,
                                 referer=referer,
                                 proxies=settings.PROXY if proxy else None
@@ -370,23 +576,34 @@ class TorrentHelper:
         return result
 
     @staticmethod
-    def get_torrent_episodes(files: list) -> list:
+    def get_torrent_episodes(
+        files: list,
+        custom_words: Optional[List[str]] = None,
+        episode_selection: Optional[EpisodeSelection] = None,
+    ) -> list:
         """
-        从种子的文件清单中获取所有集数
+        从种子的文件清单中获取所有集数。
+
+        :param files: 种子文件清单
+        :param custom_words: 当前下载来源的临时自定义识别词列表
+        :param episode_selection: 目标季和已经确认的季集对应关系，冲突文件不贡献集数
+        :return: 识别到的全部集数列表
         """
-        episodes = []
+        episodes: Set[int] = set()
         for file in files:
             if not file:
                 continue
             file_path = Path(file)
             if not file_path.suffix or file_path.suffix.lower() not in settings.RMT_MEDIAEXT:
                 continue
-            # 只使用文件名识别
-            meta = MetaInfo(file_path.name)
-            if not meta.begin_episode:
-                continue
-            episodes = list(set(episodes).union(set(meta.episode_list)))
-        return episodes
+            episodes.update(
+                torrent_file_episodes(
+                    file_path.name,
+                    custom_words=custom_words,
+                    episode_selection=episode_selection,
+                )
+            )
+        return list(episodes)
 
     def is_invalid(self, url: Optional[str]) -> bool:
         """

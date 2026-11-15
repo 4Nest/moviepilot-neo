@@ -255,9 +255,9 @@ EOF
             https_server_conf="# HTTPS未启用"
         fi
 
-    NGINX_PORT="${NGINX_PORT}" \
-        PORT="${PORT}" \
-        NGINX_CLIENT_MAX_BODY_SIZE="${NGINX_CLIENT_MAX_BODY_SIZE}" \
+    NGINX_PORT="${NGINX_PORT:-3000}" \
+        PORT="${PORT:-3001}" \
+        NGINX_CLIENT_MAX_BODY_SIZE="${NGINX_CLIENT_MAX_BODY_SIZE:-50m}" \
         HTTPS_SERVER_CONF="${https_server_conf}" \
         envsubst '${NGINX_PORT}${PORT}${NGINX_CLIENT_MAX_BODY_SIZE}${HTTPS_SERVER_CONF}' < /etc/nginx/nginx.template.conf > /etc/nginx/nginx.conf
 }

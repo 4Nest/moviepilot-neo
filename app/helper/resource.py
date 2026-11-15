@@ -276,7 +276,19 @@ class ResourceHelper:
                                 file_path = self._base_dir / save_path / file_name
                                 if not file_path.parent.exists():
                                     file_path.parent.mkdir(parents=True, exist_ok=True)
-                                file_path.write_bytes(bin_res.content)
+                                tmp_path = file_path.parent / f".{file_name}.{os.getpid()}.tmp"
+                                try:
+                                    tmp_path.write_bytes(bin_res.content)
+                                    os.replace(tmp_path, file_path)
+                                except Exception as write_err:
+                                    try:
+                                        if tmp_path.exists():
+                                            tmp_path.unlink()
+                                    except OSError:
+                                        pass
+                                    logger.error(f"写入资源文件 {file_name} 失败：{write_err}")
+                                    success = False
+                                    break
                         if success:
                             logger.info("二进制资源包更新完成，开始重启服务...")
                             SystemHelper.restart()

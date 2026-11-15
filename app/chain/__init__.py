@@ -297,6 +297,35 @@ class ChainBase(metaclass=ABCMeta):
             raise err
         logger.info(f"{source_type} {source_id}.{method} 已限流，跳过执行：{str(err)}")
 
+    _OPTIONAL_MODULE_KWARGS = {
+        "download": {"custom_words", "episode_selection"},
+    }
+
+    @classmethod
+    def _filter_optional_module_kwargs(
+            cls, method: str, func: Callable, kwargs: dict
+    ) -> dict:
+        """
+        对包含新增可选参数的模块方法按函数签名过滤，兼容旧版第三方插件实现。
+        """
+        optional_names = cls._OPTIONAL_MODULE_KWARGS.get(method)
+        if not optional_names or not optional_names.intersection(kwargs):
+            return kwargs
+        try:
+            sig = inspect.signature(func)
+        except (TypeError, ValueError):
+            return kwargs
+        if any(
+            param.kind == inspect.Parameter.VAR_KEYWORD
+            for param in sig.parameters.values()
+        ):
+            return kwargs
+        return {
+            key: value
+            for key, value in kwargs.items()
+            if key not in optional_names or key in sig.parameters
+        }
+
     def __execute_plugin_modules(
             self, method: str, result: Any, *args, **kwargs
     ) -> Any:
@@ -309,14 +338,15 @@ class ChainBase(metaclass=ABCMeta):
             if method in module_dict:
                 func = module_dict[method]
                 if func:
+                    call_kwargs = self._filter_optional_module_kwargs(method, func, kwargs)
                     try:
                         logger.info(f"请求插件 {plugin_name} 执行：{method} ...")
                         if self.__is_valid_empty(result):
                             # 返回None，第一次执行或者需继续执行下一模块
-                            result = func(*args, **kwargs)
+                            result = func(*args, **call_kwargs)
                         elif isinstance(result, list):
                             # 返回为列表，有多个模块运行结果时进行合并
-                            temp = func(*args, **kwargs)
+                            temp = func(*args, **call_kwargs)
                             if isinstance(temp, list):
                                 result.extend(temp)
                         else:
@@ -345,22 +375,23 @@ class ChainBase(metaclass=ABCMeta):
             if method in module_dict:
                 func = module_dict[method]
                 if func:
+                    call_kwargs = self._filter_optional_module_kwargs(method, func, kwargs)
                     try:
                         logger.info(f"请求插件 {plugin_name} 执行：{method} ...")
                         if self.__is_valid_empty(result):
                             # 返回None，第一次执行或者需继续执行下一模块
                             if inspect.iscoroutinefunction(func):
-                                result = await func(*args, **kwargs)
+                                result = await func(*args, **call_kwargs)
                             else:
                                 # 插件同步函数在异步环境中运行，避免阻塞
-                                result = await run_in_threadpool(func, *args, **kwargs)
+                                result = await run_in_threadpool(func, *args, **call_kwargs)
                         elif isinstance(result, list):
                             # 返回为列表，有多个模块运行结果时进行合并
                             if inspect.iscoroutinefunction(func):
-                                temp = await func(*args, **kwargs)
+                                temp = await func(*args, **call_kwargs)
                             else:
                                 # 插件同步函数在异步环境中运行，避免阻塞
-                                temp = await run_in_threadpool(func, *args, **kwargs)
+                                temp = await run_in_threadpool(func, *args, **call_kwargs)
                             if isinstance(temp, list):
                                 result.extend(temp)
                         else:
@@ -398,15 +429,16 @@ class ChainBase(metaclass=ABCMeta):
                 module_name = module_id
             try:
                 func = getattr(module, method)
+                call_kwargs = self._filter_optional_module_kwargs(method, func, kwargs)
                 if self.__is_valid_empty(result):
                     # 返回None，第一次执行或者需继续执行下一模块
-                    result = func(*args, **kwargs)
+                    result = func(*args, **call_kwargs)
                 elif ObjectUtils.check_signature(func, result):
                     # 返回结果与方法签名一致，将结果传入
                     result = func(result)
                 elif isinstance(result, list):
                     # 返回为列表，有多个模块运行结果时进行合并
-                    temp = func(*args, **kwargs)
+                    temp = func(*args, **call_kwargs)
                     if isinstance(temp, list):
                         result.extend(temp)
                 else:
@@ -445,13 +477,14 @@ class ChainBase(metaclass=ABCMeta):
                 module_name = module_id
             try:
                 func = getattr(module, method)
+                call_kwargs = self._filter_optional_module_kwargs(method, func, kwargs)
                 if self.__is_valid_empty(result):
                     # 返回None，第一次执行或者需继续执行下一模块
                     if inspect.iscoroutinefunction(func):
-                        result = await func(*args, **kwargs)
+                        result = await func(*args, **call_kwargs)
                     else:
                         # 系统同步模块在异步路径里也必须切到线程池，避免阻塞共享事件循环。
-                        result = await run_in_threadpool(func, *args, **kwargs)
+                        result = await run_in_threadpool(func, *args, **call_kwargs)
                 elif ObjectUtils.check_signature(func, result):
                     # 返回结果与方法签名一致，将结果传入
                     if inspect.iscoroutinefunction(func):
@@ -461,9 +494,9 @@ class ChainBase(metaclass=ABCMeta):
                 elif isinstance(result, list):
                     # 返回为列表，有多个模块运行结果时进行合并
                     if inspect.iscoroutinefunction(func):
-                        temp = await func(*args, **kwargs)
+                        temp = await func(*args, **call_kwargs)
                     else:
-                        temp = await run_in_threadpool(func, *args, **kwargs)
+                        temp = await run_in_threadpool(func, *args, **call_kwargs)
                     if isinstance(temp, list):
                         result.extend(temp)
                 else:
@@ -1350,6 +1383,8 @@ class ChainBase(metaclass=ABCMeta):
             category: Optional[str] = None,
             label: Optional[str] = None,
             downloader: Optional[str] = None,
+            custom_words: Optional[str] = None,
+            episode_selection: Optional[Any] = None,
     ) -> Optional[Tuple[Optional[str], Optional[str], Optional[str], str]]:
         """
         根据种子文件，选择并添加下载任务
@@ -1360,6 +1395,8 @@ class ChainBase(metaclass=ABCMeta):
         :param category:  种子分类
         :param label:  标签
         :param downloader:  下载器
+        :param custom_words: 来源识别词，选集须与订阅解析采用相同规则
+        :param episode_selection: 目标季与已确认的原始集号对应关系，旧模块可不接收
         :return: 下载器名称、种子Hash、种子文件布局、错误原因
         """
         return self.run_module(
@@ -1371,6 +1408,8 @@ class ChainBase(metaclass=ABCMeta):
             category=category,
             label=label,
             downloader=downloader,
+            custom_words=custom_words,
+            episode_selection=episode_selection,
         )
 
     def download_added(

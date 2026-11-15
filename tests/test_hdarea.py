@@ -636,6 +636,10 @@ def test_hdarea_site_connectivity_scope_validation_and_rss(monkeypatch):
         "app.chain.torrents.SiteOper.update_rss",
         lambda self, domain, rss: updated_rss.update({domain: rss}),
     )
+    monkeypatch.setattr(
+        "app.chain.torrents.RssHelper.parse",
+        lambda self, url, *_args, **_kw: [] if "apikey=" + ("1" * 32) in url else False,
+    )
     TorrentsChain()._TorrentsChain__renew_rss_url(
         "hdarea.club",
         {

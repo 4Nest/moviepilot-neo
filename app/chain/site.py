@@ -40,8 +40,112 @@ from app.utils.string import StringUtils
 site_interaction_manager = SlashInteractionManager()
 _UNSET = object()
 _ICON_FETCH_COOLDOWN_SECONDS = 600
+_ICON_INFLIGHT_WAIT_SECONDS = 35
 _icon_fetch_cooldown: Dict[str, float] = {}
+_icon_inflight: Dict[str, threading.Event] = {}
 _icon_fetch_lock = threading.Lock()
+_AUTH_STATUS_CODE_RE = re.compile(r"\b(401|403)\b")
+_GATEWAY_STATUS_CODE_RE = re.compile(r"\b(500|502|503|504|520|521|522|523|524)\b")
+
+
+def _is_auth_failure_reason(reason: str) -> bool:
+    """判断站点失败原因是否属于鉴权或人机验证拦截（排除 Cloudflare 522/524 等网关超时抖动）。"""
+    lowered = (reason or "").lower()
+    if not lowered:
+        return False
+    explicit_auth_markers = (
+        "cookie",
+        "api key",
+        "apikey",
+        "登录失败",
+        "未登录",
+        "请先登录",
+        "权限",
+        "cf_clearance",
+        "turnstile",
+        "人机验证",
+        "just a moment",
+        "challenge",
+    )
+    if any(marker in lowered for marker in explicit_auth_markers):
+        return True
+    if _AUTH_STATUS_CODE_RE.search(lowered):
+        return True
+    gateway_timeout_markers = (
+        "bad gateway",
+        "gateway time",
+        "service unavailable",
+        "connection timed out",
+        "a timeout occurred",
+        "origin is unreachable",
+        "web server is down",
+        "ssl handshake failed",
+    )
+    if _GATEWAY_STATUS_CODE_RE.search(lowered) or any(
+        marker in lowered for marker in gateway_timeout_markers
+    ):
+        return False
+    return False
+
+
+def _is_valid_icon_payload(content: bytes, headers: Optional[Any] = None) -> Tuple[bool, bool]:
+    """
+    校验站点图标响应体是否为合法图像内容。
+
+    :return: (是否为有效图像, 是否检测到 HTML 页面)
+    """
+    if not content:
+        return False, False
+    stripped = content.lstrip()
+    if not stripped:
+        return False, False
+    leading_lower = stripped[:256].lower()
+    if leading_lower.startswith((b"<!doctype", b"<html")) or (
+        b"<html" in leading_lower and b"<svg" not in leading_lower
+    ):
+        return False, True
+    if leading_lower.startswith((b"{", b"[")):
+        return False, False
+
+    if content.startswith(
+        (
+            b"\x89PNG\r\n\x1a\n",
+            b"\x00\x00\x01\x00",
+            b"\x00\x00\x02\x00",
+            b"\xff\xd8\xff",
+            b"GIF87a",
+            b"GIF89a",
+        )
+    ):
+        return True, False
+    if content.startswith(b"BM") and len(content) >= 14:
+        return True, False
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return True, False
+    if (
+        len(content) >= 12
+        and content[4:8] == b"ftyp"
+        and any(tag in content[8:16] for tag in (b"avif", b"avis", b"heic", b"mif1"))
+    ):
+        return True, False
+    if leading_lower.startswith(b"<svg") or (
+        leading_lower.startswith(b"<?xml") and b"<svg" in stripped[:1024].lower()
+    ):
+        return True, False
+
+    content_type = ""
+    if headers and hasattr(headers, "items"):
+        for key, value in headers.items():
+            if str(key).lower() == "content-type":
+                content_type = str(value or "").split(";", 1)[0].strip().lower()
+                break
+    if content_type.startswith("image/"):
+        is_short_ascii_text = len(stripped) < 128 and all(
+            32 <= byte < 127 or byte in (9, 10, 13) for byte in stripped
+        )
+        if not is_short_ascii_text:
+            return True, False
+    return False, False
 
 class SiteChain(ChainBase):
     """
@@ -110,8 +214,7 @@ class SiteChain(ChainBase):
     ) -> None:
         """记录失败原因，开启或维持熔断，并在开关允许且本轮首次异常时发送告警。"""
         reason = error_reason or "站点请求失败"
-        auth_keywords = ("cookie", "api key", "apikey", "cloudflare", "登录失败", "401", "403", "权限")
-        auth_failed = any(keyword in reason.lower() for keyword in auth_keywords)
+        auth_failed = _is_auth_failure_reason(reason)
         alert_enabled = self._is_sentinel_alert_enabled(domain, site_note=site_note)
         should_alert = SiteHealthSentinel.record_failure(
             domain,
@@ -595,12 +698,21 @@ class SiteChain(ChainBase):
                 icon_res = RequestUtils(
                     cookies=cookie, timeout=15, ua=ua, proxies=proxies
                 ).get_res(url=favicon_url)
-                if not icon_res or not icon_res.content:
+                if (
+                    not icon_res
+                    or getattr(icon_res, "status_code", None) != 200
+                    or not icon_res.content
+                ):
                     continue
                 content = icon_res.content
-                leading = content.lstrip()[:16].lower()
-                if leading.startswith((b"<!doctype", b"<html")):
+                valid_image, is_html = _is_valid_icon_payload(
+                    content, getattr(icon_res, "headers", None)
+                )
+                if is_html:
                     saw_html = True
+                    continue
+                if not valid_image:
+                    logger.warning(f"站点图标响应非有效图像内容，已忽略：{favicon_url}")
                     continue
                 if (
                     len(content) > 22
@@ -904,7 +1016,7 @@ class SiteChain(ChainBase):
 
     def ensure_site_icon(self, domain: str) -> Optional[str]:
         """
-        读取站点图标；若缺少 Base64 缓存且未处于失败冷却期，则自动补抓一次
+        读取站点图标；若缺少 Base64 缓存则按域名 Single-flight 补抓一次，仅抓取失败后写入冷却负缓存
 
         :param domain: 站点域名
         :return: 站点图标 Base64 或回退 URL，不存在时返回 None
@@ -918,16 +1030,55 @@ class SiteChain(ChainBase):
             return existing.base64
 
         now = time.monotonic()
+        inflight_event: Optional[threading.Event] = None
+        is_leader = False
         with _icon_fetch_lock:
-            cooldown_until = _icon_fetch_cooldown.get(norm_domain, 0.0)
-            if cooldown_until > now:
-                return existing.url if existing and existing.url else None
-            _icon_fetch_cooldown[norm_domain] = now + _ICON_FETCH_COOLDOWN_SECONDS
+            current_inflight = _icon_inflight.get(norm_domain)
+            if current_inflight is not None:
+                inflight_event = current_inflight
+            else:
+                cooldown_until = _icon_fetch_cooldown.get(norm_domain, 0.0)
+                if cooldown_until > now:
+                    return existing.url if existing and existing.url else None
+                inflight_event = threading.Event()
+                _icon_inflight[norm_domain] = inflight_event
+                is_leader = True
 
-        self.cache_site_icon_by_domain(norm_domain)
-        updated = SiteOper().get_icon_by_domain(norm_domain)
+        if not is_leader:
+            if inflight_event is not None:
+                inflight_event.wait(timeout=_ICON_INFLIGHT_WAIT_SECONDS)
+            updated = SiteOper().get_icon_by_domain(norm_domain)
+            if updated and updated.base64:
+                return updated.base64
+            if updated and updated.url:
+                return updated.url
+            return existing.url if existing and existing.url else None
+
+        updated = None
+        try:
+            self.cache_site_icon_by_domain(norm_domain)
+            updated = SiteOper().get_icon_by_domain(norm_domain)
+            with _icon_fetch_lock:
+                if updated and updated.base64:
+                    _icon_fetch_cooldown.pop(norm_domain, None)
+                else:
+                    _icon_fetch_cooldown[norm_domain] = (
+                        time.monotonic() + _ICON_FETCH_COOLDOWN_SECONDS
+                    )
+        except Exception:
+            with _icon_fetch_lock:
+                _icon_fetch_cooldown[norm_domain] = (
+                    time.monotonic() + _ICON_FETCH_COOLDOWN_SECONDS
+                )
+            raise
+        finally:
+            with _icon_fetch_lock:
+                if _icon_inflight.get(norm_domain) is inflight_event:
+                    _icon_inflight.pop(norm_domain, None)
+                if inflight_event is not None:
+                    inflight_event.set()
+
         if updated and updated.base64:
-            self.clear_site_icon_cooldown(norm_domain)
             return updated.base64
         if updated and updated.url:
             return updated.url

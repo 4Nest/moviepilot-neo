@@ -1,6 +1,6 @@
 # Neo 识别扩展使用固定 GitHub Release 制品，避免安装回上游未包含修复的版本。
---find-links https://github.com/4Nest/MoviePilot-Rust/releases/expanded_assets/v0.2.9%2Bneo.5
-moviepilot-rust==0.2.9+neo.5
+--find-links https://github.com/4Nest/MoviePilot-Rust/releases/expanded_assets/v0.2.9%2Bneo.6
+moviepilot-rust==0.2.9+neo.6
 pydantic>=2.13.4,<3.0.0
 pydantic-settings>=2.14.2,<3.0.0
 SQLAlchemy~=2.0.50

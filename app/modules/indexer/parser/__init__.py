@@ -52,6 +52,8 @@ class SiteParserBase(metaclass=ABCMeta):
     schema = None
     # 请求模式 cookie/apikey
     request_mode = "cookie"
+    # 是否允许失败后回退尝试其他 HTML 解析模型
+    allow_schema_fallback = True
 
     def __init__(self, site_name: str,
                  url: str,

@@ -108,10 +108,17 @@ class AuthCredentials(ChainEventData):
     channel: Optional[str] = Field(default=None, description="辅助认证渠道")
     service: Optional[str] = Field(default=None, description="辅助认证服务实例名称")
     token: Optional[str] = Field(default=None, description="辅助认证返回的访问令牌")
+    canonical_username: Optional[str] = Field(
+        default=None, description="辅助认证返回的规范用户名"
+    )
+    emby_user_id: Optional[str] = Field(
+        default=None, description="Emby 辅助认证返回的不可变用户 ID"
+    )
 
     @model_validator(mode="before")
     @classmethod
     def check_fields_based_on_grant_type(cls, values):  # noqa
+        """校验密码认证模式下的必填凭证字段。"""
         grant_type = values.get("grant_type")
         if not grant_type:
             values["grant_type"] = "password"

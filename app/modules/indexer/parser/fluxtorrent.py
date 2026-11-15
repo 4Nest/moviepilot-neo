@@ -3,8 +3,29 @@
 import json
 from typing import Any, Optional
 
+from app.core.config import settings
+from app.helper.site import SiteResourceRegistry
 from app.log import logger
 from app.modules.indexer.parser import SiteParserBase, SiteSchema
+from app.utils.http import RequestUtils
+
+try:
+    from app.modules.indexer.spider.fluxtorrent import (
+        FluxTorrentSpider,
+        get_api_response,
+        site_request_config,
+        site_request_limits,
+    )
+except ImportError:  # pragma: no cover - 兼容不含内置模块的旧版宿主
+    FluxTorrentSpider = None  # type: ignore[assignment,misc]
+    get_api_response = None  # type: ignore[assignment]
+    site_request_config = None  # type: ignore[assignment]
+    site_request_limits = None  # type: ignore[assignment]
+
+
+def _resolve_fluxtorrent_spider() -> Any:
+    """优先返回热更注册表中的 FluxTorrent 索引器，未命中时使用当前模块引用。"""
+    return SiteResourceRegistry.get_spider_class("FluxTorrent") or FluxTorrentSpider
 
 
 class FluxTorrentSiteUserInfo(SiteParserBase):
@@ -12,9 +33,11 @@ class FluxTorrentSiteUserInfo(SiteParserBase):
 
     schema = SiteSchema.FluxTorrent
     request_mode = "apikey"
+    # 开放 API 认证失败时保留接口错误，避免回退网页解析模型触发网关限流。
+    allow_schema_fallback = False
 
     def _parse_site_page(self, html_text: Any) -> None:
-        """配置兼容层用户接口与 Token 认证头，禁用所有旧页面入口。"""
+        """配置兼容层用户接口、浏览器 User-Agent 与 Token 认证头，禁用旧页面入口。"""
         self._user_basic_page = "api/v1/compat/nexusphp/user.json"
         self._user_basic_params = {}
         self._user_detail_page = None
@@ -23,13 +46,69 @@ class FluxTorrentSiteUserInfo(SiteParserBase):
         self._user_mail_unread_page = None
         self._sys_mail_unread_page = None
         token = self.apikey or self.token or ""
+        spider_cls = _resolve_fluxtorrent_spider()
+        fallback_ua = (
+            FluxTorrentSpider.get_user_agent
+            if FluxTorrentSpider is not None
+            else (lambda raw_ua: str(settings.NORMAL_USER_AGENT) if not raw_ua or raw_ua == settings.USER_AGENT else raw_ua)
+        )
+        resolve_ua = getattr(spider_cls, "get_user_agent", fallback_ua)
         headers: dict[str, Optional[str]] = {
             "Authorization": f"Token {token}",
             "Accept": "application/json",
+            "User-Agent": resolve_ua(self._ua),
         }
-        if self._ua:
-            headers["User-Agent"] = self._ua
         self._addition_headers = headers
+
+    def _get_page_content(
+        self,
+        url: str,
+        params: Optional[dict] = None,
+        headers: Optional[dict] = None,
+        method: Optional[str] = None,
+    ) -> str:
+        """
+        使用只读 API 传输和共享流控读取用户资料，网关偶发 503 最多退避重试两次。
+
+        :param url: 用户资料接口完整地址
+        :param params: 兼容基类查询参数
+        :param headers: 兼容基类附加请求头
+        :param method: 兼容基类方法签名，只读接口固定使用 GET
+        :return: 接口响应文本，请求失败时返回空字符串
+        """
+        spider_cls = _resolve_fluxtorrent_spider()
+        use_hot_spider = spider_cls is not FluxTorrentSpider
+        req_config_fn = (
+            getattr(spider_cls, "site_request_config", site_request_config)
+            if use_hot_spider else site_request_config
+        )
+        req_limits_fn = (
+            getattr(spider_cls, "site_request_limits", site_request_limits)
+            if use_hot_spider else site_request_limits
+        )
+        api_res_fn = (
+            getattr(spider_cls, "get_api_response", get_api_response)
+            if use_hot_spider else get_api_response
+        )
+        req_headers = dict(self._addition_headers or {})
+        if headers:
+            req_headers.update(headers)
+        response = api_res_fn(
+            RequestUtils(
+                headers=req_headers,
+                proxies=settings.PROXY if self._proxy else None,
+                timeout=60,
+            ),
+            url=url,
+            limits=req_limits_fn(req_config_fn(self._site_url)),
+            params=params,
+        )
+        try:
+            return response.text if response is not None else ""
+        finally:
+            close_fn = getattr(response, "close", None)
+            if callable(close_fn):
+                close_fn()
 
     def _load_api_payload(self, html_text: Any, operation: str) -> Optional[dict[str, Any]]:
         """解析并校验兼容层统一响应信封，失败时写入明确错误信息。"""
@@ -63,6 +142,7 @@ class FluxTorrentSiteUserInfo(SiteParserBase):
         """解析用户身份、等级、上传下载量、分享率、魔力与未读通知数量。"""
         user_info = self._load_api_payload(html_text, "获取用户信息")
         if not user_info:
+            self._user_traffic_page = None
             return
         self.userid = user_info.get("id")
         self.username = user_info.get("username")

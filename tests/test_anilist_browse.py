@@ -1,11 +1,30 @@
 import asyncio
 from datetime import date
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
+import pytest
+
 from app.api.endpoints import anilist as anilist_endpoint
+from app.core.cache import AsyncFileCache, FileCache
+from app.core.config import settings
 from app.core.context import MediaInfo
 from app.modules.anilist import AniListModule
 from app.modules.anilist.anilist import AniListApi
+
+
+@pytest.fixture(autouse=True)
+def isolated_translations(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """每个用例使用独立文件缓存目录与原始下载地址，防止中文数据跨用例串扰。"""
+    monkeypatch.setattr(settings, "GITHUB_PROXY", "")
+    orig_init = AniListApi.__init__
+
+    def _patched_init(self) -> None:
+        orig_init(self)
+        self._file_cache = FileCache(base=tmp_path)
+        self._async_file_cache = AsyncFileCache(base=tmp_path)
+
+    monkeypatch.setattr(AniListApi, "__init__", _patched_init)
 
 
 def _media_info(anilist_id: int = 154587) -> dict:
@@ -33,8 +52,8 @@ def _media_info(anilist_id: int = 154587) -> dict:
     }
 
 
-def test_anilist_client_uses_chinese_proxy_and_forwards_discover_filters() -> None:
-    """AniList 探索应通过中文代理并原样传递组合过滤条件。"""
+def test_anilist_client_forwards_discover_filters() -> None:
+    """AniList 探索应通过官方端点并原样传递组合过滤条件。"""
     client = AniListApi()
     client._invoke = Mock(return_value={"Page": {"media": [_media_info()]}})
 
@@ -51,7 +70,7 @@ def test_anilist_client_uses_chinese_proxy_and_forwards_discover_filters() -> No
         sort="SCORE_DESC",
     )
 
-    assert client._base_url == "https://trace.moe/anilist/"
+    assert client._official_url == "https://graphql.anilist.co"
     assert medias[0]["id"] == 154587
     variables = client._invoke.call_args.args[1]
     assert variables == {
@@ -70,9 +89,8 @@ def test_anilist_client_uses_chinese_proxy_and_forwards_discover_filters() -> No
     assert "synonyms" in client._page_query
 
 
-def test_anilist_client_falls_back_and_merges_chinese_dataset() -> None:
-    """中文代理不可用时应回退官方接口并合并项目中文数据。"""
-    proxy_response = Mock(status_code=403)
+def test_anilist_client_queries_official_and_merges_chinese_dataset() -> None:
+    """直接请求官方接口并合并项目中文数据，避免探测已失效的中文代理。"""
     official_media = _media_info()
     official_media["title"].pop("chinese")
     official_media["synonyms"] = ["Official Alias"]
@@ -82,7 +100,7 @@ def test_anilist_client_falls_back_and_merges_chinese_dataset() -> None:
     }
     client = AniListApi()
     client._request = Mock()
-    client._request.post_res.side_effect = [proxy_response, official_response]
+    client._request.post_res.return_value = official_response
     client._request.get_json.return_value = [
         {
             "id": 154587,
@@ -99,16 +117,13 @@ def test_anilist_client_falls_back_and_merges_chinese_dataset() -> None:
         "Frieren at the Funeral",
     ]
     assert [call.args[0] for call in client._request.post_res.call_args_list] == [
-        client._base_url,
         client._official_url,
     ]
     client._request.get_json.assert_called_once_with(client._translations_url)
-    assert client._proxy_available is False
 
 
-def test_anilist_async_client_falls_back_without_real_network() -> None:
-    """异步中文代理失败时也应使用官方接口和同一中文数据集。"""
-    proxy_response = Mock(status_code=403)
+def test_anilist_async_client_queries_official_without_real_network() -> None:
+    """异步查询也应直接使用官方接口和同一中文数据集。"""
     official_media = _media_info()
     official_media["title"].pop("chinese")
     official_response = Mock(status_code=200)
@@ -118,7 +133,7 @@ def test_anilist_async_client_falls_back_without_real_network() -> None:
     client = AniListApi()
     client._async_request = Mock()
     client._async_request.post_res = AsyncMock(
-        side_effect=[proxy_response, official_response]
+        return_value=official_response
     )
     client._async_request.get_json = AsyncMock(
         return_value=[
@@ -130,7 +145,6 @@ def test_anilist_async_client_falls_back_without_real_network() -> None:
 
     assert result["Page"]["media"][0]["title"]["chinese"] == "葬送的芙莉莲"
     assert [call.args[0] for call in client._async_request.post_res.call_args_list] == [
-        client._base_url,
         client._official_url,
     ]
     client._async_request.get_json.assert_awaited_once_with(client._translations_url)

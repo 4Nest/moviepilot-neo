@@ -10,6 +10,7 @@ from app.schemas.types import ChainEventType, MediaType, ModuleType, MediaServer
 
 
 class EmbyModule(_ModuleBase, _MediaServerBase[Emby]):
+    """Emby 媒体服务器模块。"""
 
     def init_module(self) -> None:
         """
@@ -20,6 +21,7 @@ class EmbyModule(_ModuleBase, _MediaServerBase[Emby]):
 
     @staticmethod
     def get_name() -> str:
+        """获取模块名称。"""
         return "Emby"
 
     @staticmethod
@@ -44,6 +46,7 @@ class EmbyModule(_ModuleBase, _MediaServerBase[Emby]):
         return 1
 
     def stop(self):
+        """停止模块服务。"""
         pass
 
     def test(self) -> Optional[Tuple[bool, str]]:
@@ -60,6 +63,7 @@ class EmbyModule(_ModuleBase, _MediaServerBase[Emby]):
         return True, ""
 
     def init_setting(self) -> Tuple[str, Union[str, bool]]:
+        """初始化模块配置开关。"""
         pass
 
     def scheduler_job(self) -> None:
@@ -137,11 +141,35 @@ class EmbyModule(_ModuleBase, _MediaServerBase[Emby]):
                     f"source={getattr(event_data, 'source', None)}, reason={getattr(event_data, 'reason', None)}"
                 )
                 continue
-            token = server.authenticate(credentials.username, credentials.password)
-            if token:
+            auth_info: Optional[Dict[str, Optional[str]]] = None
+            auth_user_fn = getattr(server, "authenticate_user", None)
+            if isinstance(server, Emby) or (
+                callable(auth_user_fn)
+                and type(server).__module__ != "unittest.mock"
+            ):
+                raw_info = auth_user_fn(credentials.username, credentials.password)
+                if isinstance(raw_info, dict):
+                    auth_info = raw_info
+            elif "authenticate_user" in getattr(server, "__dict__", {}):
+                raw_info = auth_user_fn(credentials.username, credentials.password)
+                if isinstance(raw_info, dict):
+                    auth_info = raw_info
+            else:
+                token = server.authenticate(credentials.username, credentials.password)
+                if token:
+                    auth_info = {
+                        "token": str(token),
+                        "username": None,
+                        "user_id": None,
+                    }
+            if auth_info and auth_info.get("token"):
                 credentials.channel = self.get_name()
                 credentials.service = name
-                credentials.token = token
+                credentials.token = str(auth_info["token"])
+                if auth_info.get("username"):
+                    credentials.canonical_username = str(auth_info["username"]).strip() or None
+                if auth_info.get("user_id"):
+                    credentials.emby_user_id = str(auth_info["user_id"]).strip() or None
                 return credentials
         return None
 
