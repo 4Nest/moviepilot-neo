@@ -380,11 +380,23 @@ def test_nginx_common_and_template_prefix_locations_and_syntax():
     if nginx_bin:
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
-            (td_path / "cache").mkdir()
+            for subdir in ("cache", "body", "proxy", "fastcgi", "uwsgi", "scgi"):
+                (td_path / subdir).mkdir()
             (td_path / "common.conf").write_text(common_conf, "utf-8")
+            http_isolation = (
+                "http {\n"
+                "    access_log off;\n"
+                f"    client_body_temp_path {td_path}/body;\n"
+                f"    proxy_temp_path {td_path}/proxy;\n"
+                f"    fastcgi_temp_path {td_path}/fastcgi;\n"
+                f"    uwsgi_temp_path {td_path}/uwsgi;\n"
+                f"    scgi_temp_path {td_path}/scgi;"
+            )
             rendered = (
-                template_conf.replace("user moviepilot;", "")
+                f"error_log {td_path}/error.log crit;\n"
+                + template_conf.replace("user moviepilot;", "")
                 .replace("/var/run/nginx.pid", str(td_path / "nginx.pid"))
+                .replace("http {", http_isolation, 1)
                 .replace("/tmp levels=1:2", f"{td_path}/cache levels=1:2")
                 .replace("include /etc/nginx/mime.types;", "types { text/html html; }")
                 .replace("include common.conf;", f"include {td_path}/common.conf;")
@@ -396,7 +408,7 @@ def test_nginx_common_and_template_prefix_locations_and_syntax():
             conf_file = td_path / "nginx.conf"
             conf_file.write_text(rendered, "utf-8")
             proc = subprocess.run(
-                [nginx_bin, "-t", "-c", str(conf_file), "-e", str(td_path / "error.log")],
+                [nginx_bin, "-t", "-p", str(td_path), "-c", str(conf_file), "-e", str(td_path / "error.log")],
                 capture_output=True,
                 text=True,
                 check=False,
