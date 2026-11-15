@@ -2,6 +2,7 @@
 
 import base64
 import json
+import uuid
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
@@ -91,9 +92,13 @@ class FakeResponse:
 
 @pytest.fixture(autouse=True)
 def isolated_catalog_cache(monkeypatch):
-    """为每个用例隔离目录缓存，避免凭据与分区标签串用。"""
-    monkeypatch.setattr(PiggoSpider, "_catalog_cache", MemoryBackend(maxsize=128, ttl=3600))
-    monkeypatch.setattr(PiggoSpider, "_catalog_region", f"piggo-test-{id(monkeypatch)}")
+    """为每个用例隔离目录缓存，避免 CPython 对象地址复用导致跨用例串用。"""
+    cache = MemoryBackend(maxsize=128, ttl=3600)
+    region = f"piggo-test-{uuid.uuid4().hex}"
+    monkeypatch.setattr(PiggoSpider, "_catalog_cache", cache)
+    monkeypatch.setattr(PiggoSpider, "_catalog_region", region)
+    yield
+    cache.clear(region=region)
 
 
 def _torrent_page(items=None, kind=None):
