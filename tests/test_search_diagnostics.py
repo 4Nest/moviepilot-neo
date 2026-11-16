@@ -70,6 +70,56 @@ def test_explain_rule_groups_reports_effective_mismatch_and_missing(monkeypatch)
     assert result[2].categories == ["动画"]
 
 
+def test_category_rule_group_does_not_cross_media_type_and_suppresses_routed_warnings(monkeypatch):
+    """同名二级分类不得跨电影/剧集误命中，且已有生效规则组时抑制其余分类分流跳过警告。"""
+
+    helper = RuleHelper()
+    groups = [
+        FilterRuleGroup(name="电影纪录片", rule_string="CNSUB", media_type=MediaType.MOVIE.value, category="纪录片"),
+        FilterRuleGroup(name="日韩剧", rule_string="CNSUB", media_type=MediaType.TV.value, category="日韩剧"),
+        FilterRuleGroup(name="国产剧", rule_string="CNSUB", media_type=MediaType.TV.value, category="国产剧"),
+        FilterRuleGroup(name="动画电影", rule_string="CNSUB", media_type=MediaType.MOVIE.value, category="动画电影"),
+    ]
+    monkeypatch.setattr(RuleHelper, "get_rule_groups", staticmethod(lambda: groups))
+    monkeypatch.setattr(RuleHelper, "get_custom_rules", staticmethod(lambda: []))
+
+    # 剧集“纪录片”不应误命中电影下的同名“纪录片”规则组，且无任何规则生效时保留未适用警告
+    tv_doc = MediaInfo(title="地球脉动", type=MediaType.TV, category="纪录片")
+    assert helper.get_rule_group_by_media(media=tv_doc, group_names=["电影纪录片"]) == []
+    unmatched_diag = SearchChain._build_search_diagnostics(
+        observations=[],
+        candidates=10,
+        retained=10,
+        counts=Counter(),
+        mediainfo=tv_doc,
+        rule_groups=["电影纪录片", "日韩剧"],
+    )
+    assert [(w.code, w.rule_group) for w in unmatched_diag.warnings] == [
+        ("rule_group_not_applicable", "电影纪录片"),
+        ("rule_group_not_applicable", "日韩剧"),
+    ]
+
+    # 命中“日韩剧”规则组时，其它分类分流跳过的规则组仅保留在 rule_groups，不再刷屏到 warnings；缺失规则仍告警
+    kr_drama = MediaInfo(title="机智的医生生活", type=MediaType.TV, category="日韩剧")
+    matched_diag = SearchChain._build_search_diagnostics(
+        observations=[],
+        candidates=76,
+        retained=54,
+        counts=Counter({"filter_rules": 22}),
+        mediainfo=kr_drama,
+        rule_groups=["动画电影", "国产剧", "日韩剧", "已删除规则"],
+    )
+    assert [(r.name, r.status) for r in matched_diag.rule_groups] == [
+        ("动画电影", "skipped"),
+        ("国产剧", "skipped"),
+        ("日韩剧", "effective"),
+        ("已删除规则", "skipped"),
+    ]
+    assert [(w.code, w.rule_group) for w in matched_diag.warnings] == [
+        ("rule_group_missing", "已删除规则"),
+    ]
+
+
 def test_parse_result_counts_each_rejection_stage(monkeypatch):
     """匹配管线应分别记录缺标题、季集、身份和重复资源的排除数量。"""
 

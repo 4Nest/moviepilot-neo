@@ -68,10 +68,14 @@ class RuleHelper:
             rule_groups = [group for group in rule_groups if group.name in group_names]
         for group in rule_groups:
             if not group.media_type:
-                ret_groups.append(group)
-            elif media and not group.category and media.type and group.media_type == media.type.value:
-                ret_groups.append(group)
-            elif media and group.category == media.category:
+                if not group.category or (media and group.category == media.category):
+                    ret_groups.append(group)
+            elif (
+                media
+                and media.type
+                and group.media_type == media.type.value
+                and (not group.category or group.category == media.category)
+            ):
                 ret_groups.append(group)
         return ret_groups
 

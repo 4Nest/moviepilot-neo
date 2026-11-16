@@ -343,10 +343,11 @@ class SearchChain(ChainBase):
             media=mediainfo,
             group_names=group_names,
         )
+        has_effective_rule = any(rule.status == "effective" for rule in explained_rules)
         warnings = [
             SearchDiagnosticWarning(code=rule.reason, rule_group=rule.name)
             for rule in explained_rules
-            if rule.reason
+            if rule.reason and (rule.reason != "rule_group_not_applicable" or not has_effective_rule)
         ]
         warnings.extend(helper.diagnose_rule_groups(media=mediainfo, group_names=group_names))
         warnings.extend(SearchDiagnosticWarning(code=code) for code in sorted(warning_codes))
