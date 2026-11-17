@@ -165,6 +165,7 @@
     "用户不存在": "User does not exist",
     "已存在相同名称的工作流": "A workflow with the same name already exists",
     "创建工作流成功": "Workflow created successfully",
+    "复制工作流成功": "Workflow cloned successfully",
     "请填写工作流ID、分享标题和分享人": "Please fill in workflow ID, share title, and sharer",
     "工作流名称不能为空": "Workflow name cannot be empty",
     "actions字段JSON格式错误": "The actions field contains invalid JSON",

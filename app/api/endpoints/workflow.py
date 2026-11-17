@@ -1,3 +1,4 @@
+import copy
 import json
 from datetime import datetime
 from typing import List, Any, Optional
@@ -11,6 +12,7 @@ from app.chain.workflow import WorkflowChain
 from app.core.config import global_vars
 from app.core.plugin import PluginManager
 from app.workflow import WorkFlowManager
+from app.workflow.simulator import WorkflowSimulator
 from app.db import get_async_db, get_db
 from app.db.models import Workflow, User
 from app.db.systemconfig_oper import SystemConfigOper
@@ -210,6 +212,63 @@ async def workflow_shares(
     return await MoviePilotServerHelper.async_get_workflow_shares(name=name, page=page, count=count)
 
 
+def _parse_workflow_datetime(value: Any) -> Optional[datetime]:
+    """解析工作流时间字符串，无法解析时返回 None。"""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _calc_duration_ms(started_at: Any, finished_at: Any) -> Optional[int]:
+    """根据起止时间计算执行耗时毫秒数。"""
+    start_dt = _parse_workflow_datetime(started_at)
+    end_dt = _parse_workflow_datetime(finished_at)
+    if not start_dt or not end_dt:
+        return None
+    return max(int(round((end_dt - start_dt).total_seconds() * 1000)), 0)
+
+
+def _summarize_node_outputs(raw_output: Any, action_type: Optional[str] = None) -> dict[str, int]:
+    """将节点输出脱敏汇总为字段条数字典，避免下发原始大对象列表。"""
+    if isinstance(raw_output, dict):
+        summary: dict[str, int] = {}
+        for key, val in raw_output.items():
+            if isinstance(val, (list, tuple, set, dict)):
+                summary[str(key)] = len(val)
+            elif val is None:
+                summary[str(key)] = 0
+            else:
+                summary[str(key)] = 1
+        return summary
+    if isinstance(raw_output, (list, tuple, set)):
+        contract = WorkFlowManager().get_action_contract(action_type or "") or {}
+        outputs_decl = contract.get("outputs") or []
+        field_name = outputs_decl[0].get("name") if outputs_decl and isinstance(outputs_decl[0], dict) else "items"
+        return {str(field_name or "items"): len(raw_output)}
+    return {}
+
+
+@router.post("/simulate", summary="模拟试跑工作流", response_model=schemas.Response)
+async def simulate_workflow(
+    request: schemas.WorkflowSimulateRequest,
+    _: User = Depends(get_current_admin_async),
+) -> Any:
+    """
+    零副作用模拟试跑工作流，返回图结构诊断、节点状态与条件分支流转路径。
+    """
+    sim_result = WorkflowSimulator().simulate(request)
+    return schemas.Response(success=True, data=sim_result.model_dump())
+
+
 @router.post(
     "/{workflow_id}/run", summary="执行工作流", response_model=schemas.Response
 )
@@ -310,6 +369,170 @@ async def reset_workflow(
     # 删除缓存
     SystemConfigOper().delete(f"WorkflowCache-{workflow_id}")
     return schemas.Response(success=True)
+
+
+@router.post(
+    "/{workflow_id}/clone", summary="复制工作流副本", response_model=schemas.Response
+)
+async def clone_workflow(
+    workflow_id: int,
+    db: AsyncSession = Depends(get_async_db),
+    _: User = Depends(get_current_admin_async),
+) -> Any:
+    """
+    复制指定工作流为暂停态副本，自动生成不重复名称并重置运行期状态。
+    """
+    workflow_oper = WorkflowOper(db)
+    source_wf = await workflow_oper.async_get(workflow_id)
+    if not source_wf:
+        return schemas.Response(success=False, message="工作流不存在")
+
+    base_name = f"{source_wf.name} - 副本"
+    new_name = base_name
+    suffix = 2
+    while await workflow_oper.async_name_exists(new_name):
+        new_name = f"{source_wf.name} - 副本 {suffix}"
+        suffix += 1
+
+    new_wf = Workflow(
+        name=new_name,
+        description=source_wf.description,
+        timer=source_wf.timer,
+        trigger_type=source_wf.trigger_type or WORKFLOW_TRIGGER_TIMER,
+        event_type=source_wf.event_type,
+        event_conditions=copy.deepcopy(source_wf.event_conditions or {}),
+        actions=copy.deepcopy(source_wf.actions or []),
+        flows=copy.deepcopy(source_wf.flows or []),
+        execution_config=copy.deepcopy(source_wf.execution_config or {}),
+        state="P",
+        current_action=None,
+        result=None,
+        run_count=0,
+        context={},
+        execution_state={},
+        add_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        last_time=None,
+    )
+    await new_wf.async_create(db)
+    await db.refresh(new_wf, attribute_names=["id", "name"])
+    return schemas.Response(
+        success=True,
+        message="复制工作流成功",
+        data={"id": new_wf.id, "name": new_wf.name},
+    )
+
+
+@router.get(
+    "/{workflow_id}/execution",
+    summary="查询工作流最近执行诊断详情",
+    response_model=schemas.Response,
+)
+async def get_workflow_execution(
+    workflow_id: int,
+    db: AsyncSession = Depends(get_async_db),
+    _: User = Depends(get_current_admin_async),
+) -> Any:
+    """
+    查询工作流最近一次执行的轻量诊断详情，仅下发节点状态、耗时与输出条数摘要。
+    """
+    workflow = await WorkflowOper(db).async_get(workflow_id)
+    if not workflow:
+        return schemas.Response(success=False, message="工作流不存在")
+
+    execution_state = workflow.execution_state if isinstance(workflow.execution_state, dict) else {}
+    raw_context = workflow.context if isinstance(workflow.context, dict) else {}
+    state_nodes = execution_state.get("nodes") if isinstance(execution_state.get("nodes"), dict) else {}
+    state_outputs = execution_state.get("outputs") if isinstance(execution_state.get("outputs"), dict) else {}
+    if not state_outputs and isinstance(raw_context.get("node_outputs"), dict):
+        state_outputs = raw_context["node_outputs"]
+    state_errors = execution_state.get("errors") if isinstance(execution_state.get("errors"), dict) else {}
+    runtime = execution_state.get("runtime") if isinstance(execution_state.get("runtime"), dict) else {}
+
+    legacy_completed = {
+        item for item in (workflow.current_action or "").split(",") if item
+    }
+    valid_states = {"success", "failed", "skipped", "running", "queued", "pending"}
+    nodes_list = []
+    finished_count = 0
+    raw_actions = workflow.actions or []
+
+    for action in raw_actions:
+        if not isinstance(action, dict):
+            continue
+        action_id = action.get("id") or ""
+        action_type = action.get("type")
+        meta = state_nodes.get(action_id) if isinstance(state_nodes.get(action_id), dict) else {}
+        node_state = meta.get("state")
+        if node_state == "completed":
+            node_state = "success"
+        if not node_state:
+            node_state = "success" if action_id in legacy_completed else "pending"
+        if node_state not in valid_states:
+            node_state = "pending"
+        if node_state in ("success", "failed", "skipped"):
+            finished_count += 1
+
+        started_at = meta.get("started_at")
+        finished_at = meta.get("finished_at")
+        message = meta.get("message")
+        error = state_errors.get(action_id)
+        if not error and node_state == "failed" and message:
+            error = message
+
+        nodes_list.append({
+            "id": action_id,
+            "name": action.get("name") or action_type or action_id,
+            "type": action_type,
+            "state": node_state,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration_ms": _calc_duration_ms(started_at, finished_at),
+            "attempt": meta.get("attempt"),
+            "message": message,
+            "error": error,
+            "outputs_summary": _summarize_node_outputs(state_outputs.get(action_id), action_type),
+        })
+
+    if runtime.get("progress") is not None:
+        progress = int(runtime["progress"])
+    elif raw_context.get("progress") is not None:
+        progress = int(raw_context["progress"])
+    elif workflow.state == "S":
+        progress = 100
+    else:
+        progress = round(finished_count / len(nodes_list) * 100) if nodes_list else 0
+
+    execute_history = []
+    raw_history = raw_context.get("execute_history") if isinstance(raw_context.get("execute_history"), list) else []
+    for item in raw_history:
+        if not isinstance(item, dict):
+            continue
+        msg = item.get("message")
+        if isinstance(msg, str) and len(msg) > 500:
+            msg = f"{msg[:500]}..."
+        entry = {
+            "action": item.get("action"),
+            "result": item.get("result"),
+            "message": msg,
+        }
+        if execute_history and execute_history[-1] == entry:
+            continue
+        execute_history.append(entry)
+
+    return schemas.Response(
+        success=True,
+        data={
+            "id": workflow.id,
+            "name": workflow.name,
+            "state": workflow.state,
+            "result": workflow.result,
+            "run_count": workflow.run_count or 0,
+            "last_time": workflow.last_time,
+            "progress": progress,
+            "nodes": nodes_list,
+            "execute_history": execute_history,
+        },
+    )
 
 
 @router.get("/{workflow_id}", summary="工作流详情", response_model=schemas.Workflow)

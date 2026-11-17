@@ -45,8 +45,19 @@ def test_summary_preserves_card_status_and_detail_preserves_configuration(workfl
             summaries = await endpoint.list_workflows(db=db, summary=True)
             summary = schemas.Workflow.model_validate(next(row for row in summaries if row["id"] == workflow_id))
             assert summary.actions == [{"id": "search", "name": "搜索", "type": "FetchTorrents"}]
-            assert summary.execution_state == {"nodes": {"search": {"state": "success"}},
-                                               "runtime": {"finished_actions": 1}}
+            assert summary.event_conditions == {"site": "CHD"}
+            assert summary.execution_state == {
+                "nodes": {
+                    "search": {
+                        "state": "success",
+                        "started_at": None,
+                        "finished_at": None,
+                        "attempt": 1,
+                        "message": None,
+                    }
+                },
+                "runtime": {"finished_actions": 1},
+            }
             assert summary.current_action == "search"
             assert summary.run_count == 8
             assert len(summary.model_dump_json()) < 1000

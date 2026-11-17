@@ -138,3 +138,48 @@ class WorkflowShare(BaseModel):
     count: Optional[int] = Field(default=0, description="复用人次")
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class WorkflowSimulateRequest(BaseModel):
+    """
+    工作流零副作用模拟试跑请求参数
+    """
+    actions: Optional[List[dict]] = Field(default_factory=list, description="动作节点列表")
+    flows: Optional[List[dict]] = Field(default_factory=list, description="流程连线列表")
+    execution_config: Optional[dict] = Field(default_factory=dict, description="工作流执行配置")
+    scenario: Optional[str] = Field(
+        default="normal",
+        description="模拟场景：normal-常规有数据 empty_source-源数据为空 empty_filter-过滤结果为空",
+    )
+
+
+class WorkflowSimulateDiagnostic(BaseModel):
+    """
+    工作流模拟静态或运行期诊断项
+    """
+    level: str = Field(description="诊断级别：error | warning | info")
+    node_id: Optional[str] = Field(default=None, description="关联节点ID")
+    message: str = Field(description="诊断说明")
+
+
+class WorkflowSimulateResponse(BaseModel):
+    """
+    工作流零副作用模拟试跑响应结构
+    """
+    success: bool = Field(default=True, description="模拟流程是否全部顺畅无失败")
+    scenario: str = Field(default="normal", description="本次使用的模拟场景")
+    summary: str = Field(default="", description="模拟结果中文摘要")
+    execution_order: List[str] = Field(default_factory=list, description="按拓扑触发顺序排列的已执行节点ID")
+    nodes: dict[str, dict] = Field(
+        default_factory=dict,
+        description="各节点模拟状态：{id, name, type, state(success|failed|skipped|unreached), message, outputs_summary, step}",
+    )
+    edges: dict[str, dict] = Field(
+        default_factory=dict,
+        description="各连线模拟状态：{id, source, target, condition, state(matched|unmatched|skipped|failed)}",
+    )
+    diagnostics: List[WorkflowSimulateDiagnostic] = Field(
+        default_factory=list,
+        description="图结构、输入契约与参数静态诊断列表",
+    )
+

@@ -71,25 +71,31 @@ class Workflow(Base):
         """获取卡片摘要，在数据库中排除执行上下文和节点输出，避免加载大对象。"""
         columns = (
             cls.id, cls.name, cls.description, cls.timer, cls.trigger_type,
-            cls.event_type, cls.state, cls.current_action, cls.result,
+            cls.event_type, cls.event_conditions, cls.state, cls.current_action, cls.result,
             cls.run_count, cls.actions, cls.add_time, cls.last_time,
             cls.execution_state["nodes"].label("nodes"),
             cls.execution_state["runtime"]["finished_actions"].label("finished_actions"),
         )
         result = await db.execute(select(*columns))
         summaries = []
+        node_scalar_keys = ("state", "started_at", "finished_at", "attempt", "message")
         for row in result.mappings():
             summary = dict(row)
             nodes = summary.pop("nodes")
             finished_actions = summary.pop("finished_actions")
+            summary["event_conditions"] = summary.get("event_conditions") or {}
             summary["actions"] = [
                 {key: action.get(key) for key in ("id", "name", "type")}
                 for action in (summary["actions"] or [])
             ]
             summary["execution_state"] = {
                 "nodes": {
-                    action_id: {"state": metadata.get("state")}
+                    action_id: {
+                        key: metadata.get(key)
+                        for key in node_scalar_keys
+                    }
                     for action_id, metadata in (nodes or {}).items()
+                    if isinstance(metadata, dict)
                 },
                 "runtime": {"finished_actions": finished_actions} if finished_actions is not None else {},
             }
