@@ -886,6 +886,35 @@ def doctor(json_output: bool, fix: bool, deep: bool) -> None:
     raise click.exceptions.Exit(report.exit_code())
 
 
+@cli.command("migrate-v3", context_settings=CONTEXT_SETTINGS)
+@click.option("--dry-run", is_flag=True, help="仅预检分析上游 v3 数据与配置差异，不写入任何变更")
+@click.option("--json", "json_output", is_flag=True, help="输出 JSON 格式迁移报告")
+def migrate_v3(dry_run: bool, json_output: bool) -> None:
+    """将上游 MoviePilot v3 配置与数据库安全无损迁移至 NEO（容器首次启动亦会自动执行）"""
+    from alembic.command import upgrade
+    from app.db import Engine
+    from app.db.init import build_alembic_config, init_db
+    from app.db.v3_migration import migrate_v3_database_if_needed
+
+    if not dry_run:
+        init_db()
+    alembic_cfg = build_alembic_config()
+    report = migrate_v3_database_if_needed(
+        Engine,
+        alembic_cfg,
+        config_path=settings.CONFIG_PATH,
+        dry_run=dry_run,
+    )
+    if report.executed and not dry_run:
+        upgrade(alembic_cfg, "head")
+
+    if json_output:
+        click.echo(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        for line in report.summary_lines():
+            click.echo(line)
+
+
 @cli.group(context_settings=CONTEXT_SETTINGS)
 def config() -> None:
     """查看或修改本地配置"""

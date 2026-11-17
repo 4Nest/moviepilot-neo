@@ -120,6 +120,7 @@ moviepilot restart
 moviepilot status
 moviepilot logs
 moviepilot doctor
+moviepilot migrate-v3
 moviepilot version
 moviepilot config path
 moviepilot config list

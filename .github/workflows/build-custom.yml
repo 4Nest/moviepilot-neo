@@ -124,7 +124,7 @@ jobs:
             channel="beta"
           fi
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
-      # Unraid 主机为 x86，仅构建 linux/amd64，runner 原生架构无需 QEMU
+      # Unraid/NAS 主机为 x86，仅构建 linux/amd64，runner 原生架构无需 QEMU
       - name: Set Up Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -135,17 +135,43 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve Docker Hub Target
+        id: dockerhub
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          if [[ -n "$DOCKER_USERNAME" && -n "$DOCKER_PASSWORD" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "images<<EOF" >> "$GITHUB_OUTPUT"
+            echo "ghcr.io/4nest/moviepilot-neo" >> "$GITHUB_OUTPUT"
+            echo "${DOCKER_USERNAME}/moviepilot-neo" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "images=ghcr.io/4nest/moviepilot-neo" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Login Docker Hub
+        if: steps.dockerhub.outputs.enabled == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
       - name: Extract Docker Metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/4nest/moviepilot-neo
+          images: ${{ steps.dockerhub.outputs.images }}
           tags: |
             type=raw,value=beta,enable=${{ github.ref == 'refs/heads/beta' }}
             type=ref,event=tag
             type=raw,value=${{ steps.identity.outputs.version }},enable=${{ inputs.publish_latest == true }}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || inputs.publish_latest == true }}
 
+      # 关闭 provenance/sbom 证明索引包装，确保输出纯净单架构 Manifest，
+      # 让飞牛 OS (fnOS)、群晖及国内 Docker Hub 镜像源能准确比对 Digest 检测更新。
       - name: Build and Push Image
         uses: docker/build-push-action@v7
         with:
@@ -161,27 +187,19 @@ jobs:
             BUILD_CHANNEL=${{ steps.identity.outputs.channel }}
             BUILD_TIME=${{ steps.identity.outputs.built_at }}
           platforms: linux/amd64
+          provenance: false
+          sbom: false
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/4Nest/moviepilot-neo
+            org.opencontainers.image.version=${{ steps.identity.outputs.version }}
+            org.opencontainers.image.created=${{ steps.identity.outputs.built_at }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.description=MoviePilot personal fork (moviepilot-neo), based on upstream v2
             org.opencontainers.image.licenses=GPL-3.0-only
           cache-from: type=gha,scope=moviepilot-neo-docker
           cache-to: type=gha,scope=moviepilot-neo-docker,mode=max
-
-      # beta 仅发布到 ghcr；latest 同步一份到 Docker Hub，保持两个仓库稳定标签一致。
-      - name: Mirror latest to Docker Hub
-        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish_latest == true
-        env:
-          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-        run: |
-          echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
-          docker buildx imagetools create \
-            --tag "$DOCKER_USERNAME/moviepilot-neo:latest" \
-            ghcr.io/4nest/moviepilot-neo:latest
 
       - name: Update release notes
         if: startsWith(github.ref, 'refs/tags/v') || inputs.publish_latest == true

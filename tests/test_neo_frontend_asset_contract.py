@@ -26,3 +26,15 @@ def test_docker_frontend_download_fails_closed() -> None:
     assert "releases/download/${FRONTEND_VERSION}/${FRONTEND_DIST_ASSET}" in dockerfile
     assert "curl -fsSL" in dockerfile
     assert "-o /tmp/frontend-dist.zip" in dockerfile
+
+
+def test_neo_image_publishes_clean_manifest_to_ghcr_and_dockerhub() -> None:
+    """镜像构建必须禁用 provenance/sbom 索引包装并同步推送 GHCR 与 Docker Hub，确保飞牛 OS 等 NAS 能检测镜像更新。"""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "provenance: false" in workflow
+    assert "sbom: false" in workflow
+    assert "${DOCKER_USERNAME}/moviepilot-neo" in workflow
+    assert "images: ${{ steps.dockerhub.outputs.images }}" in workflow
+    assert "org.opencontainers.image.version=${{ steps.identity.outputs.version }}" in workflow
+    assert "docker buildx imagetools create" not in workflow
