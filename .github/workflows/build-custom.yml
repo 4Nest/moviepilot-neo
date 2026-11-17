@@ -14,6 +14,11 @@ on:
         required: true
         default: false
         type: boolean
+      notify_telegram:
+        description: '发布 latest 时同步发送 Telegram 频道通知'
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -110,11 +115,11 @@ jobs:
       - name: Resolve build identity
         id: identity
         run: |
+          app_version=$(python3 -c 'import runpy; print(runpy.run_path("version.py")["APP_VERSION"])')
+          echo "version=$app_version" >> "$GITHUB_OUTPUT"
           echo "built_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+          if [[ "${GITHUB_REF}" == refs/tags/* || "${{ inputs.publish_latest }}" == "true" ]]; then
             channel="release"
-          elif [[ "${{ inputs.publish_latest }}" == "true" ]]; then
-            channel="latest"
           else
             channel="beta"
           fi
@@ -136,8 +141,9 @@ jobs:
         with:
           images: ghcr.io/4nest/moviepilot-neo
           tags: |
-            type=raw,value=beta,enable=${{ github.ref == 'refs/heads/beta' && inputs.publish_latest != true }}
+            type=raw,value=beta,enable=${{ github.ref == 'refs/heads/beta' }}
             type=ref,event=tag
+            type=raw,value=${{ steps.identity.outputs.version }},enable=${{ inputs.publish_latest == true }}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || inputs.publish_latest == true }}
 
       - name: Build and Push Image
@@ -184,8 +190,17 @@ jobs:
         run: |
           app_version=$(python3 -c 'import runpy; print(runpy.run_path("version.py")["APP_VERSION"])')
           notes_file=".github/release-notes/${app_version}.md"
+          if [[ "${{ inputs.publish_latest }}" == "true" ]]; then
+            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${app_version}" >/dev/null 2>&1; then
+              gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${app_version}" \
+                -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            else
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+                -f ref="refs/tags/${app_version}" -f sha="$GITHUB_SHA" >/dev/null
+            fi
+          fi
           if gh release view "$app_version" >/dev/null 2>&1; then
-            gh release edit "$app_version" --title "$app_version" --latest --notes-file "$notes_file"
+            gh release edit "$app_version" --target "$GITHUB_SHA" --title "$app_version" --latest --notes-file "$notes_file"
           else
             gh release create "$app_version" --target "$GITHUB_SHA" --title "$app_version" \
               --latest --notes-file "$notes_file"
@@ -193,7 +208,16 @@ jobs:
 
   notify:
     needs: build
-    if: github.repository == '4Nest/moviepilot-neo' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish_latest == true)
+    if: >-
+      github.repository == '4Nest/moviepilot-neo'
+      && (
+        startsWith(github.ref, 'refs/tags/v')
+        || (
+          inputs.publish_latest == true
+          && inputs.notify_telegram != false
+          && inputs.notify_telegram != 'false'
+        )
+      )
     runs-on: ubuntu-latest
     name: Notify Telegram Release Channel
     environment: TELEGRAM_RELEASE_BOT_TOKEN
