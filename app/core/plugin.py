@@ -87,7 +87,7 @@ class PluginManager(ConfigReloadMixin, metaclass=Singleton):
         plugins.sort(key=lambda x: x.plugin_order if hasattr(x, "plugin_order") else 0)
         for plugin in plugins:
             plugin_id = plugin.__name__
-            if pid and plugin_id != pid:
+            if pid and plugin_id.lower() != pid.lower():
                 continue
             try:
                 # 判断插件是否满足认证要求，如不满足则不进行实例化

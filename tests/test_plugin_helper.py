@@ -2802,3 +2802,87 @@ class TestPluginHelper:
 
         assert not success
         assert "本地插件来源与插件ID不匹配" == message
+
+    def test_filelist_download_preserves_binary_bytes_and_skips_ds_store(self, monkeypatch, tmp_path):
+        """文件列表下载必须按原始字节无损落盘二进制资产，并忽略 .DS_Store / node_modules。"""
+        from app.core.config import settings
+        from app.helper.plugin import PluginHelper
+
+        helper = PluginHelper()
+        monkeypatch.setattr(type(settings), "ROOT_PATH", property(lambda _self: tmp_path))
+        png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\xff\xfe\xfd"
+        file_list = [
+            {"name": ".DS_Store", "path": "plugins.v2/demoplugin/.DS_Store", "download_url": "https://raw.example/.DS_Store"},
+            {"name": "node_modules", "path": "plugins.v2/demoplugin/node_modules"},
+            {"name": "icon.png", "path": "plugins.v2/demoplugin/icon.png", "download_url": "https://raw.example/icon.png"},
+        ]
+        requested_urls = []
+
+        async def fake_request(url, **_kwargs):
+            requested_urls.append(url)
+            return _FakeContentResponse(200, png_bytes)
+
+        monkeypatch.setattr(helper, "_PluginHelper__async_request_with_fallback", fake_request)
+        ok, msg = asyncio.run(helper._PluginHelper__async_download_files("demoplugin", file_list, "demo/repo", "v2", True))
+        assert ok is True and msg == ""
+        assert requested_urls == ["https://raw.example/icon.png"]
+        assert (tmp_path / "app" / "plugins" / "demoplugin" / "icon.png").read_bytes() == png_bytes
+        assert not (tmp_path / "app" / "plugins" / "demoplugin" / ".DS_Store").exists()
+
+    def test_release_asset_uses_github_proxy_mirror_and_rejects_html_error_page(self, monkeypatch):
+        """配置 GITHUB_PROXY 时 Release 资产下载应优先走公开镜像且自动过滤非 ZIP 错误响应。"""
+        import io
+        import zipfile
+        from app.core.config import settings
+        from app.helper import plugin as plugin_helper_mod
+        from app.helper.plugin import PluginHelper
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("__init__.py", "# ok\n")
+        valid_zip = buf.getvalue()
+
+        monkeypatch.setattr(settings, "GITHUB_PROXY", "https://mirror.example/")
+        monkeypatch.setattr(settings, "PROXY_HOST", "")
+        calls = []
+
+        class FakeAsyncRequest:
+            def __init__(self, **kwargs):
+                self.headers = kwargs.get("headers")
+
+            async def get_res(self, url, **_kwargs):
+                calls.append((url, self.headers))
+                if url.startswith("https://mirror.example/"):
+                    return _FakeContentResponse(200, b"<html>rate limited</html>")
+                return _FakeContentResponse(200, valid_zip)
+
+        monkeypatch.setattr(plugin_helper_mod, "AsyncRequestUtils", FakeAsyncRequest)
+        res = asyncio.run(
+            PluginHelper._PluginHelper__async_request_with_fallback(
+                "https://api.github.com/repos/demo/repo/releases/assets/99",
+                headers={"Authorization": "Bearer secret-token", "Accept": "application/octet-stream"},
+                is_api=True,
+                mirror_url="https://github.com/demo/repo/releases/download/Demo_v1.0.0/demo_v1.0.0.zip",
+            )
+        )
+        assert res is not None and res.content == valid_zip
+        assert calls[0][0] == "https://mirror.example/https://github.com/demo/repo/releases/download/Demo_v1.0.0/demo_v1.0.0.zip"
+        assert "Authorization" not in (calls[0][1] or {})
+        assert calls[1][0] == "https://api.github.com/repos/demo/repo/releases/assets/99"
+
+    def test_force_install_enables_fresh_cache_bypass(self, monkeypatch):
+        """强制安装/更新插件时应在 fresh 上下文中读取最新包元数据，避免命中过期缓存。"""
+        from app.core.cache import is_fresh
+        from app.helper.plugin import PluginHelper
+
+        helper = PluginHelper()
+        observed_fresh = []
+
+        async def fake_pkg_ver(*_args, **_kwargs):
+            observed_fresh.append(is_fresh())
+            return None
+
+        monkeypatch.setattr(helper, "async_get_plugin_package_version", fake_pkg_ver)
+        asyncio.run(helper.async_install("DemoPlugin", "https://github.com/demo/repo", force_install=False))
+        asyncio.run(helper.async_install("DemoPlugin", "https://github.com/demo/repo", force_install=True))
+        assert observed_fresh == [False, True]

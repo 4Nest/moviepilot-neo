@@ -3,6 +3,7 @@ import mimetypes
 import shutil
 import threading
 from copy import deepcopy
+from pathlib import Path
 from time import monotonic
 from typing import Annotated, Any, Callable, Dict, Hashable, List, Optional
 
@@ -658,15 +659,24 @@ async def install(
             return schemas.Response(
                 success=False, message="没有传入仓库地址，无法正确安装插件，请检查配置"
             )
-    # 安装插件
-    if plugin_id not in install_plugins:
-        install_plugins.append(plugin_id)
-        # 保存设置
+    # 解析规范插件类名（兼容第三方仓库 package.json 键名大小写与类名不一致的场景）
+    canonical_id = (
+        PluginManager._get_plugin_id_from_path(
+            Path(settings.ROOT_PATH) / "app" / "plugins" / plugin_id.lower() / "__init__.py"
+        )
+        or plugin_id
+    )
+    normalized_installed = [
+        p for p in install_plugins if p.lower() != canonical_id.lower() or p == canonical_id
+    ]
+    if canonical_id not in normalized_installed:
+        normalized_installed.append(canonical_id)
+    if normalized_installed != install_plugins:
         await SystemConfigOper().async_set(
-            SystemConfigKey.UserInstalledPlugins, install_plugins
+            SystemConfigKey.UserInstalledPlugins, normalized_installed
         )
     # 重新加载插件
-    await run_in_threadpool(reload_plugin, plugin_id)
+    await run_in_threadpool(reload_plugin, canonical_id)
     return schemas.Response(success=True)
 
 

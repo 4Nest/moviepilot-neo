@@ -28,7 +28,7 @@ from importlib.metadata import distributions
 from cachetools import TTLCache
 from requests import Response
 
-from app.core.cache import cached, is_fresh
+from app.core.cache import async_fresh, cached, fresh, is_fresh
 from app.core.config import settings
 from app.db.systemconfig_oper import SystemConfigOper
 from app.helper.package import PackageInstallRequest, build_package_install_strategies
@@ -79,6 +79,17 @@ class PluginHelper(metaclass=WeakSingleton):
 
     def __init__(self):
         self.systemconfig = SystemConfigOper()
+
+    @staticmethod
+    def _is_valid_release_archive(response: Optional[object]) -> bool:
+        """确认镜像返回的 Release 资产包含合法 ZIP 结构，避免把 HTML 错误页当作压缩包。"""
+        content = getattr(response, "content", None)
+        return (
+            response is not None
+            and getattr(response, "status_code", None) == 200
+            and isinstance(content, (bytes, bytearray))
+            and zipfile.is_zipfile(io.BytesIO(content))
+        )
 
     @staticmethod
     def is_local_repo_url(repo_url: Optional[str]) -> bool:
@@ -714,44 +725,48 @@ class PluginHelper(metaclass=WeakSingleton):
         if not package_version:
             package_version = settings.VERSION_FLAG
 
-        # 1. 优先检查指定版本的插件
-        package_version = self.get_plugin_package_version(pid, repo_url, package_version)
-        # 如果 package_version 为None，说明没有找到匹配的插件
-        if package_version is None:
-            msg = f"{pid} 没有找到适用于当前版本的插件"
-            logger.debug(msg)
-            return False, msg
-        # package_version 为空，表示从 package.json 中找到插件
-        elif package_version == "":
-            logger.debug(f"{pid} 从 package.json 中找到适用于当前版本的插件")
-        else:
-            logger.debug(f"{pid} 从 package.{package_version}.json 中找到适用于当前版本的插件")
+        if force_install:
+            self.clear_repo_failures()
 
-        # 2. 决定安装方式（release 或文件列表）并执行统一安装流程。
-        meta = self.__get_plugin_meta(pid, repo_url, package_version)
-        # 是否使用 Release 打包。Release 缺失或资产不可用时仍保留文件列表兜底，
-        # 避免索引先发布、Actions 打包滞后导致插件短时间无法安装。
-        is_release = meta.get("release")
-        # 插件版本号
-        plugin_version = meta.get("version")
-        if release_version:
-            if not is_release:
-                return False, f"{pid} 未声明 Release 安装，无法安装指定版本"
-            if not self.__has_installable_release_version(
-                    self.get_plugin_release_versions(pid, repo_url), release_version
-            ):
-                return False, f"{pid} 未找到可安装的 Release 版本：{release_version}"
-            if release_version == plugin_version:
-                compatible, message = self.check_plugin_system_version(meta)
-                if not compatible:
-                    logger.debug(f"{pid} 插件系统版本兼容性检查失败：{message}")
-                    return False, message
-            release_tag = f"{pid}_v{release_version}"
+        with fresh(bool(force_install)):
+            # 1. 优先检查指定版本的插件
+            package_version = self.get_plugin_package_version(pid, repo_url, package_version)
+            # 如果 package_version 为None，说明没有找到匹配的插件
+            if package_version is None:
+                msg = f"{pid} 没有找到适用于当前版本的插件"
+                logger.debug(msg)
+                return False, msg
+            # package_version 为空，表示从 package.json 中找到插件
+            elif package_version == "":
+                logger.debug(f"{pid} 从 package.json 中找到适用于当前版本的插件")
+            else:
+                logger.debug(f"{pid} 从 package.{package_version}.json 中找到适用于当前版本的插件")
 
-            def prepare_selected_release() -> Tuple[bool, str]:
-                return self.__install_from_release(pid, user_repo, release_tag)
+            # 2. 决定安装方式（release 或文件列表）并执行统一安装流程。
+            meta = self.__get_plugin_meta(pid, repo_url, package_version)
+            # 是否使用 Release 打包。Release 缺失或资产不可用时仍保留文件列表兜底，
+            # 避免索引先发布、Actions 打包滞后导致插件短时间无法安装。
+            is_release = meta.get("release")
+            # 插件版本号
+            plugin_version = meta.get("version")
+            if release_version:
+                if not is_release:
+                    return False, f"{pid} 未声明 Release 安装，无法安装指定版本"
+                if not self.__has_installable_release_version(
+                        self.get_plugin_release_versions(pid, repo_url), release_version
+                ):
+                    return False, f"{pid} 未找到可安装的 Release 版本：{release_version}"
+                if release_version == plugin_version:
+                    compatible, message = self.check_plugin_system_version(meta)
+                    if not compatible:
+                        logger.debug(f"{pid} 插件系统版本兼容性检查失败：{message}")
+                        return False, message
+                release_tag = f"{pid}_v{release_version}"
 
-            return self.__install_flow_sync(pid, force_install, prepare_selected_release, repo_url)
+                def prepare_selected_release() -> Tuple[bool, str]:
+                    return self.__install_from_release(pid, user_repo, release_tag)
+
+                return self.__install_flow_sync(pid, force_install, prepare_selected_release, repo_url)
 
         compatible, message = self.check_plugin_system_version(meta)
         if not compatible:
@@ -889,8 +904,11 @@ class PluginHelper(metaclass=WeakSingleton):
             current_pid, current_file_list = stack.pop()
 
             for item in current_file_list:
+                item_name = item.get("name")
+                if item_name in {".DS_Store", "__pycache__", "node_modules"}:
+                    continue
                 # 跳过 requirements.txt 的下载
-                if skip_requirements and item.get("name") == "requirements.txt":
+                if skip_requirements and item_name == "requirements.txt":
                     continue
 
                 if item.get("download_url"):
@@ -907,11 +925,16 @@ class PluginHelper(metaclass=WeakSingleton):
                     if package_version:
                         relative_path = relative_path.replace(f"plugins.{package_version}", "plugins", 1)
 
-                    # 创建插件文件夹并写入文件
+                    # 创建插件文件夹并以二进制无损写入文件，避免破坏图片/字体等非 UTF-8 资产
                     file_path = Path(settings.ROOT_PATH) / "app" / relative_path
                     file_path.parent.mkdir(parents=True, exist_ok=True)
-                    with open(file_path, "w", encoding="utf-8") as f:
-                        f.write(res.text)
+                    payload_bytes = (
+                        res.content
+                        if getattr(res, "content", None) is not None
+                        else (res.text or "").encode("utf-8")
+                    )
+                    with open(file_path, "wb") as f:
+                        f.write(payload_bytes)
                     logger.debug(f"文件 {item.get('path')} 下载成功，保存路径：{file_path}")
                 else:
                     # 如果是子目录，则将子目录内容加入栈中继续处理
@@ -1701,21 +1724,25 @@ class PluginHelper(metaclass=WeakSingleton):
     def __request_with_fallback(url: str,
                                 headers: Optional[dict] = None,
                                 timeout: Optional[int] = 60,
-                                is_api: bool = False) -> Optional[Response]:
+                                is_api: bool = False,
+                                mirror_url: Optional[str] = None) -> Optional[Response]:
         """
         使用自动降级策略，请求资源，优先级依次为镜像站、代理、直连
         :param url: 目标URL
         :param headers: 请求头信息
         :param timeout: 请求超时时间
-        :param is_api: 是否为GitHub API请求，API请求不走镜像站
+        :param is_api: 是否为GitHub API请求，普通API跳过镜像；Release资产可传 mirror_url 走公开镜像
+        :param mirror_url: Release 资产的公开下载地址，镜像请求不携带原始 API 凭据头
         :return: 请求成功则返回 Response，失败返回 None
         """
         strategies = []
 
-        # 1. 尝试使用镜像站，镜像站一般不支持API请求，因此API请求直接跳过镜像站
-        if not is_api and settings.GITHUB_PROXY:
-            proxy_url = f"{UrlUtils.standardize_base_url(settings.GITHUB_PROXY)}{url}"
-            strategies.append(("镜像站", proxy_url, {"headers": headers, "timeout": timeout}))
+        # 1. 尝试使用镜像站，普通 API 跳过镜像站，Release 资产允许通过公开下载地址走镜像并校验 ZIP 结构
+        content_url = mirror_url or (None if is_api else url)
+        if content_url and settings.GITHUB_PROXY:
+            proxy_url = f"{UrlUtils.standardize_base_url(settings.GITHUB_PROXY)}{content_url}"
+            mirror_headers = {"Accept": "application/octet-stream"} if mirror_url else headers
+            strategies.append(("镜像站", proxy_url, {"headers": mirror_headers, "timeout": timeout}))
 
         # 2. 尝试使用代理
         if settings.PROXY_HOST:
@@ -1730,6 +1757,9 @@ class PluginHelper(metaclass=WeakSingleton):
 
             try:
                 res = RequestUtils(**request_params).get_res(url=target_url, raise_exception=True)
+                if strategy_name == "镜像站" and mirror_url and not PluginHelper._is_valid_release_archive(res):
+                    logger.warning(f"[GitHub] 镜像站未返回有效 ZIP 资产，自动降级：{target_url}")
+                    continue
                 logger.debug(f"[GitHub] 请求成功，策略：{strategy_name}, URL: {target_url}")
                 return res
             except Exception as e:
@@ -1949,16 +1979,20 @@ class PluginHelper(metaclass=WeakSingleton):
             asset_id = asset.get("id")
             if not asset_id:
                 return False, "资产缺少ID信息"
-            # 构建资产的API下载URL
+            # 构建资产的API下载URL及公开镜像回退URL
             download_url = f"https://api.github.com/repos/{user_repo}/releases/assets/{asset_id}"
+            mirror_url = (
+                asset.get("browser_download_url")
+                or f"https://github.com/{user_repo}/releases/download/{release_tag}/{asset_name}"
+            )
         except Exception as e:
             logger.error(f"解析 Release 信息失败：{e}")
             return False, f"解析 Release 信息失败：{e}"
 
-        # 使用资产的API端点下载，需要设置Accept头为application/octet-stream
+        # 使用资产的API端点下载，配置 GITHUB_PROXY 时优先通过公开下载地址加速并校验 ZIP 结构
         headers = settings.REPO_GITHUB_HEADERS(repo=user_repo).copy()
         headers["Accept"] = "application/octet-stream"
-        res = self.__request_with_fallback(download_url, headers=headers, is_api=True)
+        res = self.__request_with_fallback(download_url, headers=headers, is_api=True, mirror_url=mirror_url)
         if res is None or res.status_code != 200:
             return False, f"下载资产失败：{res.status_code if res else '连接失败'}"
 
@@ -2206,21 +2240,25 @@ class PluginHelper(metaclass=WeakSingleton):
     async def __async_request_with_fallback(url: str,
                                             headers: Optional[dict] = None,
                                             timeout: Optional[int] = 60,
-                                            is_api: bool = False) -> Optional[httpx.Response]:
+                                            is_api: bool = False,
+                                            mirror_url: Optional[str] = None) -> Optional[httpx.Response]:
         """
         使用自动降级策略，异步请求资源，优先级依次为镜像站、代理、直连
         :param url: 目标URL
         :param headers: 请求头信息
         :param timeout: 请求超时时间
-        :param is_api: 是否为GitHub API请求，API请求不走镜像站
+        :param is_api: 是否为GitHub API请求，普通API跳过镜像；Release资产可传 mirror_url 走公开镜像
+        :param mirror_url: Release 资产的公开下载地址，镜像请求不携带原始 API 凭据头
         :return: 请求成功则返回 Response，失败返回 None
         """
         strategies = []
 
-        # 1. 尝试使用镜像站，镜像站一般不支持API请求，因此API请求直接跳过镜像站
-        if not is_api and settings.GITHUB_PROXY:
-            proxy_url = f"{UrlUtils.standardize_base_url(settings.GITHUB_PROXY)}{url}"
-            strategies.append(("镜像站", proxy_url, {"headers": headers, "timeout": timeout}))
+        # 1. 尝试使用镜像站，普通 API 跳过镜像站，Release 资产允许通过公开下载地址走镜像并校验 ZIP 结构
+        content_url = mirror_url or (None if is_api else url)
+        if content_url and settings.GITHUB_PROXY:
+            proxy_url = f"{UrlUtils.standardize_base_url(settings.GITHUB_PROXY)}{content_url}"
+            mirror_headers = {"Accept": "application/octet-stream"} if mirror_url else headers
+            strategies.append(("镜像站", proxy_url, {"headers": mirror_headers, "timeout": timeout}))
 
         # 2. 尝试使用代理
         if settings.PROXY_HOST:
@@ -2235,6 +2273,9 @@ class PluginHelper(metaclass=WeakSingleton):
 
             try:
                 res = await AsyncRequestUtils(**request_params).get_res(url=target_url, raise_exception=True)
+                if strategy_name == "镜像站" and mirror_url and not PluginHelper._is_valid_release_archive(res):
+                    logger.warning(f"[GitHub] 镜像站未返回有效 ZIP 资产，自动降级：{target_url}")
+                    continue
                 logger.debug(f"[GitHub] 请求成功，策略：{strategy_name}, URL: {target_url}")
                 return res
             except Exception as e:
@@ -2463,8 +2504,11 @@ class PluginHelper(metaclass=WeakSingleton):
             current_pid, current_file_list = stack.pop()
 
             for item in current_file_list:
+                item_name = item.get("name")
+                if item_name in {".DS_Store", "__pycache__", "node_modules"}:
+                    continue
                 # 跳过 requirements.txt 的下载
-                if skip_requirements and item.get("name") == "requirements.txt":
+                if skip_requirements and item_name == "requirements.txt":
                     continue
 
                 if item.get("download_url"):
@@ -2481,11 +2525,16 @@ class PluginHelper(metaclass=WeakSingleton):
                     if package_version:
                         relative_path = relative_path.replace(f"plugins.{package_version}", "plugins", 1)
 
-                    # 创建插件文件夹并写入文件
+                    # 创建插件文件夹并以二进制无损写入文件，避免破坏图片/字体等非 UTF-8 资产
                     file_path = AsyncPath(settings.ROOT_PATH) / "app" / relative_path
                     await file_path.parent.mkdir(parents=True, exist_ok=True)
-                    async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
-                        await f.write(res.text)
+                    payload_bytes = (
+                        res.content
+                        if getattr(res, "content", None) is not None
+                        else (res.text or "").encode("utf-8")
+                    )
+                    async with aiofiles.open(file_path, "wb") as f:
+                        await f.write(payload_bytes)
                     logger.debug(f"文件 {item.get('path')} 下载成功，保存路径：{file_path}")
                 else:
                     # 如果是子目录，则将子目录内容加入栈中继续处理
@@ -2803,42 +2852,46 @@ class PluginHelper(metaclass=WeakSingleton):
         if not package_version:
             package_version = settings.VERSION_FLAG
 
-        # 1. 优先检查指定版本的插件
-        package_version = await self.async_get_plugin_package_version(pid, repo_url, package_version)
-        # 如果 package_version 为None，说明没有找到匹配的插件
-        if package_version is None:
-            msg = f"{pid} 没有找到适用于当前版本的插件"
-            logger.debug(msg)
-            return False, msg
-        # package_version 为空，表示从 package.json 中找到插件
-        elif package_version == "":
-            logger.debug(f"{pid} 从 package.json 中找到适用于当前版本的插件")
-        else:
-            logger.debug(f"{pid} 从 package.{package_version}.json 中找到适用于当前版本的插件")
+        if force_install:
+            self.clear_repo_failures()
 
-        # 2. 统一异步安装流程（release 或文件列表）。
-        meta = await self.__async_get_plugin_meta(pid, repo_url, package_version)
-        # 是否使用 Release 打包；失败时兜底文件列表，保持同步/异步安装语义一致。
-        is_release = meta.get("release")
-        # 插件版本号
-        plugin_version = meta.get("version")
-        if release_version:
-            if not is_release:
-                return False, f"{pid} 未声明 Release 安装，无法安装指定版本"
-            release_items = await self.async_get_plugin_release_versions(pid, repo_url)
-            if not self.__has_installable_release_version(release_items, release_version):
-                return False, f"{pid} 未找到可安装的 Release 版本：{release_version}"
-            if release_version == plugin_version:
-                compatible, message = self.check_plugin_system_version(meta)
-                if not compatible:
-                    logger.debug(f"{pid} 插件系统版本兼容性检查失败：{message}")
-                    return False, message
-            release_tag = f"{pid}_v{release_version}"
+        async with async_fresh(bool(force_install)):
+            # 1. 优先检查指定版本的插件
+            package_version = await self.async_get_plugin_package_version(pid, repo_url, package_version)
+            # 如果 package_version 为None，说明没有找到匹配的插件
+            if package_version is None:
+                msg = f"{pid} 没有找到适用于当前版本的插件"
+                logger.debug(msg)
+                return False, msg
+            # package_version 为空，表示从 package.json 中找到插件
+            elif package_version == "":
+                logger.debug(f"{pid} 从 package.json 中找到适用于当前版本的插件")
+            else:
+                logger.debug(f"{pid} 从 package.{package_version}.json 中找到适用于当前版本的插件")
 
-            async def prepare_selected_release() -> Tuple[bool, str]:
-                return await self.__async_install_from_release(pid, user_repo, release_tag)
+            # 2. 统一异步安装流程（release 或文件列表）。
+            meta = await self.__async_get_plugin_meta(pid, repo_url, package_version)
+            # 是否使用 Release 打包；失败时兜底文件列表，保持同步/异步安装语义一致。
+            is_release = meta.get("release")
+            # 插件版本号
+            plugin_version = meta.get("version")
+            if release_version:
+                if not is_release:
+                    return False, f"{pid} 未声明 Release 安装，无法安装指定版本"
+                release_items = await self.async_get_plugin_release_versions(pid, repo_url)
+                if not self.__has_installable_release_version(release_items, release_version):
+                    return False, f"{pid} 未找到可安装的 Release 版本：{release_version}"
+                if release_version == plugin_version:
+                    compatible, message = self.check_plugin_system_version(meta)
+                    if not compatible:
+                        logger.debug(f"{pid} 插件系统版本兼容性检查失败：{message}")
+                        return False, message
+                release_tag = f"{pid}_v{release_version}"
 
-            return await self.__install_flow_async(pid, force_install, prepare_selected_release, repo_url)
+                async def prepare_selected_release() -> Tuple[bool, str]:
+                    return await self.__async_install_from_release(pid, user_repo, release_tag)
+
+                return await self.__install_flow_async(pid, force_install, prepare_selected_release, repo_url)
 
         compatible, message = self.check_plugin_system_version(meta)
         if not compatible:
@@ -2986,18 +3039,23 @@ class PluginHelper(metaclass=WeakSingleton):
             asset_id = asset.get("id")
             if not asset_id:
                 return False, "资产缺少ID信息"
-            # 构建资产的API下载URL
+            # 构建资产的API下载URL及公开镜像回退URL
             download_url = f"https://api.github.com/repos/{user_repo}/releases/assets/{asset_id}"
+            mirror_url = (
+                asset.get("browser_download_url")
+                or f"https://github.com/{user_repo}/releases/download/{release_tag}/{asset_name}"
+            )
         except Exception as e:
             logger.error(f"解析 Release 信息失败：{e}")
             return False, f"解析 Release 信息失败：{e}"
 
-        # 使用资产的API端点下载，需要设置Accept头为application/octet-stream
+        # 使用资产的API端点下载，配置 GITHUB_PROXY 时优先通过公开下载地址加速并校验 ZIP 结构
         headers = settings.REPO_GITHUB_HEADERS(repo=user_repo).copy()
         headers["Accept"] = "application/octet-stream"
         res = await self.__async_request_with_fallback(download_url,
                                                        headers=headers,
-                                                       is_api=True)
+                                                       is_api=True,
+                                                       mirror_url=mirror_url)
         if res is None or res.status_code != 200:
             return False, f"下载资产失败：{res.status_code if res else '连接失败'}"
 
