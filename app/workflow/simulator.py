@@ -740,29 +740,31 @@ class WorkflowSimulator:
             url = data.get("url")
             if not (isinstance(url, str) and url.strip()):
                 return False, "[模拟] 缺少必填参数：RSS 地址 (url)", {}
+            only_new_hint = "（增量追新：首次运行仅建档，后续仅放行新资源）" if data.get("only_new") else ""
             if scenario == "empty_source":
-                return True, "[模拟] RSS 源返回 0 条资源（空源数据场景）", {"torrents": []}
+                return True, f"[模拟] RSS 源返回 0 条资源（空源数据场景）{only_new_hint}", {"torrents": []}
             samples = self._make_samples("torrents", 3)
-            return True, "[模拟] 成功获取 3 条 RSS 资源样本", {"torrents": samples}
+            return True, f"[模拟] 成功获取 3 条 RSS 资源样本{only_new_hint}", {"torrents": samples}
 
         if action_type == "FetchTorrentsAction":
             search_type = data.get("search_type") or "keyword"
+            only_new_hint = "（增量追新：首次运行仅建档，后续仅放行新资源）" if data.get("only_new") else ""
             if search_type == "keyword":
                 name = data.get("name")
                 if not (isinstance(name, str) and name.strip()):
                     return False, "[模拟] 按名称搜索时缺少资源名称", {}
                 if scenario == "empty_source":
-                    return True, f"[模拟] 按名称「{name.strip()}」搜索返回 0 条资源（空源数据场景）", {"torrents": []}
+                    return True, f"[模拟] 按名称「{name.strip()}」搜索返回 0 条资源（空源数据场景）{only_new_hint}", {"torrents": []}
                 samples = self._make_samples("torrents", 3)
-                return True, f"[模拟] 按名称「{name.strip()}」模拟搜索到 3 条资源", {"torrents": samples}
+                return True, f"[模拟] 按名称「{name.strip()}」模拟搜索到 3 条资源{only_new_hint}", {"torrents": samples}
 
             upstream_medias = self._read_upstream_list("medias", action, semantics)
             if scenario == "empty_source":
-                return True, "[模拟] 按媒体列表搜索返回 0 条资源（空源数据场景）", {"torrents": []}
+                return True, f"[模拟] 按媒体列表搜索返回 0 条资源（空源数据场景）{only_new_hint}", {"torrents": []}
             if not upstream_medias:
                 return True, "[模拟] 上游无待处理数据，本次不产生实际操作", {"torrents": []}
             samples = self._make_samples("torrents", 3)
-            return True, f"[模拟] 基于上游 {len(upstream_medias)} 条媒体搜索到 3 条资源", {"torrents": samples}
+            return True, f"[模拟] 基于上游 {len(upstream_medias)} 条媒体搜索到 3 条资源{only_new_hint}", {"torrents": samples}
 
         if action_type == "FetchMediasAction":
             if scenario == "empty_source":
@@ -803,14 +805,23 @@ class WorkflowSimulator:
                         re.compile(pattern)
                     except re.error as err:
                         return False, f"[模拟] {field_label}正则表达式非法：{err}", {}
+            age_hint = ""
+            raw_age = data.get("max_age_hours")
+            if raw_age is not None and str(raw_age).strip() != "":
+                try:
+                    age_val = float(raw_age)
+                except (TypeError, ValueError):
+                    return False, f"[模拟] 发布时间范围（小时）参数非法：{raw_age}", {}
+                if age_val > 0:
+                    age_hint = f"（仅保留最近 {age_val:g} 小时内发布）"
             upstream_torrents = self._read_upstream_list("torrents", action, semantics)
             in_count = len(upstream_torrents)
             if in_count == 0:
-                return True, "[模拟] 上游无待过滤资源，过滤结果 0 条", {"torrents": []}
+                return True, f"[模拟] 上游无待过滤资源，过滤结果 0 条{age_hint}", {"torrents": []}
             if scenario == "empty_filter":
-                return True, f"[模拟] 过滤 {in_count} 条资源后匹配 0 条（过滤为空场景）", {"torrents": []}
+                return True, f"[模拟] 过滤 {in_count} 条资源后匹配 0 条（过滤为空场景）{age_hint}", {"torrents": []}
             out_count = min(2, in_count)
-            return True, f"[模拟] 过滤 {in_count} 条资源后保留 {out_count} 条", {
+            return True, f"[模拟] 过滤 {in_count} 条资源后保留 {out_count} 条{age_hint}", {
                 "torrents": upstream_torrents[:out_count]
             }
 
@@ -828,11 +839,22 @@ class WorkflowSimulator:
 
         # 3. 消费动作节点
         if action_type == "AddDownloadAction":
+            cap_val: Optional[int] = None
+            raw_cap = data.get("max_downloads")
+            if raw_cap is not None and str(raw_cap).strip() != "":
+                try:
+                    parsed_cap = int(raw_cap)
+                except (TypeError, ValueError):
+                    return False, f"[模拟] 单次最大下载数参数非法：{raw_cap}", {}
+                if parsed_cap > 0:
+                    cap_val = parsed_cap
             in_count = len(self._read_upstream_list("torrents", action, semantics))
             if in_count == 0:
                 return True, "[模拟] 上游无待处理数据，本次不产生实际操作", {"downloads": []}
-            return True, f"[模拟] 预计添加 {in_count} 个下载任务（未实际提交下载器）", {
-                "downloads": self._make_samples("downloads", in_count)
+            actual_count = min(in_count, cap_val) if cap_val else in_count
+            cap_hint = f"（单次上限 {cap_val}）" if cap_val else ""
+            return True, f"[模拟] 预计添加 {actual_count} 个下载任务{cap_hint}（未实际提交下载器）", {
+                "downloads": self._make_samples("downloads", actual_count)
             }
 
         if action_type == "AddSubscribeAction":

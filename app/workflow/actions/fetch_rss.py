@@ -3,6 +3,7 @@ from typing import Optional
 from pydantic import Field
 
 from app.workflow.actions import BaseAction
+from app.workflow.incremental import build_scope_signature, filter_incremental_torrents
 from app.chain.media import MediaChain
 from app.core.config import settings, global_vars
 from app.core.context import Context, TorrentInfo
@@ -23,6 +24,7 @@ class FetchRssParams(ActionParams):
     referer: Optional[str] = Field(default=None, description="Referer")
     ua: Optional[str] = Field(default=None, description="User-Agent")
     match_media: Optional[bool] = Field(default=False, description="匹配媒体信息")
+    only_new: Optional[bool] = Field(default=False, description="增量追新模式（首次运行仅建立存量基线，后续仅处理新发布资源）")
 
 
 class FetchRssAction(BaseAction):
@@ -87,7 +89,8 @@ class FetchRssAction(BaseAction):
             logger.error(f'RSS地址 {params.url} 未获取到RSS数据！')
             return context
 
-        # 组装种子
+        # 先组装候选种子，开启增量追新时在媒体识别前过滤已见存量资源
+        candidates = []
         for item in rss_items:
             if global_vars.is_workflow_stopped(workflow_id):
                 break
@@ -102,20 +105,50 @@ class FetchRssAction(BaseAction):
                 pubdate=item["pubdate"].strftime("%Y-%m-%d %H:%M:%S") if item.get("pubdate") else None,
             )
             meta = MetaInfo(title=torrentinfo.title, subtitle=torrentinfo.description)
-            mediainfo = None
+            candidates.append(Context(meta_info=meta, media_info=None, torrent_info=torrentinfo))
+
+        baseline_initialized = False
+        baseline_count = 0
+        skipped_old_count = 0
+        if params.only_new and not global_vars.is_workflow_stopped(workflow_id):
+            scope_sig = build_scope_signature("rss", params.url)
+            candidates, baseline_initialized, count_meta = filter_incremental_torrents(
+                workflow_id=workflow_id,
+                action_id=self._action_id,
+                scope_signature=scope_sig,
+                torrents=candidates,
+                systemconfig=self.systemconfigoper,
+            )
+            if baseline_initialized:
+                baseline_count = count_meta
+                logger.info(
+                    f"已建立RSS追新基线（记录 {baseline_count} 条存量资源），后续仅处理新发布资源"
+                )
+            else:
+                skipped_old_count = count_meta
+
+        for candidate in candidates:
+            if global_vars.is_workflow_stopped(workflow_id):
+                break
             if params.match_media:
                 mediainfo = MediaChain().recognize_by_meta(
-                    meta,
+                    candidate.meta_info,
                     obtain_images=False,
                 )
                 if not mediainfo:
-                    logger.warning(f"{torrentinfo.title} 未识别到媒体信息")
+                    logger.warning(f"{candidate.torrent_info.title} 未识别到媒体信息")
                     continue
-            self._rss_torrents.append(Context(meta_info=meta, media_info=mediainfo, torrent_info=torrentinfo))
+                candidate.media_info = mediainfo
+            self._rss_torrents.append(candidate)
 
         if self._rss_torrents:
             logger.info(f"获取到 {len(self._rss_torrents)} 个RSS资源")
             context.torrents.extend(self._rss_torrents)
 
-        self.job_done(f"获取到 {len(self._rss_torrents)} 个资源")
+        if baseline_initialized:
+            self.job_done(f"已建立追新基线（记录 {baseline_count} 条存量资源），后续仅处理新资源")
+        elif params.only_new and skipped_old_count > 0:
+            self.job_done(f"获取到 {len(self._rss_torrents)} 个新资源（跳过 {skipped_old_count} 个已见/存量资源）")
+        else:
+            self.job_done(f"获取到 {len(self._rss_torrents)} 个资源")
         return context

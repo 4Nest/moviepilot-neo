@@ -692,3 +692,226 @@ def test_async_list_summaries_includes_event_conditions_and_node_metadata(create
         assert len(json.dumps(row, ensure_ascii=False)) < 1500
 
     asyncio.run(_verify())
+
+
+# ==================== 增量追新基线 / 发布时间窗口 / 单次下载上限测试 ====================
+
+
+class _MemorySystemConfig:
+    """纯内存 SystemConfig 替身，供增量基线缓存单元测试使用。"""
+
+    def __init__(self):
+        self.store = {}
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def set(self, key, value):
+        self.store[key] = value
+
+
+def test_fetch_torrents_only_new_baseline_and_incremental_release(monkeypatch):
+    """开启 only_new 时：首次运行静默建档不输出且不刮削，后续仅放行并识别新发布资源；改关键字自动重建基线。"""
+    from datetime import datetime, timedelta
+    from app.core.context import Context, MediaInfo, TorrentInfo
+    from app.core.metainfo import MetaInfo
+    from app.schemas import ActionContext, MediaType
+    from app.workflow.actions.fetch_torrents import FetchTorrentsAction
+
+    mem_cfg = _MemorySystemConfig()
+    now = datetime.now()
+    old_t1 = Context(
+        meta_info=MetaInfo(title="[ADE] Anime A S01E01 x265"),
+        torrent_info=TorrentInfo(
+            site=1,
+            title="[ADE] Anime A S01E01 x265",
+            page_url="https://pt.example/details.php?id=101",
+            pubdate=(now - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+    )
+    old_t2 = Context(
+        meta_info=MetaInfo(title="[ADE] Anime B S01E02 x265"),
+        torrent_info=TorrentInfo(
+            site=1,
+            title="[ADE] Anime B S01E02 x265",
+            page_url="https://pt.example/details.php?id=102",
+            pubdate=(now - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+    )
+
+    search_results = [[old_t1, old_t2]]
+    recognize_calls = []
+
+    monkeypatch.setattr(
+        "app.workflow.actions.fetch_torrents.SearchChain.search_by_title",
+        lambda self, title, sites=None: list(search_results[0]),
+    )
+
+    def _fake_recognize(self, meta, obtain_images=False):
+        recognize_calls.append(meta.org_string)
+        media = MediaInfo()
+        media.type = MediaType.TV
+        media.title = "测试番剧"
+        return media
+
+    monkeypatch.setattr(
+        "app.workflow.actions.fetch_torrents.MediaChain.recognize_by_meta",
+        _fake_recognize,
+    )
+
+    # 第 1 次运行：建立存量基线，0 输出，0 次 TMDB 识别
+    act1 = FetchTorrentsAction("fetch_1")
+    act1.systemconfigoper = mem_cfg
+    ctx1 = act1.execute(
+        workflow_id=88,
+        params={
+            "search_type": "keyword",
+            "name": "x265 -ADE",
+            "type": "电视剧",
+            "sites": [1],
+            "match_media": True,
+            "only_new": True,
+        },
+        context=ActionContext(),
+    )
+    assert ctx1.torrents == []
+    assert recognize_calls == []
+    assert "已建立追新基线" in act1.message
+
+    # 第 2 次运行：包含旧种 old_t1、翻页露出的陈年老种 ancient_t、以及刚发布的 fresh_t
+    ancient_t = Context(
+        meta_info=MetaInfo(title="[ADE] Ancient S01 x265"),
+        torrent_info=TorrentInfo(
+            site=1,
+            title="[ADE] Ancient S01 x265",
+            page_url="https://pt.example/details.php?id=50",
+            pubdate=(now - timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+    )
+    fresh_t = Context(
+        meta_info=MetaInfo(title="[ADE] New Anime S01E03 x265"),
+        torrent_info=TorrentInfo(
+            site=1,
+            title="[ADE] New Anime S01E03 x265",
+            page_url="https://pt.example/details.php?id=203",
+            pubdate=(now + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+    )
+    search_results[0] = [fresh_t, old_t1, ancient_t]
+
+    act2 = FetchTorrentsAction("fetch_1")
+    act2.systemconfigoper = mem_cfg
+    ctx2 = act2.execute(
+        workflow_id=88,
+        params={
+            "search_type": "keyword",
+            "name": "x265 -ADE",
+            "type": "电视剧",
+            "sites": [1],
+            "match_media": True,
+            "only_new": True,
+        },
+        context=ActionContext(),
+    )
+    assert len(ctx2.torrents) == 1
+    assert ctx2.torrents[0].torrent_info.title == "[ADE] New Anime S01E03 x265"
+    # 仅对唯一的新种执行了媒体识别
+    assert len(recognize_calls) == 1
+
+    # 第 3 次运行：修改搜索词后自动重建新范围基线，不会误把新官组存量当增量下载
+    act3 = FetchTorrentsAction("fetch_1")
+    act3.systemconfigoper = mem_cfg
+    ctx3 = act3.execute(
+        workflow_id=88,
+        params={
+            "search_type": "keyword",
+            "name": "x265 -VCB-Studio",
+            "type": "电视剧",
+            "sites": [1],
+            "match_media": True,
+            "only_new": True,
+        },
+        context=ActionContext(),
+    )
+    assert ctx3.torrents == []
+    assert "已建立追新基线" in act3.message
+
+
+def test_filter_torrents_max_age_hours_and_add_download_cap(monkeypatch):
+    """过滤资源发布时间窗口与添加下载单次上限应协同生效。"""
+    from datetime import datetime, timedelta
+    from app.core.context import Context, MediaInfo, TorrentInfo
+    from app.core.metainfo import MetaInfo
+    from app.schemas import ActionContext, MediaType
+    from app.workflow.actions.add_download import AddDownloadAction
+    from app.workflow.actions.filter_torrents import FilterTorrentsAction
+
+    now = datetime.now()
+
+    def _make_ctx(idx: int, hours_ago: float | None):
+        media = MediaInfo()
+        media.type = MediaType.TV
+        media.title = f"番剧{idx}"
+        pub = (
+            (now - timedelta(hours=hours_ago)).strftime("%Y-%m-%d %H:%M:%S")
+            if hours_ago is not None
+            else None
+        )
+        return Context(
+            meta_info=MetaInfo(title=f"[ADE] Show {idx} BluRay x265"),
+            media_info=media,
+            torrent_info=TorrentInfo(
+                site=1,
+                title=f"[ADE] Show {idx} BluRay x265",
+                pubdate=pub,
+            ),
+        )
+
+    c_recent_1 = _make_ctx(1, 2)
+    c_recent_2 = _make_ctx(2, 6)
+    c_recent_3 = _make_ctx(3, 12)
+    c_expired = _make_ctx(4, 72)
+    c_no_date = _make_ctx(5, None)
+
+    monkeypatch.setattr(
+        "app.workflow.actions.filter_torrents.ActionChain.filter_torrents",
+        lambda self, rule_groups, torrent_list, mediainfo=None: torrent_list,
+    )
+
+    flt = FilterTorrentsAction("flt_1")
+    ctx = ActionContext()
+    ctx.torrents = [c_recent_1, c_recent_2, c_recent_3, c_expired, c_no_date]
+    ctx = flt.execute(workflow_id=99, params={"max_age_hours": "24"}, context=ctx)
+    assert [t.torrent_info.title for t in ctx.torrents] == [
+        "[ADE] Show 1 BluRay x265",
+        "[ADE] Show 2 BluRay x265",
+        "[ADE] Show 3 BluRay x265",
+    ]
+
+    # 空字符串 max_age_hours 不应报错或过滤
+    flt_empty = FilterTorrentsAction("flt_2")
+    ctx_all_input = ActionContext()
+    ctx_all_input.torrents = [c_expired, c_no_date]
+    ctx_all = flt_empty.execute(
+        workflow_id=99,
+        params={"max_age_hours": ""},
+        context=ctx_all_input,
+    )
+    assert len(ctx_all.torrents) == 2
+
+    # 添加下载设置 max_downloads=2：3 个候选仅下载前 2 个
+    mem_cfg = _MemorySystemConfig()
+    monkeypatch.setattr(
+        "app.workflow.actions.add_download.DownloadChain.download_single",
+        lambda self, context, downloader=None, save_path=None, label=None: f"dl-{context.torrent_info.title}",
+    )
+    dl_act = AddDownloadAction("dl_1")
+    dl_act.systemconfigoper = mem_cfg
+    out_ctx = dl_act.execute(
+        workflow_id=99,
+        params={"max_downloads": "2"},
+        context=ctx,
+    )
+    assert len(out_ctx.downloads) == 2
+    assert "触发单次上限 2" in dl_act.message
+    assert "跳过剩余 1 个" in dl_act.message

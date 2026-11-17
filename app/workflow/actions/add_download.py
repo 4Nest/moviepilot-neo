@@ -19,6 +19,19 @@ class AddDownloadParams(ActionParams):
     save_path: Optional[str] = Field(default=None, description="保存路径, 支持<storage>:<path>, 如rclone:/MP, smb:/server/share/Movies等")
     labels: Optional[str] = Field(default=None, description="标签（,分隔）")
     only_lack: Optional[bool] = Field(default=False, description="仅下载缺失的资源")
+    max_downloads: Optional[int] = Field(
+        default=None,
+        description="单次运行最多添加下载任务数（留空或 <=0 表示不限制）",
+    )
+
+    @field_validator("max_downloads", mode="before")
+    @classmethod
+    def normalize_max_downloads(cls, value):
+        """将空字符串或非正整数规范化为 None（不限制单次下载数）。"""
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        parsed = int(value)
+        return parsed if parsed > 0 else None
 
     @field_validator("save_path", mode="before")
     @classmethod
@@ -70,8 +83,15 @@ class AddDownloadAction(BaseAction):
         """
         params = AddDownloadParams(**params)
         _started = False
-        for t in context.torrents:
+        _capped_skipped = 0
+        for idx, t in enumerate(context.torrents):
             if global_vars.is_workflow_stopped(workflow_id):
+                break
+            if params.max_downloads and len(self._added_downloads) >= params.max_downloads:
+                _capped_skipped = len(context.torrents) - idx
+                logger.info(
+                    f"已达到单次最大下载数量限制 ({params.max_downloads})，本次跳过其余 {_capped_skipped} 个候选资源"
+                )
                 break
             # 检查缓存
             cache_key = f"{t.torrent_info.site}-{t.torrent_info.title}"
@@ -133,5 +153,10 @@ class AddDownloadAction(BaseAction):
         elif _started:
             self._has_error = True
 
-        self.job_done(f"已添加 {len(self._added_downloads)} 个下载任务")
+        if _capped_skipped > 0:
+            self.job_done(
+                f"已添加 {len(self._added_downloads)} 个下载任务（触发单次上限 {params.max_downloads}，跳过剩余 {_capped_skipped} 个）"
+            )
+        else:
+            self.job_done(f"已添加 {len(self._added_downloads)} 个下载任务")
         return context
