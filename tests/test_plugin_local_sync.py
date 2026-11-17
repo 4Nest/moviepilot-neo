@@ -592,3 +592,130 @@ def test_plugin_reload_refreshes_scheduler_services_idempotently(monkeypatch):
     assert registered_job["trigger"] == "interval"
     assert registered_job["minutes"] == 5
     assert registered_job["kwargs"] == {"job_id": "DemoPlugin_new"}
+
+
+def test_plugin_api_route_hotswap_has_zero_404_gap_and_preserves_bear_auth(monkeypatch):
+    """动态路由重挂时必须先追加新路由再原子移除旧路由，避免并发请求出现 404 空窗或污染 bear 鉴权依赖。"""
+    from types import SimpleNamespace
+    from app.api.endpoints import plugin as plugin_endpoint
+    from app.core.security import verify_apikey, verify_token
+
+    route_snapshots_during_add = []
+
+    class FakeApp:
+        def __init__(self):
+            self.routes = []
+            self.openapi_schema = None
+
+        def add_api_route(self, **kwargs):
+            # 在新增路由的每一个瞬间，若此前已挂载过该路径，列表里都不得出现空窗
+            route_snapshots_during_add.append([r.path for r in self.routes])
+            self.routes.append(SimpleNamespace(**kwargs))
+
+        def setup(self):
+            pass
+
+    shared_api_template = {
+        "path": "/StorageCleanup/status",
+        "endpoint": lambda: {"v": 1},
+        "methods": ["GET"],
+        "auth": "bear",
+    }
+    state = {"version": 1}
+
+    class FakePluginManager:
+        def get_plugin_apis(self, plugin_id):
+            assert plugin_id == "StorageCleanup"
+            entry = dict(shared_api_template)
+            entry["endpoint"] = (lambda v=state["version"]: lambda: {"v": v})()
+            return [entry]
+
+    fake_app = FakeApp()
+    monkeypatch.setattr(plugin_endpoint, "app", fake_app)
+    monkeypatch.setattr(plugin_endpoint, "PluginManager", FakePluginManager)
+
+    # 首次挂载
+    plugin_endpoint.register_plugin_api("StorageCleanup")
+    assert [r.path for r in fake_app.routes] == [
+        "/api/v1/plugin/StorageCleanup/status",
+        "/api/v2/plugin/StorageCleanup/status",
+    ]
+    first_v1_endpoint = fake_app.routes[0].endpoint
+
+    # 热更新重挂：期间旧路由始终在位，完成后仅保留新路由且鉴权依赖只有 verify_token
+    route_snapshots_during_add.clear()
+    state["version"] = 2
+    plugin_endpoint.register_plugin_api("StorageCleanup")
+
+    assert all("/api/v1/plugin/StorageCleanup/status" in snap for snap in route_snapshots_during_add)
+    assert [r.path for r in fake_app.routes] == [
+        "/api/v1/plugin/StorageCleanup/status",
+        "/api/v2/plugin/StorageCleanup/status",
+    ]
+    assert fake_app.routes[0].endpoint is not first_v1_endpoint
+    assert fake_app.routes[0].endpoint() == {"v": 2}
+    dep_fns = [dep.dependency for dep in fake_app.routes[0].dependencies]
+    assert dep_fns == [verify_token]
+    assert verify_apikey not in dep_fns
+
+
+def test_plugin_reload_event_refreshes_routes_and_sync_plugins_reloads_incrementally(monkeypatch):
+    """PluginReload 事件应同步刷新动态路由，且启动期 sync_plugins 仅增量重载变更/未就绪插件而不全量停机。"""
+    import asyncio
+    from types import SimpleNamespace
+    from app.api.endpoints import plugin as plugin_endpoint
+    from app.startup import plugins_initializer
+
+    reload_handlers = {
+        item["handler_identifier"]
+        for item in eventmanager.visualize_handlers()
+        if item["event_type"] == EventType.PluginReload.value and item["status"] == "enabled"
+    }
+    assert "app.api.endpoints.plugin._on_plugin_reload_routes" in reload_handlers
+
+    refreshed = []
+    monkeypatch.setattr(plugin_endpoint, "Command", lambda: SimpleNamespace(init_commands=lambda pid: refreshed.append(("cmd", pid))))
+    monkeypatch.setattr(plugin_endpoint, "register_plugin_api", lambda pid=None: refreshed.append(("api", pid)))
+
+    plugin_endpoint._on_plugin_reload_routes(Event(EventType.PluginReload, {"plugin_id": "StorageCleanup"}))
+    assert refreshed == [("cmd", "StorageCleanup"), ("api", "StorageCleanup")]
+
+    # 验证 sync_plugins 增量重载：不会调用 init_config() 误停已在运行的 StablePlugin
+    reloaded_calls = []
+    init_config_called = []
+
+    class FakeManager:
+        running_plugins = {"StablePlugin": object(), "StorageCleanup": object()}
+
+        def sync(self):
+            return ["StorageCleanup"]
+
+        def install_plugin_missing_dependencies(self):
+            return ["some-pkg"]
+
+        def init_config(self):
+            init_config_called.append(True)
+
+        def reload_plugin(self, pid):
+            reloaded_calls.append(("reload", pid))
+
+    async def immediate_execute(_loop, func, _name):
+        return func()
+
+    monkeypatch.setattr(plugins_initializer, "PluginManager", FakeManager)
+    monkeypatch.setattr(plugins_initializer, "execute_task", immediate_execute)
+    monkeypatch.setattr(
+        plugins_initializer,
+        "SystemConfigOper",
+        lambda: SimpleNamespace(get=lambda _k: ["StablePlugin", "StorageCleanup", "DeferredPlugin"]),
+    )
+    monkeypatch.setattr(plugin_endpoint, "register_plugin_api", lambda pid=None: reloaded_calls.append(("api", pid)))
+
+    assert asyncio.run(plugins_initializer.sync_plugins()) is True
+    assert init_config_called == []
+    assert reloaded_calls == [
+        ("reload", "StorageCleanup"),
+        ("api", "StorageCleanup"),
+        ("reload", "DeferredPlugin"),
+        ("api", "DeferredPlugin"),
+    ]

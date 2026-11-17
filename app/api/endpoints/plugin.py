@@ -1,6 +1,7 @@
 import asyncio
 import mimetypes
 import shutil
+import threading
 from copy import deepcopy
 from time import monotonic
 from typing import Annotated, Any, Callable, Dict, Hashable, List, Optional
@@ -17,7 +18,7 @@ from app.api.apiv2_utils import API_V2_STR, OPENAPI_V2_PATH
 from app.command import Command
 from app.core.cache import async_fresh
 from app.core.config import settings
-from app.core.event import eventmanager
+from app.core.event import Event, eventmanager
 from app.core.plugin import PluginManager
 from app.core.security import (
     resource_token_cookie,
@@ -37,7 +38,7 @@ from app.helper.plugin import PluginHelper
 from app.log import logger
 from app.scheduler import Scheduler
 from app.schemas.event import PluginDataResetEventData
-from app.schemas.types import ChainEventType, SystemConfigKey
+from app.schemas.types import ChainEventType, EventType, SystemConfigKey
 
 PROTECTED_ROUTES = {
     "/api/v1/openapi.json",
@@ -87,6 +88,7 @@ PLUGIN_V2_PREFIX = f"{API_V2_STR}/plugin"
 
 router = APIRouter()
 _plugin_release_refresh_tasks: set[asyncio.Task] = set()
+_plugin_route_lock = threading.RLock()
 
 
 async def _get_market_plugin_from_repo(
@@ -165,9 +167,24 @@ def remove_plugin_api(plugin_id: str):
     _update_plugin_api_routes(plugin_id, action="remove")
 
 
+def _collect_plugin_routes(plugin_id: str) -> list:
+    """收集当前应用路由表中属于指定插件的 v1/v2 动态路由对象。"""
+    if not plugin_id:
+        return []
+    prefixes = (
+        f"{PLUGIN_PREFIX}/{plugin_id}/",
+        f"{PLUGIN_V2_PREFIX}/{plugin_id}/",
+    )
+    return [
+        route
+        for route in app.routes
+        if any(getattr(route, "path", "").startswith(prefix) for prefix in prefixes)
+    ]
+
+
 def _update_plugin_api_routes(plugin_id: Optional[str], action: str):
     """
-    插件 API 路由注册和移除
+    插件 API 路由注册和移除（加锁执行先追加新路由、再按对象身份原子剔除旧路由，消除并发请求 404 空窗）。
     :param plugin_id: 插件 ID，如果 action 为 "add" 且 plugin_id 为 None，则处理所有插件
                       如果 action 为 "remove"，plugin_id 必须是有效的插件 ID
     :param action: "add" 或 "remove"，决定是添加还是移除路由
@@ -175,47 +192,58 @@ def _update_plugin_api_routes(plugin_id: Optional[str], action: str):
     if action not in {"add", "remove"}:
         raise ValueError("Action must be 'add' or 'remove'")
 
-    is_modified = False
-    existing_paths = {route.path: route for route in app.routes}
+    with _plugin_route_lock:
+        is_modified = False
+        existing_paths = {
+            route.path: route
+            for route in app.routes
+            if getattr(route, "path", None) in PROTECTED_ROUTES
+        }
+        stale_route_ids: set[int] = set()
 
-    plugin_ids = [plugin_id] if plugin_id else PluginManager().get_running_plugin_ids()
-    for plugin_id in plugin_ids:
-        routes_removed = _remove_routes(plugin_id)
-        if routes_removed:
-            is_modified = True
-
-        if action != "add":
-            continue
-        # 获取插件的 API 路由信息
-        plugin_apis = PluginManager().get_plugin_apis(plugin_id)
-        for api in plugin_apis:
-            api_path = f"{PLUGIN_PREFIX}{api.get('path', '')}"
-            try:
-                api["path"] = api_path
-                allow_anonymous = api.pop("allow_anonymous", False)
-                auth_mode = api.pop("auth", "apikey")
-                dependencies = api.setdefault("dependencies", [])
-                if not allow_anonymous:
-                    if (
-                        auth_mode == "bear"
-                        and Depends(verify_token) not in dependencies
-                    ):
-                        dependencies.append(Depends(verify_token))
-                    elif Depends(verify_apikey) not in dependencies:
-                        dependencies.append(Depends(verify_apikey))
-                app.add_api_route(**api, tags=["plugin"])
-                v2_api = api.copy()
-                v2_api["path"] = api_path.replace(PLUGIN_PREFIX, PLUGIN_V2_PREFIX, 1)
-                app.add_api_route(**v2_api, tags=["plugin"])
+        plugin_ids = [plugin_id] if plugin_id else PluginManager().get_running_plugin_ids()
+        for target_pid in plugin_ids:
+            old_routes = _collect_plugin_routes(target_pid)
+            if old_routes:
+                stale_route_ids.update(id(route) for route in old_routes)
                 is_modified = True
-                logger.debug(f"Added plugin routes: {api_path}, {v2_api['path']}")
-            except Exception as e:
-                logger.error(f"Error adding plugin route {api_path}: {str(e)}")
 
-    if is_modified:
-        _clean_protected_routes(existing_paths)
-        app.openapi_schema = None
-        app.setup()
+            if action != "add":
+                continue
+
+            # 先追加新路由，切换期间旧路由仍在位兜底，避免并发请求落入 404
+            plugin_apis = PluginManager().get_plugin_apis(target_pid)
+            for raw_api in plugin_apis:
+                api = dict(raw_api)
+                api_path = f"{PLUGIN_PREFIX}{api.get('path', '')}"
+                try:
+                    api["path"] = api_path
+                    allow_anonymous = api.pop("allow_anonymous", False)
+                    auth_mode = api.pop("auth", "apikey")
+                    dependencies = list(api.get("dependencies") or [])
+                    api["dependencies"] = dependencies
+                    if not allow_anonymous:
+                        if auth_mode == "bear":
+                            if Depends(verify_token) not in dependencies:
+                                dependencies.append(Depends(verify_token))
+                        elif Depends(verify_apikey) not in dependencies:
+                            dependencies.append(Depends(verify_apikey))
+                    app.add_api_route(**api, tags=["plugin"])
+                    v2_api = api.copy()
+                    v2_api["path"] = api_path.replace(PLUGIN_PREFIX, PLUGIN_V2_PREFIX, 1)
+                    app.add_api_route(**v2_api, tags=["plugin"])
+                    is_modified = True
+                    logger.debug(f"Added plugin routes: {api_path}, {v2_api['path']}")
+                except Exception as e:
+                    logger.error(f"Error adding plugin route {api_path}: {str(e)}")
+
+        if stale_route_ids:
+            app.routes[:] = [route for route in app.routes if id(route) not in stale_route_ids]
+
+        if is_modified:
+            _clean_protected_routes(existing_paths)
+            app.openapi_schema = None
+            app.setup()
 
 
 def _remove_routes(plugin_id: str) -> bool:
@@ -224,24 +252,25 @@ def _remove_routes(plugin_id: str) -> bool:
     :param plugin_id: 插件 ID
     :return: 是否有路由被移除
     """
+    with _plugin_route_lock:
+        routes_to_remove = _collect_plugin_routes(plugin_id)
+        if not routes_to_remove:
+            return False
+        remove_ids = {id(route) for route in routes_to_remove}
+        app.routes[:] = [route for route in app.routes if id(route) not in remove_ids]
+        return True
+
+
+@eventmanager.register(EventType.PluginReload)
+def _on_plugin_reload_routes(event: Event) -> None:
+    """插件热重载后自动同步更新其菜单命令与动态 API 路由。"""
+    if not event or not event.event_data:
+        return
+    plugin_id = event.event_data.get("plugin_id")
     if not plugin_id:
-        return False
-    prefixes = {
-        f"{PLUGIN_PREFIX}/{plugin_id}/",
-        f"{PLUGIN_V2_PREFIX}/{plugin_id}/",
-    }
-    routes_to_remove = [
-        route for route in app.routes if any(route.path.startswith(prefix) for prefix in prefixes)
-    ]
-    removed = False
-    for route in routes_to_remove:
-        try:
-            app.routes.remove(route)
-            removed = True
-            logger.debug(f"Removed plugin route: {route.path}")
-        except Exception as e:
-            logger.error(f"Error removing plugin route {route.path}: {str(e)}")
-    return removed
+        return
+    Command().init_commands(plugin_id)
+    register_plugin_api(plugin_id)
 
 
 def _clean_protected_routes(existing_paths: dict):

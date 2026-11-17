@@ -1,6 +1,34 @@
 from app.core.config import global_vars
 from app.core.plugin import PluginManager
+from app.db.systemconfig_oper import SystemConfigOper
 from app.log import logger
+from app.schemas.types import SystemConfigKey
+
+
+def _reload_synced_plugins(
+    plugin_manager: PluginManager,
+    synced_ids: list[str],
+    has_resolved_deps: bool,
+) -> list[str]:
+    """按需热重载新同步或补齐依赖后待恢复的插件，避免全量 stop 导致运行中插件路由出现 404 空窗。"""
+    target_ids: list[str] = list(dict.fromkeys(synced_ids or []))
+    if has_resolved_deps:
+        installed_ids = SystemConfigOper().get(SystemConfigKey.UserInstalledPlugins) or []
+        for pid in installed_ids:
+            if pid not in plugin_manager.running_plugins and pid not in target_ids:
+                target_ids.append(pid)
+
+    from app.api.endpoints import plugin as plugin_endpoint
+
+    reloaded: list[str] = []
+    for pid in target_ids:
+        try:
+            plugin_manager.reload_plugin(pid)
+            plugin_endpoint.register_plugin_api(pid)
+            reloaded.append(pid)
+        except Exception as err:
+            logger.error(f"增量初始化插件 {pid} 失败：{err}", exc_info=True)
+    return reloaded
 
 
 async def sync_plugins() -> bool:
@@ -12,20 +40,26 @@ async def sync_plugins() -> bool:
         plugin_manager = PluginManager()
 
         sync_result = await execute_task(loop, plugin_manager.sync, "插件同步到本地")
-        resolved_dependencies = await execute_task(loop, plugin_manager.install_plugin_missing_dependencies,
-                                                   "缺失依赖项安装")
+        resolved_dependencies = await execute_task(
+            loop, plugin_manager.install_plugin_missing_dependencies, "缺失依赖项安装"
+        )
         # 判断是否需要进行插件初始化
         if not sync_result and not resolved_dependencies:
             logger.debug("没有新的插件同步到本地或缺失依赖项需要安装")
             return False
 
-        # 继续执行后续的插件初始化步骤
-        logger.info("正在重新初始化插件")
-        # 重新初始化插件
-        plugin_manager.init_config()
-        # 重新注册插件API
-        register_plugin_api()
-        logger.info("所有插件初始化完成")
+        # 仅增量重载本次同步或待恢复的插件，避免全量 stop/start 中断其它运行态插件
+        logger.info("正在增量初始化已同步或补齐依赖的插件")
+        await execute_task(
+            loop,
+            lambda: _reload_synced_plugins(
+                plugin_manager,
+                list(sync_result or []),
+                bool(resolved_dependencies),
+            ),
+            "增量插件重载",
+        )
+        logger.info("增量插件初始化完成")
         return True
     except Exception as e:
         logger.error(f"插件初始化过程中出现异常: {e}")
