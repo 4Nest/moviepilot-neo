@@ -17,6 +17,8 @@ def _normalize_integer_flags(payload: dict, fields: Tuple[str, ...] = INTEGER_FL
     for field in fields:
         if isinstance(normalized_payload.get(field), bool):
             normalized_payload[field] = int(normalized_payload[field])
+    if "version_rules" in normalized_payload and normalized_payload["version_rules"] is not None:
+        normalized_payload["version_mode"] = "all" if normalized_payload["version_rules"] else "any"
     return normalized_payload
 
 class SubscribeOper(DbOper):

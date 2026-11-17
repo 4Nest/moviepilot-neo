@@ -128,6 +128,18 @@ class SubscribeVersionSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_nullable_collections(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            normalized = dict(data)
+            if "sites" in normalized and normalized["sites"] is None:
+                normalized["sites"] = []
+            if "filter_groups" in normalized and normalized["filter_groups"] is None:
+                normalized["filter_groups"] = []
+            return normalized
+        return data
+
 
 class SubscribeVersionRule(BaseModel):
     """一个具名版本及其独立匹配设置。"""
@@ -178,6 +190,18 @@ class SubscribeVersionProgress(BaseModel):
     episode_priority: Dict[str, int] = Field(default_factory=dict)
     completed: bool = False
     decision_summary: Optional[SubscribeDecisionSummary] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_nullable_progress_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            normalized = dict(data)
+            if normalized.get("episode_priority") is None and "episode_priority" in normalized:
+                normalized["episode_priority"] = {}
+            if normalized.get("completed") is None and "completed" in normalized:
+                normalized["completed"] = False
+            return normalized
+        return data
 
 
 class Subscribe(BaseModel):
@@ -321,8 +345,9 @@ class Subscribe(BaseModel):
             ids = [rule.id for rule in self.version_rules]
             if len(ids) != len(set(ids)):
                 raise ValueError("version rule IDs must be unique")
-            if self.version_rules and self.version_mode not in (None, "all"):
-                raise ValueError("structured version rules require all mode")
+            if self.version_rules:
+                # 历史重订等链路可能遗留 ORM 默认值 any，读取和入参统一按非空规则归一为 all
+                self.version_mode = "all"
         return self
 
     def to_public_write_payload(self) -> Dict[str, Any]:

@@ -199,3 +199,124 @@ def test_subscribe_chain_exists_forwards_episode_group():
         season=1,
         episode_group="eg-1",
     )
+
+
+def test_resubscribe_from_history_with_version_rules_preserves_all_mode_and_validates():
+    """从历史订阅重新订阅含多版本规则的电视剧时，必须写入 version_mode=all 且列表查询序列化正常。"""
+    from app.api.endpoints.subscribe import create_subscribe, subscribe_history
+    from app.schemas.subscribe import Subscribe as SubscribeSchema
+
+    tmdbid = -(910_000_000 + os.getpid())
+    oper = SubscribeOper()
+    created_sub_id = None
+    history_row = SubscribeHistory(
+        name="多版本测试番剧",
+        year="2025",
+        type=MediaType.TV.value,
+        tmdbid=tmdbid,
+        season=1,
+        total_episode=12,
+        username="admin",
+        version_mode="all",
+        version_rules=[
+            {
+                "id": "v1",
+                "name": "ADWeb",
+                "enabled": True,
+                "release_group": "ADWeb",
+                "settings": {"sites": [1], "filter_groups": []},
+            }
+        ],
+        version_progress={"v1": {"state": "R", "completed": True, "note": list(range(1, 13))}},
+    )
+    try:
+        async def _load_history():
+            return await subscribe_history(
+                mtype=MediaType.TV.value,
+                page=1,
+                count=30,
+                db=object(),
+                current_user=SimpleNamespace(name="admin", is_superuser=True),
+            )
+
+        with patch(
+            "app.api.endpoints.subscribe.SubscribeHistory.async_list_by_type",
+            new=AsyncMock(return_value=[history_row]),
+        ):
+            history_items = asyncio.run(_load_history())
+
+        assert len(history_items) == 1
+        resubscribe_payload = SubscribeSchema.model_validate(history_items[0].model_dump())
+
+        with patch(
+            "app.api.endpoints.subscribe.SubscribeChain.async_add",
+            new=AsyncMock(return_value=(101, "新增订阅成功")),
+        ) as async_add:
+            resp = asyncio.run(
+                create_subscribe(
+                    subscribe_in=resubscribe_payload,
+                    current_user=SimpleNamespace(name="admin", is_superuser=True),
+                )
+            )
+        assert resp.success is True
+        forwarded_kwargs = async_add.await_args.kwargs
+        assert forwarded_kwargs["version_mode"] == "all"
+        assert len(forwarded_kwargs["version_rules"]) == 1
+
+        # 验证真实持久化落库后再走列表响应 schema 校验不抛异常
+        sid, msg = oper.add(
+            mediainfo=_media(None),
+            season=2,
+            username="admin",
+            total_episode=12,
+            lack_episode=12,
+            version_rules=forwarded_kwargs["version_rules"],
+        )
+        created_sub_id = sid
+        assert msg == "新增订阅成功"
+        persisted = oper.get(sid)
+        assert persisted.version_mode == "all"
+        validated = SubscribeSchema.model_validate(persisted, from_attributes=True)
+        assert validated.version_mode == "all"
+        assert len(validated.version_rules) == 1
+    finally:
+        if created_sub_id:
+            Subscribe.delete(oper._db, rid=created_sub_id)
+
+
+def test_legacy_inconsistent_version_mode_row_self_heals_on_read():
+    """存量历史重订遗留 version_rules 非空但 version_mode=any 的行在查询时自动归一为 all。"""
+    from app.schemas.subscribe import Subscribe as SubscribeSchema
+
+    dirty_orm_row = SimpleNamespace(
+        id=77,
+        name="遗留脏数据剧集",
+        year="2024",
+        type=MediaType.TV.value,
+        tmdbid=12345,
+        season=1,
+        total_episode=24,
+        lack_episode=24,
+        start_episode=1,
+        state="R",
+        username="admin",
+        version_mode="any",
+        version_rules=[
+            {
+                "id": "main",
+                "name": "主版本",
+                "enabled": True,
+                "release_group": None,
+                "settings": {"sites": None, "filter_groups": None},
+            }
+        ],
+        version_progress={
+            "main": {"state": "R", "episode_priority": None, "completed": None}
+        },
+    )
+    validated = SubscribeSchema.model_validate(dirty_orm_row, from_attributes=True)
+    assert validated.version_mode == "all"
+    assert validated.version_rules[0].settings.sites == []
+    assert validated.version_rules[0].settings.filter_groups == []
+    assert validated.version_progress["main"].episode_priority == {}
+    assert validated.version_progress["main"].completed is False

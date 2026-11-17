@@ -194,6 +194,8 @@ async def create_subscribe(
     if not current_user.is_superuser:
         for field in _PRIVILEGED_SUBSCRIBE_WRITE_FIELDS:
             subscribe_dict.pop(field, None)
+    if subscribe_dict.get("version_rules") is not None:
+        subscribe_dict["version_mode"] = "all" if subscribe_dict["version_rules"] else "any"
     subscribe_dict["username"] = current_user.name
     sid, message = await SubscribeChain().async_add(
         mtype=mtype,
