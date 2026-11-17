@@ -2,7 +2,9 @@ from typing import Any
 
 from fastapi import APIRouter
 
+from app.core.config import settings
 from app.db.models.passkey import PassKey
+from app.db.models.user import User
 
 router = APIRouter()
 
@@ -13,7 +15,12 @@ def _system_auth_providers() -> list[dict[str, Any]]:
 
     :return: 系统认证提供方列表
     """
-    has_passkey = bool(PassKey.list(db=None))
+    admin_user = User.get_by_name(db=None, name=settings.SUPERUSER)
+    has_passkey = bool(
+        PassKey.get_by_user_id(db=None, user_id=admin_user.id)
+        if admin_user
+        else False
+    )
     return [
         {
             "id": "system:passkey",

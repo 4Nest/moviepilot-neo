@@ -3,6 +3,7 @@ PassKey WebAuthn 辅助工具类
 """
 import base64
 import binascii
+import ipaddress
 import json
 import secrets
 import threading
@@ -47,6 +48,8 @@ class PasskeyChallenge:
     challenge: str
     purpose: PasskeyChallengePurpose
     user_id: Optional[int]
+    expected_origin: Optional[str] = None
+    expected_rp_id: Optional[str] = None
 
 
 class PasskeyChallengeStore:
@@ -66,6 +69,8 @@ class PasskeyChallengeStore:
         challenge: str,
         purpose: PasskeyChallengePurpose,
         user_id: Optional[int],
+        expected_origin: Optional[str] = None,
+        expected_rp_id: Optional[str] = None,
     ) -> str:
         """保存 challenge 并返回不携带认证事实的随机事务 token。"""
         transaction_token = secrets.token_urlsafe(32)
@@ -75,6 +80,8 @@ class PasskeyChallengeStore:
                 challenge=challenge,
                 purpose=purpose,
                 user_id=user_id,
+                expected_origin=expected_origin,
+                expected_rp_id=expected_rp_id,
             ),
         )
         return transaction_token
@@ -123,27 +130,57 @@ class PassKeyHelper:
     """
 
     @staticmethod
+    def _is_ip_hostname(hostname: str) -> bool:
+        """判断主机名是否为裸 IPv4/IPv6 地址（WebAuthn 规范不支持裸 IP 作为 RP ID）。"""
+        if not hostname:
+            return False
+        try:
+            ipaddress.ip_address(hostname.strip("[]"))
+            return True
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _normalize_origin_and_rp_id(raw_url: str) -> Optional[Tuple[str, str]]:
+        """
+        将配置的域名或请求来源规范化为标准 WebAuthn (origin, rp_id)。
+        自动补齐缺失协议、剔除默认端口(:80/:443)与子路径，确保与浏览器 window.location.origin 一致。
+        """
+        raw = (raw_url or "").strip()
+        if not raw:
+            return None
+        if "://" not in raw:
+            lower_head = raw.split("/", 1)[0].split(":", 1)[0].lower()
+            default_scheme = "http" if lower_head in ("localhost", "127.0.0.1") else "https"
+            raw = f"{default_scheme}://{raw}"
+        parsed = urlparse(raw)
+        scheme = (parsed.scheme or "").lower()
+        hostname = (parsed.hostname or "").lower()
+        if scheme not in ("http", "https") or not hostname:
+            return None
+        try:
+            port = parsed.port
+        except ValueError:
+            return None
+        default_port = 80 if scheme == "http" else 443
+        host_expr = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
+        if port and port != default_port:
+            origin = f"{scheme}://{host_expr}:{port}"
+        else:
+            origin = f"{scheme}://{host_expr}"
+        return origin, hostname
+
+    @staticmethod
     def get_rp_id() -> str:
         """
         获取 Relying Party ID
         """
         if settings.APP_DOMAIN:
-            app_domain = settings.APP_DOMAIN.strip()
-            # 确保存在协议前缀，以便 urlparse 正确解析主机和端口
-            if not app_domain.startswith(('http://', 'https://')):
-                app_domain = f'https://{app_domain}'
-            parsed = urlparse(app_domain)
-            host = parsed.hostname
-            if host:
-                return host
-            # 从 APP_DOMAIN 中提取域名
-            host = settings.APP_DOMAIN.replace('https://', '').replace('http://', '')
-            # 移除端口号
-            if ':' in host:
-                host = host.split(':')[0]
-            return host
+            normalized = PassKeyHelper._normalize_origin_and_rp_id(settings.APP_DOMAIN)
+            if normalized:
+                return normalized[1]
         # 只有在未配置 APP_DOMAIN 时，才默认为 localhost
-        return 'localhost'
+        return "localhost"
 
     @staticmethod
     def get_rp_name() -> str:
@@ -158,9 +195,44 @@ class PassKeyHelper:
         获取源地址
         """
         if settings.APP_DOMAIN:
-            return settings.APP_DOMAIN.rstrip('/')
+            normalized = PassKeyHelper._normalize_origin_and_rp_id(settings.APP_DOMAIN)
+            if normalized:
+                return normalized[0]
+            return settings.APP_DOMAIN.strip().rstrip("/")
         # 如果未配置APP_DOMAIN，使用默认的localhost地址
-        return f'http://localhost:{settings.NGINX_PORT}'
+        normalized_local = PassKeyHelper._normalize_origin_and_rp_id(
+            f"http://localhost:{settings.NGINX_PORT}"
+        )
+        return normalized_local[0] if normalized_local else f"http://localhost:{settings.NGINX_PORT}"
+
+    @staticmethod
+    def resolve_request_context(request: Any = None) -> Tuple[Optional[str], Optional[str]]:
+        """
+        当系统未显式配置 APP_DOMAIN 时，从当前 HTTP 请求头安全推导 (expected_origin, expected_rp_id)，
+        以支持反向代理域名或非默认本地端口开箱即用；一旦配置了 APP_DOMAIN，始终以系统配置为准。
+        """
+        if settings.APP_DOMAIN and settings.APP_DOMAIN.strip():
+            return None, None
+        if request is None or not hasattr(request, "headers"):
+            return None, None
+
+        origin_header = (request.headers.get("origin") or "").strip()
+        candidate = origin_header
+        if not candidate:
+            forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip()
+            forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip()
+            host = forwarded_host or (request.headers.get("host") or "").strip()
+            scheme = forwarded_proto or getattr(getattr(request, "url", None), "scheme", "") or "http"
+            if host:
+                candidate = f"{scheme}://{host}"
+
+        normalized = PassKeyHelper._normalize_origin_and_rp_id(candidate)
+        if not normalized:
+            return None, None
+        origin, rp_id = normalized
+        if rp_id == "testserver" or PassKeyHelper._is_ip_hostname(rp_id):
+            return None, None
+        return origin, rp_id
 
     @staticmethod
     def standardize_credential_id(credential_id: str) -> str:
@@ -206,12 +278,19 @@ class PassKeyHelper:
         result = []
         for cred in credentials:
             try:
+                valid_transports = []
+                for raw_transport in (cred.get("transports") or "").split(","):
+                    item = raw_transport.strip()
+                    if not item:
+                        continue
+                    try:
+                        valid_transports.append(AuthenticatorTransport(item))
+                    except ValueError:
+                        logger.debug(f"忽略未知的PassKey传输类型: {item}")
                 result.append(
                     PublicKeyCredentialDescriptor(
-                        id=PassKeyHelper._base64_decode_urlsafe(cred['credential_id']),
-                        transports=[
-                            AuthenticatorTransport(t) for t in cred.get('transports', '').split(',') if t
-                        ] if cred.get('transports') else None
+                        id=PassKeyHelper._base64_decode_urlsafe(cred["credential_id"]),
+                        transports=valid_transports or None,
                     )
                 )
             except Exception as e:
@@ -253,15 +332,17 @@ class PassKeyHelper:
         user_id: int,
         username: str,
         display_name: Optional[str] = None,
-        existing_credentials: Optional[List[Dict[str, Any]]] = None
+        existing_credentials: Optional[List[Dict[str, Any]]] = None,
+        rp_id: Optional[str] = None,
     ) -> Tuple[str, str]:
         """
         生成注册选项
-        
+
         :param user_id: 用户ID
         :param username: 用户名
         :param display_name: 显示名称
         :param existing_credentials: 已存在的凭证列表
+        :param rp_id: 可选覆盖的 RP ID
         :return: (options_json, challenge)
         """
         try:
@@ -277,7 +358,7 @@ class PassKeyHelper:
 
             # 生成注册选项
             options = generate_registration_options(
-                rp_id=PassKeyHelper.get_rp_id(),
+                rp_id=rp_id or PassKeyHelper.get_rp_id(),
                 rp_name=PassKeyHelper.get_rp_name(),
                 user_id=user_id_bytes,
                 user_name=username,
@@ -290,6 +371,7 @@ class PassKeyHelper:
                 ),
                 supported_pub_key_algs=[
                     COSEAlgorithmIdentifier.ECDSA_SHA_256,
+                    COSEAlgorithmIdentifier.EDDSA,
                     COSEAlgorithmIdentifier.RSASSA_PKCS1_v1_5_SHA_256,
                 ]
             )
@@ -367,13 +449,15 @@ class PassKeyHelper:
     @staticmethod
     def generate_authentication_options(
         existing_credentials: Optional[List[Dict[str, Any]]] = None,
-        user_verification: Optional[str] = None
+        user_verification: Optional[str] = None,
+        rp_id: Optional[str] = None,
     ) -> Tuple[str, str]:
         """
         生成认证选项
-        
+
         :param existing_credentials: 已存在的凭证列表（用于限制可用凭证）
         :param user_verification: 用户验证要求，如果不指定则从配置中读取
+        :param rp_id: 可选覆盖的 RP ID
         :return: (options_json, challenge)
         """
         try:
@@ -386,7 +470,7 @@ class PassKeyHelper:
 
             # 生成认证选项
             options = generate_authentication_options(
-                rp_id=PassKeyHelper.get_rp_id(),
+                rp_id=rp_id or PassKeyHelper.get_rp_id(),
                 allow_credentials=allow_credentials,
                 user_verification=uv_requirement
             )

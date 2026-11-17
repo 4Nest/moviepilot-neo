@@ -313,7 +313,7 @@ def test_telegramify_current_fields_are_used_directly():
 
 
 def test_send_msg_with_html_parse_mode_keeps_html(telegram):
-    """HTML模式发送时应保留调用方传入的HTML内容"""
+    """HTML模式发送时应保留调用方传入的HTML内容，且不追加查看详情跳转链接"""
     result = telegram.send_msg(
         title="测试 <标题>",
         text="<blockquote>第一行</blockquote><b>加粗</b>",
@@ -326,9 +326,9 @@ def test_send_msg_with_html_parse_mode_keeps_html(telegram):
     assert send_kwargs["parse_mode"] == "HTML"
     assert send_kwargs["text"] == (
         '<b>测试 &lt;标题&gt;</b>\n'
-        '<blockquote>第一行</blockquote><b>加粗</b>\n'
-        '<a href="https://example.com/?a=1&amp;b=2">查看详情</a>'
+        '<blockquote>第一行</blockquote><b>加粗</b>'
     )
+    assert "查看详情" not in send_kwargs["text"]
 
 
 def test_telegram_module_passes_parse_mode_to_client():

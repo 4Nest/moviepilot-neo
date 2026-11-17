@@ -336,11 +336,6 @@ class Telegram:
         return f"_{text}_"
 
     @staticmethod
-    def _format_detail_link(link: str, parse_mode: Optional[str] = None) -> str:
-        """按 parse_mode 生成查看详情链接。"""
-        return Telegram._format_link("查看详情", link, parse_mode)
-
-    @staticmethod
     def _prepare_text(text: Optional[str], parse_mode: Optional[str] = None) -> Optional[str]:
         """按 parse_mode 生成 Telegram 可发送文本。"""
         if not text:
@@ -636,9 +631,7 @@ class Telegram:
                 caption = text
             else:
                 caption = ""
-
-            if link:
-                caption = f"{caption}\n{self._format_detail_link(link, parse_mode)}"
+            _ = link
 
             # 创建按钮键盘
             reply_markup = None
@@ -914,9 +907,7 @@ class Telegram:
                         f"{self._format_italic(type_text, parse_mode)}"
                     )
                 index += 1
-
-            if link:
-                caption = f"{caption}\n{self._format_detail_link(link, parse_mode)}"
+            _ = link
 
             # 创建按钮键盘
             reply_markup = None
@@ -984,11 +975,12 @@ class Telegram:
             index = 1
             caption = self._format_title(title, parse_mode) or ""
             image = torrents[0].media_info.get_message_image()
+            _ = link
             for context in torrents:
                 torrent = context.torrent_info
                 site_name = torrent.site_name
                 meta = MetaInfo(torrent.title, torrent.description)
-                link = torrent.page_url
+                torrent_link = torrent.page_url
                 title = (
                     f"{meta.season_episode} "
                     f"{meta.resource_term} "
@@ -1003,15 +995,16 @@ class Telegram:
                     if self._is_html_parse_mode(parse_mode)
                     else site_name
                 )
-                title_link = self._format_link(title, link, parse_mode)
+                title_link = (
+                    self._format_link(title, torrent_link, parse_mode)
+                    if torrent_link
+                    else (html_utils.escape(title) if self._is_html_parse_mode(parse_mode) else title)
+                )
                 caption = (
                     f"{caption}\n{index}.【{site_name}】{title_link} "
                     f"{StringUtils.str_filesize(torrent.size)} {free} {seeder}"
                 )
                 index += 1
-
-            if link:
-                caption = f"{caption}\n{self._format_detail_link(link, parse_mode)}"
 
             # 创建按钮键盘
             reply_markup = None

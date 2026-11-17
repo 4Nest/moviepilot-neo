@@ -65,7 +65,11 @@ def _extract_and_standardize_credential_id(credential: dict) -> str:
 
 
 def _verify_passkey_and_update(
-    credential: dict, challenge: str, passkey: PassKey
+    credential: dict,
+    challenge: str,
+    passkey: PassKey,
+    expected_origin: Optional[str] = None,
+    expected_rp_id: Optional[str] = None,
 ) -> tuple[bool, int]:
     """
     验证 PassKey 并更新使用时间和签名计数
@@ -73,13 +77,21 @@ def _verify_passkey_and_update(
     :param credential: 凭证字典
     :param challenge: 挑战值
     :param passkey: PassKey 对象
+    :param expected_origin: 期望的源地址
+    :param expected_rp_id: 期望的 RP ID
     :return: (验证是否成功, 新的签名计数)
     """
+    verify_kwargs: dict[str, Any] = {}
+    if expected_origin is not None:
+        verify_kwargs["expected_origin"] = expected_origin
+    if expected_rp_id is not None:
+        verify_kwargs["expected_rp_id"] = expected_rp_id
     success, new_sign_count = PassKeyHelper.verify_authentication_response(
         credential=credential,
         expected_challenge=challenge,
         credential_public_key=passkey.public_key,
         credential_current_sign_count=passkey.sign_count,
+        **verify_kwargs,
     )
 
     if success:
@@ -215,6 +227,7 @@ class PassKeyAuthenticationFinish(schemas.BaseModel):
 )
 def passkey_register_start(
     current_user: Annotated[User, Depends(get_current_admin)],
+    request: Request = None,
 ) -> Any:
     """开始注册 PassKey - 生成注册选项"""
     try:
@@ -223,8 +236,12 @@ def passkey_register_start(
         existing_credentials = (
             _build_credential_list(existing_passkeys) if existing_passkeys else None
         )
+        expected_origin, expected_rp_id = PassKeyHelper.resolve_request_context(request)
 
         # 生成注册选项
+        reg_kwargs: dict[str, Any] = {}
+        if expected_rp_id is not None:
+            reg_kwargs["rp_id"] = expected_rp_id
         options_json, challenge = PassKeyHelper.generate_registration_options(
             user_id=current_user.id,
             username=current_user.name,
@@ -232,12 +249,15 @@ def passkey_register_start(
             if current_user.settings
             else None,
             existing_credentials=existing_credentials,
+            **reg_kwargs,
         )
 
         transaction_token = PasskeyChallengeStore.issue(
             challenge=challenge,
             purpose="registration",
             user_id=current_user.id,
+            expected_origin=expected_origin,
+            expected_rp_id=expected_rp_id,
         )
         return schemas.Response(
             success=True,
@@ -270,10 +290,16 @@ def passkey_register_finish(
             )
 
         # 验证注册响应
+        verify_kwargs: dict[str, Any] = {}
+        if challenge_state.expected_origin is not None:
+            verify_kwargs["expected_origin"] = challenge_state.expected_origin
+        if challenge_state.expected_rp_id is not None:
+            verify_kwargs["expected_rp_id"] = challenge_state.expected_rp_id
         credential_id, public_key, sign_count, aaguid = (
             PassKeyHelper.verify_registration_response(
                 credential=passkey_req.credential,
                 expected_challenge=challenge_state.challenge,
+                **verify_kwargs,
             )
         )
 
@@ -322,6 +348,7 @@ def passkey_register_finish(
 )
 def passkey_authenticate_start(
     passkey_req: PassKeyAuthenticationStart = Body(...),
+    request: Request = None,
 ) -> Any:
     """开始 PassKey 认证 - 生成认证选项"""
     try:
@@ -341,15 +368,23 @@ def passkey_authenticate_start(
             existing_credentials = _build_credential_list(existing_passkeys)
             user_id = user.id
 
+        expected_origin, expected_rp_id = PassKeyHelper.resolve_request_context(request)
+        auth_kwargs: dict[str, Any] = {}
+        if expected_rp_id is not None:
+            auth_kwargs["rp_id"] = expected_rp_id
+
         # 生成认证选项
         options_json, challenge = PassKeyHelper.generate_authentication_options(
-            existing_credentials=existing_credentials
+            existing_credentials=existing_credentials,
+            **auth_kwargs,
         )
 
         transaction_token = PasskeyChallengeStore.issue(
             challenge=challenge,
             purpose="authentication",
             user_id=user_id,
+            expected_origin=expected_origin,
+            expected_rp_id=expected_rp_id,
         )
         return schemas.Response(
             success=True,
@@ -395,10 +430,16 @@ def passkey_authenticate_finish(
             raise HTTPException(status_code=401, detail="认证失败")
 
         # 验证认证响应并更新
+        verify_kwargs: dict[str, Any] = {}
+        if challenge_state.expected_origin is not None:
+            verify_kwargs["expected_origin"] = challenge_state.expected_origin
+        if challenge_state.expected_rp_id is not None:
+            verify_kwargs["expected_rp_id"] = challenge_state.expected_rp_id
         success, _ = _verify_passkey_and_update(
             credential=passkey_req.credential,
             challenge=challenge_state.challenge,
             passkey=passkey,
+            **verify_kwargs,
         )
 
         if not success:
