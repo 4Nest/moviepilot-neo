@@ -100,6 +100,7 @@
     "未找到播放地址": "Playback URL not found",
     "验证码错误": "Verification code is incorrect",
     "密码错误": "Incorrect password",
+    "当前登录密码错误": "Incorrect current password",
     "注册请求已失效，请重新发起注册": "The registration request has expired. Start registration again",
     "通行密钥注册成功": "Passkey registered successfully",
     "访问域名与系统配置不一致，请使用配置的域名重试": "The access domain does not match the system configuration. Retry using the configured domain",

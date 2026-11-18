@@ -915,3 +915,83 @@ def test_filter_torrents_max_age_hours_and_add_download_cap(monkeypatch):
     assert len(out_ctx.downloads) == 2
     assert "触发单次上限 2" in dl_act.message
     assert "跳过剩余 1 个" in dl_act.message
+
+
+def test_simulator_live_dry_run_filters_real_torrents_without_downloading(monkeypatch):
+    """live_dry_run 模式应只读搜索并执行真实过滤规则，产出命中预览列表，但绝不调用真实下载器。"""
+    from app.core.context import Context, TorrentInfo
+    from app.core.metainfo import MetaInfo
+    from app.schemas import WorkflowSimulateRequest
+    from app.workflow.simulator import WorkflowSimulator
+
+    t_keep = Context(
+        meta_info=MetaInfo(title="[ADE] Keep Anime S01E01 BluRay x265"),
+        torrent_info=TorrentInfo(
+            site=1,
+            site_name="观众",
+            title="[ADE] Keep Anime S01E01 BluRay x265",
+            description="动画",
+            size=1024 * 1024 * 500,
+            pubdate="2026-11-17 12:00:00",
+        ),
+    )
+    t_drop = Context(
+        meta_info=MetaInfo(title="[ADE] Drop Anime S01E01 BluRay Remux x264"),
+        torrent_info=TorrentInfo(
+            site=1,
+            site_name="观众",
+            title="[ADE] Drop Anime S01E01 BluRay Remux x264",
+            description="动画",
+            size=1024 * 1024 * 800,
+            pubdate="2026-11-17 12:00:00",
+        ),
+    )
+
+    monkeypatch.setattr(
+        "app.chain.search.SearchChain.search_by_title",
+        lambda self, title, sites=None: [t_keep, t_drop],
+    )
+    download_called = []
+    monkeypatch.setattr(
+        "app.chain.download.DownloadChain.download_single",
+        lambda *args, **kwargs: download_called.append(True),
+    )
+
+    sim = WorkflowSimulator()
+    resp = sim.simulate(
+        WorkflowSimulateRequest(
+            scenario="live_dry_run",
+            actions=[
+                {
+                    "id": "n_search",
+                    "type": "FetchTorrentsAction",
+                    "name": "获取站点资源",
+                    "data": {"search_type": "keyword", "name": "x265 -ADE"},
+                },
+                {
+                    "id": "n_filter",
+                    "type": "FilterTorrentsAction",
+                    "name": "过滤资源",
+                    "data": {"quality": "BluRay", "include": "动画", "exclude": "Remux|x264"},
+                },
+                {
+                    "id": "n_dl",
+                    "type": "AddDownloadAction",
+                    "name": "添加下载",
+                    "data": {"downloader": "Main"},
+                },
+            ],
+            flows=[
+                {"id": "e1", "source": "n_search", "target": "n_filter"},
+                {"id": "e2", "source": "n_filter", "target": "n_dl", "condition": "outputs.n_filter.torrents.count > 0"},
+            ],
+        )
+    )
+
+    assert resp.success is True
+    assert download_called == []
+    assert resp.nodes["n_search"]["outputs_summary"]["torrents"] == 2
+    assert resp.nodes["n_filter"]["outputs_summary"]["torrents"] == 1
+    assert resp.nodes["n_dl"]["dry_run_intercepted"] is True
+    assert len(resp.nodes["n_dl"]["preview_items"]) == 1
+    assert resp.nodes["n_dl"]["preview_items"][0]["title"] == "[ADE] Keep Anime S01E01 BluRay x265"

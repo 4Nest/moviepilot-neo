@@ -366,6 +366,7 @@ class IndexerModule(_ModuleBase):
                 error_flag, result = HddolbySpider(site).search(
                     keyword=search_word,
                     mtype=mtype,
+                    cat=cat,
                     page=page
                 )
             elif site.get('parser') == "RousiPro":
@@ -563,6 +564,7 @@ class IndexerModule(_ModuleBase):
                 error_flag, result = await HddolbySpider(site).async_search(
                     keyword=search_word,
                     mtype=mtype,
+                    cat=cat,
                     page=page
                 )
             elif site.get('parser') == "RousiPro":

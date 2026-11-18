@@ -13,9 +13,11 @@ class MoviePilotServerHelperTests(unittest.TestCase):
 
     def setUp(self) -> None:
         """
-        清理安装用户 ID 缓存，避免不同用例之间互相影响。
+        清理安装用户 ID 与中心端权限缓存，避免不同用例之间互相影响。
         """
         MoviePilotServerHelper._user_uid = None
+        MoviePilotServerHelper._github_user = None
+        MoviePilotServerHelper.clear_user_permissions_cache()
 
     def test_server_request_adds_user_uid_header(self):
         """

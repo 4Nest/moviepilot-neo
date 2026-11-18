@@ -83,11 +83,17 @@ class HddolbySpider:
                 self._searchurl = f"https://api.{self._domain_host}/api/v1/torrent/search"
             self._pageurl = f"{self._domain}details.php?id=%s&hit=1"
 
-    def __get_params(self, keyword: str, mtype: MediaType = None, page: Optional[int] = 0) -> dict:
+    def __get_params(self, keyword: str, mtype: MediaType = None, page: Optional[int] = 0,
+                     cat: Optional[str] = None) -> dict:
         """
-        获取请求参数
+        获取请求参数，显式站点分类优先于媒体类型预置分类
         """
-        if mtype == MediaType.TV:
+        parsed_cats = [
+            int(item.strip()) for item in str(cat or "").split(",") if item.strip().isdigit()
+        ]
+        if parsed_cats:
+            categories = parsed_cats
+        elif mtype == MediaType.TV:
             categories = self._tv_category
         elif mtype == MediaType.MOVIE:
             categories = self._movie_category
@@ -102,6 +108,22 @@ class HddolbySpider:
             "categories": categories,
             "visible": 1,
         }
+
+    @staticmethod
+    def _is_hit_and_run(value: object) -> bool:
+        """
+        将接口返回的 hr 字段归一化为布尔值，兼容整型、布尔值与数字字符串
+        """
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"", "0", "false", "no", "none", "null"}:
+                return False
+            return True
+        return False
 
     def __parse_result(self, results: List[dict]) -> List[dict]:
         """
@@ -167,18 +189,26 @@ class HddolbySpider:
                 'freedate': result.get('promotion_until'),
                 'page_url': self._pageurl % result.get('id'),
                 'labels': torrentLabels,
+                'hit_and_run': self._is_hit_and_run(result.get('hr')),
                 'category': category
             }
             torrents.append(torrent)
         return torrents
 
-    def search(self, keyword: str, mtype: MediaType = None, page: Optional[int] = 0) -> Tuple[bool, List[dict]]:
+    def search(self, keyword: str, mtype: MediaType = None, page: Optional[int] = 0,
+               cat: Optional[str] = None) -> Tuple[bool, List[dict]]:
         """
-        搜索
+        同步搜索 HDDolby 种子
+
+        :param keyword: 搜索关键词
+        :param mtype: 媒体类型
+        :param page: 从 0 开始的页码
+        :param cat: 逗号分隔的站点分类 ID
+        :return: (是否出错, 种子列表)
         """
 
         # 准备参数
-        params = self.__get_params(keyword, mtype, page)
+        params = self.__get_params(keyword, mtype, page, cat)
 
         # 发送请求
         res = RequestUtils(
@@ -205,12 +235,19 @@ class HddolbySpider:
             logger.warn(f"{self._name} 搜索失败，无法连接 {self._domain}")
             return True, []
 
-    async def async_search(self, keyword: str, mtype: MediaType = None, page: Optional[int] = 0) -> Tuple[bool, List[dict]]:
+    async def async_search(self, keyword: str, mtype: MediaType = None, page: Optional[int] = 0,
+                           cat: Optional[str] = None) -> Tuple[bool, List[dict]]:
         """
-        异步搜索
+        异步搜索 HDDolby 种子
+
+        :param keyword: 搜索关键词
+        :param mtype: 媒体类型
+        :param page: 从 0 开始的页码
+        :param cat: 逗号分隔的站点分类 ID
+        :return: (是否出错, 种子列表)
         """
         # 准备参数
-        params = self.__get_params(keyword, mtype, page)
+        params = self.__get_params(keyword, mtype, page, cat)
 
         # 发送请求
         res = await AsyncRequestUtils(

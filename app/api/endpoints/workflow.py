@@ -125,12 +125,16 @@ async def workflow_share(
 
 @router.delete("/share/{share_id}", summary="删除分享", response_model=schemas.Response)
 async def workflow_share_delete(
-    share_id: int, _: User = Depends(get_current_admin_async)
+    share_id: int,
+    share_uid: Optional[str] = None,
+    _: User = Depends(get_current_admin_async),
 ) -> Any:
     """
-    删除分享
+    删除工作流分享
     """
-    state, errmsg = await MoviePilotServerHelper.async_workflow_share_delete_by_id(share_id=share_id)
+    state, errmsg = await MoviePilotServerHelper.async_workflow_share_delete_by_id(
+        share_id=share_id, share_uid=share_uid
+    )
     return schemas.Response(success=state, message=errmsg)
 
 

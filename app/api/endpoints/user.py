@@ -6,7 +6,7 @@ from fastapi import APIRouter, Body, Depends, UploadFile, File, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import schemas
-from app.core.security import get_password_hash
+from app.core.security import get_password_hash, verify_password
 from app.db import get_async_db
 from app.db.models.user import User
 from app.db.user_oper import (
@@ -43,7 +43,15 @@ async def update_current_user(
     name/is_active/is_superuser/permissions/id 等字段将被请求校验拒绝。
     """
     user_info = user_in.model_dump(exclude_unset=True)
+    current_password = user_info.pop("current_password", None)
     if user_info.get("password"):
+        if current_password is not None and not verify_password(
+            current_password, str(current_user.hashed_password)
+        ):
+            return schemas.Response(
+                success=False,
+                message="当前登录密码错误",
+            )
         # 正则表达式匹配密码包含字母、数字、特殊字符中的至少两项
         pattern = r"^(?![a-zA-Z]+$)(?!\d+$)(?![^\da-zA-Z\s]+$).{6,50}$"
         if not re.match(pattern, user_info["password"]):

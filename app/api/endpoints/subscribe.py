@@ -720,12 +720,16 @@ async def subscribe_share(
 
 @router.delete("/share/{share_id}", summary="删除分享", response_model=schemas.Response)
 async def subscribe_share_delete(
-    share_id: int, _: schemas.TokenPayload = Depends(verify_token)
+    share_id: int,
+    share_uid: Optional[str] = None,
+    _: User = Depends(get_current_admin_async),
 ) -> Any:
     """
-    删除分享
+    删除订阅分享
     """
-    state, errmsg = await MoviePilotServerHelper.async_share_delete(share_id=share_id)
+    state, errmsg = await MoviePilotServerHelper.async_share_delete(
+        share_id=share_id, share_uid=share_uid
+    )
     return schemas.Response(success=state, message=errmsg)
 
 

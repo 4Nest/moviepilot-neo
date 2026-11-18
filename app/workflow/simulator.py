@@ -1,25 +1,45 @@
-"""工作流零副作用流程模拟器。"""
-import re
+"""工作流零副作用流程模拟器（支持真实数据只读演练与离线静态沙盒）。"""
 from collections import defaultdict, deque
+from datetime import datetime, timedelta
+from pathlib import Path
+import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.chain.workflow import WorkflowExecutor
+from app.core.config import settings
+from app.core.context import Context, TorrentInfo
+from app.core.metainfo import MetaInfo
+from app.db.systemconfig_oper import SystemConfigOper
+from app.helper.torrent import TorrentHelper
+from app.log import logger
 from app.schemas import (
     Action,
     ActionContext,
     ActionFlow,
+    MediaType,
     WorkflowSimulateDiagnostic,
     WorkflowSimulateRequest,
     WorkflowSimulateResponse,
 )
+from app.utils.string import StringUtils
 from app.workflow import WorkFlowManager
+from app.workflow.actions import ActionChain
+from app.workflow.incremental import (
+    BASELINE_CLOCK_SKEW_MINUTES,
+    build_scope_signature,
+    parse_torrent_pubdate,
+    torrent_fingerprints,
+)
 
 VALID_SCENARIOS = {
-    "normal": "常规有数据",
-    "empty_source": "源数据为空",
-    "empty_filter": "过滤结果为空",
+    "live_dry_run": "真实数据演练（不执行下载/入库/通知）",
+    "normal": "离线沙盒：常规有数据",
+    "empty_source": "离线沙盒：源数据为空",
+    "empty_filter": "离线沙盒：过滤结果为空",
 }
 
+MAX_PREVIEW_ITEMS = 10
+MAX_LIVE_RECOGNIZE = 12
 DYNAMIC_CONTEXT_ACTIONS = {"InvokePluginAction", "SendEventAction"}
 
 
@@ -121,6 +141,7 @@ class WorkflowSimulator:
             outgoing_flows=outgoing_flows,
             incoming_flows=incoming_flows,
             scenario=scenario,
+            workflow_id=request.workflow_id,
             diagnostics=diagnostics,
         )
 
@@ -444,9 +465,10 @@ class WorkflowSimulator:
         outgoing_flows: Dict[str, List[ActionFlow]],
         incoming_flows: Dict[str, List[ActionFlow]],
         scenario: str,
+        workflow_id: Optional[int],
         diagnostics: List[WorkflowSimulateDiagnostic],
     ) -> dict:
-        """按拓扑顺序与 WorkflowExecutor 完整语义执行纯内存模拟。"""
+        """按拓扑顺序与 WorkflowExecutor 完整语义执行纯内存模拟或只读演练。"""
         context = ActionContext()
         context.workflow_context = {}
         context.node_outputs = {}
@@ -458,6 +480,8 @@ class WorkflowSimulator:
         node_messages: Dict[str, str] = {nid: "[模拟] 未到达该节点" for nid in action_order}
         node_outputs_summary: Dict[str, Dict[str, int]] = {nid: {} for nid in action_order}
         node_steps: Dict[str, Optional[int]] = {nid: None for nid in action_order}
+        node_previews: Dict[str, List[dict]] = {nid: [] for nid in action_order}
+        node_intercepted: Dict[str, bool] = {nid: False for nid in action_order}
 
         edge_states: Dict[str, str] = {}
         for flow in flows:
@@ -611,12 +635,16 @@ class WorkflowSimulator:
             node_steps[current_id] = step_counter
             execution_order.append(current_id)
 
-            ok, msg, outputs = self._simulate_single_action(
+            ok, msg, outputs, preview_items, intercepted = self._simulate_single_action_ext(
                 action=action,
                 has_incoming=bool(incoming_flows.get(current_id)),
                 semantics=semantics,
                 scenario=scenario,
+                workflow_id=workflow_id,
+                diagnostics=diagnostics,
             )
+            node_previews[current_id] = preview_items
+            node_intercepted[current_id] = intercepted
 
             if not ok:
                 node_states[current_id] = "failed"
@@ -673,6 +701,8 @@ class WorkflowSimulator:
                 "message": node_messages[nid],
                 "outputs_summary": node_outputs_summary[nid],
                 "step": node_steps[nid],
+                "preview_items": node_previews[nid],
+                "dry_run_intercepted": node_intercepted[nid],
             }
 
         edges_payload: Dict[str, dict] = {}
@@ -723,6 +753,627 @@ class WorkflowSimulator:
                         return resolved
         val = semantics.resolve_action_input(field_name)
         return list(val) if isinstance(val, list) else []
+
+    def _simulate_single_action_ext(
+        self,
+        action: Action,
+        has_incoming: bool,
+        semantics: _ExecutorSemanticsHelper,
+        scenario: str,
+        workflow_id: Optional[int],
+        diagnostics: List[WorkflowSimulateDiagnostic],
+    ) -> Tuple[bool, str, Dict[str, Any], List[dict], bool]:
+        """执行单节点模拟（支持离线沙盒与真实数据只读演练），返回状态、说明、输出、预览条目与拦截标志。"""
+        write_actions = {
+            "AddDownloadAction",
+            "AddSubscribeAction",
+            "TransferFileAction",
+            "ScrapeFileAction",
+            "SendMessageAction",
+            "SendEventAction",
+            "InvokePluginAction",
+        }
+        action_type = action.type or ""
+        if scenario == "live_dry_run":
+            return self._dry_run_single_action(
+                action=action,
+                has_incoming=has_incoming,
+                semantics=semantics,
+                workflow_id=workflow_id,
+                diagnostics=diagnostics,
+            )
+
+        ok, msg, outputs = self._simulate_single_action(
+            action=action,
+            has_incoming=has_incoming,
+            semantics=semantics,
+            scenario=scenario,
+        )
+        preview = self._extract_preview_from_outputs(outputs)
+        has_side_effect = False
+        if ok and action_type in write_actions:
+            if action_type in ("SendMessageAction", "SendEventAction", "InvokePluginAction"):
+                has_side_effect = True
+            else:
+                has_side_effect = any(bool(v) for v in outputs.values() if isinstance(v, list))
+        return ok, msg, outputs, preview, has_side_effect
+
+    @staticmethod
+    def _extract_preview_from_outputs(outputs: Dict[str, Any]) -> List[dict]:
+        """从节点输出对象列表中提取最多 MAX_PREVIEW_ITEMS 条可读预览摘要。"""
+        items: List[dict] = []
+        for key in ("torrents", "medias", "downloads", "fileitems", "subscribes"):
+            raw_list = outputs.get(key)
+            if not isinstance(raw_list, list) or not raw_list:
+                continue
+            for entry in raw_list[:MAX_PREVIEW_ITEMS]:
+                if isinstance(entry, Context) and entry.torrent_info:
+                    t = entry.torrent_info
+                    sub_parts = [
+                        p
+                        for p in (
+                            t.site_name or (f"站点#{t.site}" if t.site else None),
+                            StringUtils.str_filesize(t.size) if t.size else None,
+                            t.volume_factor if t.uploadvolumefactor is not None else None,
+                            t.pubdate,
+                        )
+                        if p
+                    ]
+                    items.append({
+                        "title": t.title or "未命名资源",
+                        "subtitle": " · ".join(sub_parts),
+                    })
+                elif isinstance(entry, dict):
+                    title = (
+                        entry.get("title")
+                        or entry.get("name")
+                        or entry.get("download_id")
+                        or entry.get("path")
+                        or "样本条目"
+                    )
+                    sub_parts = [
+                        str(p)
+                        for p in (
+                            entry.get("site"),
+                            StringUtils.str_filesize(entry["size"]) if entry.get("size") else None,
+                            entry.get("year"),
+                            entry.get("path") if entry.get("path") != title else None,
+                        )
+                        if p
+                    ]
+                    items.append({"title": str(title), "subtitle": " · ".join(sub_parts)})
+                else:
+                    title = (
+                        getattr(entry, "title", None)
+                        or getattr(entry, "name", None)
+                        or getattr(entry, "download_id", None)
+                        or str(entry)
+                    )
+                    year = getattr(entry, "year", None)
+                    vote = getattr(entry, "vote_average", None)
+                    path_val = getattr(entry, "path", None)
+                    sub_parts = [
+                        p
+                        for p in (
+                            f"{year}" if year else None,
+                            f"★ {vote}" if vote else None,
+                            str(path_val) if path_val and str(path_val) != str(title) else None,
+                        )
+                        if p
+                    ]
+                    items.append({"title": str(title), "subtitle": " · ".join(sub_parts)})
+            break
+        return items
+
+    @staticmethod
+    def _readonly_check_incremental(
+        workflow_id: Optional[int],
+        action_id: str,
+        scope_signature: str,
+        candidates: List[Context],
+    ) -> Tuple[List[Context], str]:
+        """只读比对增量追新基线，绝不修改或写入 SystemConfig 缓存。"""
+        if not workflow_id:
+            return candidates, "（尚未保存工作流ID，本次以当前全部存量继续演练下游规则；首次正式运行将自动建档跳过存量）"
+        workflow_cache = SystemConfigOper().get(f"WorkflowCache-{workflow_id}")
+        state = workflow_cache.get(f"{action_id}__incremental") if isinstance(workflow_cache, dict) else None
+        if not isinstance(state, dict) or state.get("scope_signature") != scope_signature:
+            return (
+                candidates,
+                f"（当前尚未建立追新基线：首次正式运行将记录这 {len(candidates)} 条为存量不下载；本次演练继续放行以测试下游过滤规则）",
+            )
+
+        seen_set = set(state.get("seen") or [])
+        baseline_dt = parse_torrent_pubdate(state.get("baseline_time"))
+        cutoff_dt = (
+            baseline_dt - timedelta(minutes=BASELINE_CLOCK_SKEW_MINUTES)
+            if baseline_dt is not None
+            else None
+        )
+        fresh: List[Context] = []
+        skipped = 0
+        for ctx in candidates:
+            t_info = getattr(ctx, "torrent_info", None)
+            fps = torrent_fingerprints(t_info)
+            if fps and any(fp in seen_set for fp in fps):
+                skipped += 1
+                continue
+            pub_dt = parse_torrent_pubdate(getattr(t_info, "pubdate", None))
+            if cutoff_dt is not None and pub_dt is not None and pub_dt < cutoff_dt:
+                skipped += 1
+                continue
+            fresh.append(ctx)
+        return fresh, f"（已比对追新基线：新资源 {len(fresh)} 条，跳过存量 {skipped} 条）"
+
+    def _dry_run_single_action(
+        self,
+        action: Action,
+        has_incoming: bool,
+        semantics: _ExecutorSemanticsHelper,
+        workflow_id: Optional[int],
+        diagnostics: List[WorkflowSimulateDiagnostic],
+    ) -> Tuple[bool, str, Dict[str, Any], List[dict], bool]:
+        """执行真实数据只读演练（检索与过滤使用真实只读数据，一切写操作与外部触发 100% 拦截）。"""
+        # pylint: disable=import-outside-toplevel,too-many-locals,too-many-return-statements,too-many-branches,too-many-statements
+        action_type = action.type or ""
+        data = action.data if isinstance(action.data, dict) else {}
+
+        try:
+            # 1. 只读源动作节点
+            if action_type == "FetchRssAction":
+                url = (data.get("url") or "").strip() if isinstance(data.get("url"), str) else ""
+                if not url:
+                    return False, "[演练] 缺少必填参数：RSS 地址 (url)", {}, [], False
+                from app.chain.media import MediaChain
+                from app.helper.rss import RssHelper
+
+                headers = {}
+                if data.get("content_type"):
+                    headers["Content-Type"] = str(data["content_type"])
+                if data.get("referer"):
+                    headers["Referer"] = str(data["referer"])
+                if data.get("ua"):
+                    headers["User-Agent"] = str(data["ua"])
+                timeout_val = min(max(int(data.get("timeout") or 15), 3), 15)
+                rss_items = RssHelper().parse(
+                    url=url,
+                    proxy=settings.PROXY if data.get("proxy") else None,
+                    timeout=timeout_val,
+                    headers=headers,
+                )
+                if rss_items is None or rss_items is False:
+                    return False, f"[演练] RSS 地址请求失败：{url}", {}, [], False
+                candidates: List[Context] = []
+                for item in rss_items or []:
+                    if not item.get("title"):
+                        continue
+                    t_info = TorrentInfo(
+                        title=item.get("title"),
+                        description=item.get("description"),
+                        enclosure=item.get("enclosure"),
+                        page_url=item.get("link"),
+                        size=item.get("size") or 0,
+                        pubdate=item["pubdate"].strftime("%Y-%m-%d %H:%M:%S") if item.get("pubdate") else None,
+                    )
+                    candidates.append(
+                        Context(
+                            meta_info=MetaInfo(title=t_info.title, subtitle=t_info.description),
+                            media_info=None,
+                            torrent_info=t_info,
+                        )
+                    )
+                inc_note = ""
+                if data.get("only_new"):
+                    scope_sig = build_scope_signature("rss", url)
+                    candidates, inc_note = self._readonly_check_incremental(
+                        workflow_id, action.id or "", scope_sig, candidates
+                    )
+                matched: List[Context] = []
+                if data.get("match_media"):
+                    for idx, cand in enumerate(candidates):
+                        if idx < MAX_LIVE_RECOGNIZE:
+                            cand.media_info = MediaChain().recognize_by_meta(cand.meta_info, obtain_images=False)
+                            if not cand.media_info:
+                                continue
+                        matched.append(cand)
+                else:
+                    matched = candidates
+                outputs = {"torrents": matched}
+                return (
+                    True,
+                    f"[演练] RSS 获取到 {len(matched)} 条候选资源{inc_note}",
+                    outputs,
+                    self._extract_preview_from_outputs(outputs),
+                    False,
+                )
+
+            if action_type == "FetchTorrentsAction":
+                from app.chain.media import MediaChain
+                from app.chain.search import SearchChain
+
+                search_type = data.get("search_type") or "keyword"
+                sites = data.get("sites") if isinstance(data.get("sites"), list) else []
+                season_raw = data.get("season")
+                season_val = (
+                    int(season_raw)
+                    if season_raw is not None and str(season_raw).strip() != ""
+                    else None
+                )
+                if search_type == "keyword":
+                    name = (data.get("name") or "").strip() if isinstance(data.get("name"), str) else ""
+                    if not name:
+                        return False, "[演练] 按名称搜索时缺少资源名称", {}, [], False
+                    raw_torrents = SearchChain().search_by_title(title=name, sites=sites) or []
+                    candidates = []
+                    for torrent in raw_torrents:
+                        if data.get("year") and torrent.meta_info.year != str(data.get("year")).strip():
+                            continue
+                        if season_val is not None and torrent.meta_info.begin_season != season_val:
+                            continue
+                        candidates.append(torrent)
+                    inc_note = ""
+                    if data.get("only_new"):
+                        scope_sig = build_scope_signature(
+                            "keyword", name, data.get("year"), data.get("type"), season_val, sorted(sites)
+                        )
+                        candidates, inc_note = self._readonly_check_incremental(
+                            workflow_id, action.id or "", scope_sig, candidates
+                        )
+                    matched = []
+                    target_mtype = MediaType(data["type"]) if data.get("type") else None
+                    for idx, torrent in enumerate(candidates):
+                        if data.get("match_media") and idx < MAX_LIVE_RECOGNIZE and not torrent.media_info:
+                            torrent.media_info = MediaChain().recognize_by_meta(
+                                torrent.meta_info, obtain_images=False
+                            )
+                            if not torrent.media_info:
+                                continue
+                        if target_mtype and torrent.media_info and torrent.media_info.type != target_mtype:
+                            continue
+                        matched.append(torrent)
+                    outputs = {"torrents": matched}
+                    return (
+                        True,
+                        f"[演练] 按关键字「{name}」搜索命中 {len(matched)} 条资源{inc_note}",
+                        outputs,
+                        self._extract_preview_from_outputs(outputs),
+                        False,
+                    )
+
+                upstream_medias = self._read_upstream_list("medias", action, semantics)
+                if not upstream_medias:
+                    return True, "[演练] 上游无媒体列表数据，本次搜索 0 条资源", {"torrents": []}, [], False
+                found_torrents: List[Context] = []
+                for media in upstream_medias[:2]:
+                    m_type_raw = getattr(media, "type", None) or (
+                        media.get("type") if isinstance(media, dict) else None
+                    )
+                    found = SearchChain().search_by_id(
+                        tmdbid=getattr(media, "tmdb_id", None),
+                        doubanid=getattr(media, "douban_id", None),
+                        bangumiid=getattr(media, "bangumi_id", None),
+                        anilistid=getattr(media, "anilist_id", None),
+                        mtype=MediaType(m_type_raw) if m_type_raw else None,
+                        sites=sites,
+                    )
+                    if found:
+                        found_torrents.extend(found)
+                outputs = {"torrents": found_torrents}
+                trunc_hint = f"（演练仅抽样前 2/{len(upstream_medias)} 部媒体）" if len(upstream_medias) > 2 else ""
+                return (
+                    True,
+                    f"[演练] 基于上游媒体搜索到 {len(found_torrents)} 条资源{trunc_hint}",
+                    outputs,
+                    self._extract_preview_from_outputs(outputs),
+                    False,
+                )
+
+            if action_type == "FetchMediasAction":
+                from app.workflow.actions.fetch_medias import FetchMediasAction
+
+                act = FetchMediasAction(action.id or "sim_fetch_medias")
+                sub_ctx = act.execute(workflow_id or 0, data, ActionContext())
+                medias_out = list(sub_ctx.medias or [])
+                outputs = {"medias": medias_out}
+                return (
+                    act.success,
+                    f"[演练] 获取到 {len(medias_out)} 条媒体数据",
+                    outputs,
+                    self._extract_preview_from_outputs(outputs),
+                    False,
+                )
+
+            if action_type == "ScanFileAction":
+                directory = (data.get("directory") or "").strip() if isinstance(data.get("directory"), str) else ""
+                storage = data.get("storage") or "local"
+                if not directory:
+                    return False, "[演练] 缺少扫描目录路径 (directory)", {}, [], False
+                from app.chain.storage import StorageChain
+
+                storagechain = StorageChain()
+                fileitem = storagechain.get_file_item(storage, Path(directory))
+                if not fileitem:
+                    return False, f"[演练] 目录不存在：【{storage}】{directory}", {}, [], False
+                files = storagechain.list_files(fileitem, recursion=True) or []
+                media_exts = settings.RMT_MEDIAEXT + settings.RMT_SUBEXT + settings.RMT_AUDIOEXT
+                matched_files = [
+                    f for f in files if f.extension and f".{f.extension.lower()}" in media_exts
+                ]
+                outputs = {"fileitems": matched_files}
+                return (
+                    True,
+                    f"[演练] 只读扫描目录发现 {len(matched_files)} 个媒体文件",
+                    outputs,
+                    self._extract_preview_from_outputs(outputs),
+                    False,
+                )
+
+            if action_type == "FetchDownloadsAction":
+                upstream_downloads = self._read_upstream_list("downloads", action, semantics)
+                if upstream_downloads:
+                    outputs = {"downloads": upstream_downloads}
+                    return (
+                        True,
+                        f"[演练] 已同步上游 {len(upstream_downloads)} 个预览下载任务状态",
+                        outputs,
+                        self._extract_preview_from_outputs(outputs),
+                        False,
+                    )
+                if not has_incoming:
+                    torrents = ActionChain().list_torrents() or []
+                    dl_previews = [
+                        {
+                            "download_id": getattr(t, "hash", ""),
+                            "title": getattr(t, "title", None) or getattr(t, "name", "下载任务"),
+                            "completed": getattr(t, "progress", 0) >= 100,
+                            "path": getattr(t, "path", ""),
+                        }
+                        for t in torrents
+                    ]
+                    outputs = {"downloads": dl_previews}
+                    return (
+                        True,
+                        f"[演练] 只读读取下载器队列共 {len(dl_previews)} 个任务",
+                        outputs,
+                        self._extract_preview_from_outputs(outputs),
+                        False,
+                    )
+                return True, "[演练] 上游无待处理下载任务", {"downloads": []}, [], False
+
+            # 2. 真实规则过滤节点
+            if action_type == "FilterTorrentsAction":
+                for field_key, field_label in (("include", "包含规则"), ("exclude", "排除规则")):
+                    pattern = data.get(field_key)
+                    if isinstance(pattern, str) and pattern.strip():
+                        try:
+                            re.compile(pattern)
+                        except re.error as err:
+                            return False, f"[演练] {field_label}正则表达式非法：{err}", {}, [], False
+                raw_age = data.get("max_age_hours")
+                min_pub_dt = None
+                if raw_age is not None and str(raw_age).strip() != "":
+                    try:
+                        age_val = float(raw_age)
+                    except (TypeError, ValueError):
+                        return False, f"[演练] 发布时效参数非法：{raw_age}", {}, [], False
+                    if age_val > 0:
+                        min_pub_dt = datetime.now() - timedelta(hours=age_val)
+
+                upstream_torrents = self._read_upstream_list("torrents", action, semantics)
+                in_count = len(upstream_torrents)
+                if in_count == 0:
+                    return True, "[演练] 上游传入 0 条资源，过滤结果 0 条", {"torrents": []}, [], False
+
+                kept: List[Any] = []
+                rule_groups = data.get("rule_groups") if isinstance(data.get("rule_groups"), list) else []
+                for item in upstream_torrents:
+                    t_info = item.torrent_info if isinstance(item, Context) else None
+                    if t_info is None:
+                        kept.append(item)
+                        continue
+                    if min_pub_dt is not None:
+                        pub_dt = parse_torrent_pubdate(t_info.pubdate)
+                        if pub_dt is None or pub_dt < min_pub_dt:
+                            continue
+                    if not TorrentHelper().filter_torrent(
+                        torrent_info=t_info,
+                        filter_params={
+                            "quality": data.get("quality"),
+                            "resolution": data.get("resolution"),
+                            "effect": data.get("effect"),
+                            "include": data.get("include"),
+                            "exclude": data.get("exclude"),
+                            "size": data.get("size"),
+                        },
+                    ):
+                        continue
+                    if rule_groups and not ActionChain().filter_torrents(
+                        rule_groups=rule_groups,
+                        torrent_list=[t_info],
+                        mediainfo=item.media_info,
+                    ):
+                        continue
+                    kept.append(item)
+
+                outputs = {"torrents": kept}
+                return (
+                    True,
+                    f"[演练] 过滤 {in_count} 条候选资源 → 命中保留 {len(kept)} 条（筛除 {in_count - len(kept)} 条）",
+                    outputs,
+                    self._extract_preview_from_outputs(outputs),
+                    False,
+                )
+
+            if action_type == "FilterMediasAction":
+                upstream_medias = self._read_upstream_list("medias", action, semantics)
+                in_count = len(upstream_medias)
+                if in_count == 0:
+                    return True, "[演练] 上游传入 0 条媒体，过滤结果 0 条", {"medias": []}, [], False
+                vote_min = float(data["vote"]) if data.get("vote") not in (None, "") else None
+                kept_medias = []
+                for m in upstream_medias:
+                    m_type = getattr(m, "type", None) or (m.get("type") if isinstance(m, dict) else None)
+                    m_vote = getattr(m, "vote_average", None)
+                    if m_vote is None and isinstance(m, dict):
+                        m_vote = m.get("vote_average")
+                    m_year = getattr(m, "year", None) or (m.get("year") if isinstance(m, dict) else None)
+                    if data.get("type") and str(m_type) != str(data.get("type")):
+                        continue
+                    if vote_min is not None and float(m_vote or 0) < vote_min:
+                        continue
+                    if data.get("year") and str(m_year or "") != str(data.get("year")).strip():
+                        continue
+                    kept_medias.append(m)
+                outputs = {"medias": kept_medias}
+                return (
+                    True,
+                    f"[演练] 过滤 {in_count} 条媒体 → 命中保留 {len(kept_medias)} 条",
+                    outputs,
+                    self._extract_preview_from_outputs(outputs),
+                    False,
+                )
+
+            # 3. 写操作/外部触发动作节点 —— 100% 演练拦截，零副作用
+            if action_type == "AddDownloadAction":
+                cap_val: Optional[int] = None
+                raw_cap = data.get("max_downloads")
+                if raw_cap is not None and str(raw_cap).strip() != "":
+                    try:
+                        parsed_cap = int(raw_cap)
+                        if parsed_cap > 0:
+                            cap_val = parsed_cap
+                    except (TypeError, ValueError):
+                        return False, f"[演练] 单次最大下载数参数非法：{raw_cap}", {}, [], False
+
+                upstream_torrents = self._read_upstream_list("torrents", action, semantics)
+                if not upstream_torrents:
+                    return True, "[演练] 上游无命中资源，本次不会添加任何下载任务", {"downloads": []}, [], False
+
+                # 只读检查历史已下载缓存（不写入缓存）
+                workflow_cache = (
+                    SystemConfigOper().get(f"WorkflowCache-{workflow_id}") if workflow_id else None
+                )
+                seen_downloads = set(
+                    (workflow_cache.get(action.id or "") or [])
+                    if isinstance(workflow_cache, dict)
+                    else []
+                )
+                planned_torrents = []
+                skipped_cached = 0
+                for item in upstream_torrents:
+                    if isinstance(item, Context) and item.torrent_info:
+                        ckey = f"{item.torrent_info.site}-{item.torrent_info.title}"
+                        if ckey in seen_downloads:
+                            skipped_cached += 1
+                            continue
+                    planned_torrents.append(item)
+
+                capped_note = ""
+                if cap_val and len(planned_torrents) > cap_val:
+                    capped_note = f"，受单次上限 {cap_val} 截断（其余 {len(planned_torrents) - cap_val} 条跳过）"
+                    planned_torrents = planned_torrents[:cap_val]
+
+                cache_note = f"，跳过已下载缓存 {skipped_cached} 条" if skipped_cached else ""
+                dl_target = data.get("downloader") or "默认下载器"
+                preview_items = self._extract_preview_from_outputs({"torrents": planned_torrents})
+                sim_downloads = [
+                    {
+                        "download_id": f"dryrun-{idx + 1}",
+                        "title": p["title"],
+                        "downloader": dl_target,
+                        "completed": True,
+                    }
+                    for idx, p in enumerate(preview_items)
+                ]
+                if len(planned_torrents) > len(sim_downloads):
+                    sim_downloads.extend(
+                        self._make_samples("downloads", len(planned_torrents) - len(sim_downloads))
+                    )
+                return (
+                    True,
+                    f"[演练拦截] 预计向「{dl_target}」推送 {len(planned_torrents)} 个下载任务{capped_note}{cache_note}（已安全拦截，未实际提交下载器）",
+                    {"downloads": sim_downloads},
+                    preview_items,
+                    True,
+                )
+
+            if action_type == "AddSubscribeAction":
+                upstream_medias = self._read_upstream_list("medias", action, semantics)
+                if not upstream_medias:
+                    return True, "[演练] 上游无命中媒体，本次不会添加任何订阅", {"subscribes": []}, [], False
+                preview_items = self._extract_preview_from_outputs({"medias": upstream_medias})
+                return (
+                    True,
+                    f"[演练拦截] 预计新增 {len(upstream_medias)} 个媒体订阅（已安全拦截，未写入订阅库）",
+                    {"subscribes": self._make_samples("subscribes", len(upstream_medias))},
+                    preview_items,
+                    True,
+                )
+
+            if action_type == "TransferFileAction":
+                source = data.get("source") or "downloads"
+                input_field = "downloads" if source == "downloads" else "fileitems"
+                items_in = self._read_upstream_list(input_field, action, semantics)
+                if not items_in:
+                    return True, "[演练] 上游无待整理条目，本次不执行文件整理", {"fileitems": []}, [], False
+                preview_items = self._extract_preview_from_outputs({input_field: items_in})
+                return (
+                    True,
+                    f"[演练拦截] 预计整理归档 {len(items_in)} 个项目（已安全拦截，未移动或硬链接磁盘文件）",
+                    {"fileitems": self._make_samples("fileitems", len(items_in))},
+                    preview_items,
+                    True,
+                )
+
+            if action_type == "ScrapeFileAction":
+                items_in = self._read_upstream_list("fileitems", action, semantics)
+                if not items_in:
+                    return True, "[演练] 上游无待刮削文件，本次不执行刮削", {"fileitems": []}, [], False
+                preview_items = self._extract_preview_from_outputs({"fileitems": items_in})
+                return (
+                    True,
+                    f"[演练拦截] 预计刮削 {len(items_in)} 个媒体文件元数据（已安全拦截，未写入磁盘）",
+                    {"fileitems": self._make_samples("fileitems", len(items_in))},
+                    preview_items,
+                    True,
+                )
+
+            if action_type == "SendMessageAction":
+                return True, "[演练拦截] 预计发送工作流通知消息（已安全拦截，未实际推送）", {}, [], True
+
+            if action_type == "SendEventAction":
+                return True, "[演练拦截] 预计广播系统事件（已安全拦截，未实际触发）", {}, [], True
+
+            if action_type == "InvokePluginAction":
+                plugin_id = (data.get("plugin_id") or "").strip() if isinstance(data.get("plugin_id"), str) else ""
+                act_id = (data.get("action_id") or "").strip() if isinstance(data.get("action_id"), str) else ""
+                if not plugin_id or not act_id:
+                    return False, "[演练] 未选择要调用的插件或动作", {}, [], False
+                return (
+                    True,
+                    f"[演练拦截] 预计调用插件「{plugin_id}」动作「{act_id}」（已安全拦截，未实际执行插件）",
+                    {},
+                    [],
+                    True,
+                )
+
+        except Exception as err:
+            logger.warning(f"工作流演练节点 {action.id} 异常回退: {err}")
+            diagnostics.append(
+                WorkflowSimulateDiagnostic(
+                    level="warning",
+                    node_id=action.id,
+                    message=f"实时只读查询出现异常（{err}），该节点已回退为静态校验",
+                )
+            )
+
+        ok, msg, outputs = self._simulate_single_action(
+            action=action,
+            has_incoming=has_incoming,
+            semantics=semantics,
+            scenario="normal",
+        )
+        return ok, msg, outputs, self._extract_preview_from_outputs(outputs), False
 
     def _simulate_single_action(
         self,
@@ -919,35 +1570,44 @@ class WorkflowSimulator:
             return []
         if kind == "torrents":
             return [
-                {"title": f"Sample Torrent {idx}", "site": "SampleSite", "size": 1024 * idx}
+                {
+                    "title": f"示例番剧 S01E{idx:02d} 1080p WEB-DL AAC",
+                    "site": "示例站点",
+                    "size": int((1.1 + idx * 0.25) * 1024 * 1024 * 1024),
+                }
                 for idx in range(1, count + 1)
             ]
         if kind == "medias":
             return [
-                {"title": f"Sample Media {idx}", "year": "2025", "type": "电影", "vote_average": 8.5}
+                {"title": f"示例影视作品 {idx}", "year": "2026", "type": "电视剧", "vote_average": 8.5}
                 for idx in range(1, count + 1)
             ]
         if kind == "fileitems":
             return [
-                {"name": f"Sample_File_{idx}.mkv", "path": f"/mock/Sample_File_{idx}.mkv", "storage": "local"}
+                {
+                    "name": f"示例媒体文件_E{idx:02d}.mkv",
+                    "path": f"/media/Anime/示例媒体文件_E{idx:02d}.mkv",
+                    "storage": "local",
+                }
                 for idx in range(1, count + 1)
             ]
         if kind == "downloads":
             return [
                 {
-                    "download_id": f"mock-download-{idx}",
-                    "downloader": "default",
+                    "download_id": f"sim-task-{idx}",
+                    "title": f"示例下载任务 #{idx}",
+                    "downloader": "默认下载器",
                     "completed": True,
-                    "path": f"/mock/Sample_File_{idx}.mkv",
+                    "path": f"/downloads/示例媒体文件_E{idx:02d}.mkv",
                 }
                 for idx in range(1, count + 1)
             ]
         if kind == "subscribes":
             return [
-                {"id": idx, "name": f"Sample Subscribe {idx}", "year": "2025"}
+                {"id": idx, "name": f"示例订阅剧集 {idx}", "year": "2026"}
                 for idx in range(1, count + 1)
             ]
-        return [{"title": f"Sample {idx}"} for idx in range(1, count + 1)]
+        return [{"title": f"示例条目 {idx}"} for idx in range(1, count + 1)]
 
     @staticmethod
     def _build_summary(

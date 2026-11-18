@@ -23,6 +23,8 @@ class UserBase(BaseModel):
 class UserProfileUpdate(BaseModel):
     # 邮箱
     email: Optional[str] = None
+    # 当前登录密码（个人中心自助改密时校验身份）
+    current_password: Optional[str] = None
     # 新密码
     password: Optional[str] = None
     # 头像

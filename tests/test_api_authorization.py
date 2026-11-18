@@ -13,6 +13,7 @@ from app.api.endpoints import login as login_endpoint
 from app.api.endpoints import plugin as plugin_endpoint
 from app.api.endpoints import site as site_endpoint
 from app.api.endpoints import storage as storage_endpoint
+from app.api.endpoints import subscribe as subscribe_endpoint
 from app.api.endpoints import system as system_endpoint
 from app.api.endpoints import transfer as transfer_endpoint
 from app.api.endpoints import user as user_endpoint
@@ -106,6 +107,7 @@ def test_manage_page_endpoints_require_admin():
         site_endpoint.site_resource,
         site_endpoint.read_site,
         site_endpoint.delete_site,
+        subscribe_endpoint.subscribe_share_delete,
     ]
 
     for endpoint in sync_endpoints:

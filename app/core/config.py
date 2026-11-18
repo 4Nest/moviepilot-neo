@@ -245,7 +245,7 @@ class ConfigModel(BaseModel):
     # 重启自动升级
     MOVIEPILOT_AUTO_UPDATE: str = "release"
     # 自动检查和更新站点资源包（站点索引、认证等）
-    AUTO_UPDATE_RESOURCE: bool = True
+    AUTO_UPDATE_RESOURCE: bool = False
     # 站点资源包远程仓库（owner/repo），默认使用 NEO 维护仓库
     RESOURCE_REPO: str = "4Nest/MoviePilot-Resources"
 

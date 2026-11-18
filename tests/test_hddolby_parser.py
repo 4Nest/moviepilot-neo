@@ -11,8 +11,10 @@ from app.db.models.site import Site
 from app.db import site_oper as site_oper_module
 from app.helper import site as catalog
 from app.helper.rss import RssHelper
+from app.modules.indexer import IndexerModule
 from app.modules.indexer.parser.hddolby import HDDolbySiteUserInfo
 from app.modules.indexer.parser.nexus_php import NexusPhpSiteUserInfo
+from app.modules.indexer.spider import hddolby as hddolby_spider_module
 from app.modules.indexer.spider.hddolby import HddolbySpider
 
 
@@ -228,3 +230,100 @@ def test_update_site_migrates_domain_records(monkeypatch):
         old_user_day1.async_update.await_args.args[0], {"domain": "uhddolby.com"}
     )
     assert deleted_userdata_ids == [11]
+
+
+def test_hddolby_spider_maps_hr_field_and_category_filter(monkeypatch):
+    """HddolbySpider 应将 API 返回的 hr 字段映射为 hit_and_run，并支持显式分类筛选。"""
+    captured_payloads = []
+    fake_items = [
+        {
+            "id": 260249,
+            "promotion_time_type": 2,
+            "promotion_until": "2026-11-19 10:27:29",
+            "category": 401,
+            "leechers": 9,
+            "seeders": 89,
+            "name": "The Odyssey 2026 USA UHD BluRay 2160p 10bit HDR DTS-HD MA 5.1 x265-beAst",
+            "small_descr": "奥德赛",
+            "times_completed": 117,
+            "size": 30064744264,
+            "added": "2026-11-17 15:42:43",
+            "hr": 1,
+            "tags": "gf;zz;hdr10",
+            "downhash": "hash1",
+        },
+        {
+            "id": 259752,
+            "promotion_time_type": 0,
+            "promotion_until": "0000-00-00 00:00:00",
+            "category": 401,
+            "leechers": 0,
+            "seeders": 20,
+            "name": "Heart of the Beast 2026 2160p HamiVideo WEB-DL AVC DD5.1-QHstudIo",
+            "small_descr": "野兽之心",
+            "times_completed": 71,
+            "size": 15212122973,
+            "added": "2026-11-10 15:56:16",
+            "hr": 0,
+            "tags": "gf;zz",
+            "downhash": "hash2",
+        },
+    ]
+
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"data": fake_items}
+
+    class FakeRequestUtils:
+        def __init__(self, **_kwargs):
+            pass
+
+        def post_res(self, url=None, json=None):
+            captured_payloads.append((url, json))
+            return FakeResponse()
+
+    class FakeAsyncRequestUtils:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def post_res(self, url=None, json=None):
+            captured_payloads.append((url, json))
+            return FakeResponse()
+
+    monkeypatch.setattr(hddolby_spider_module, "RequestUtils", FakeRequestUtils)
+    monkeypatch.setattr(hddolby_spider_module, "AsyncRequestUtils", FakeAsyncRequestUtils)
+
+    site_conf = {
+        "id": 6,
+        "name": "高清杜比",
+        "domain": "https://www.uhddolby.com/",
+        "apikey": "test-key",
+        "parser": "HDDolby",
+        "public": False,
+    }
+    spider = HddolbySpider(site_conf)
+    err, results = spider.search(keyword="beAst", page=0, cat="401,405")
+    assert err is False
+    assert captured_payloads[-1][0] == "https://www.uhddolby.com/api/v1/torrent/search"
+    assert captured_payloads[-1][1]["categories"] == [401, 405]
+    assert results[0]["hit_and_run"] is True
+    assert results[1]["hit_and_run"] is False
+
+    module = IndexerModule()
+    monkeypatch.setattr(IndexerModule, "_IndexerModule__search_check", staticmethod(lambda *_a, **_kw: True))
+    monkeypatch.setattr(IndexerModule, "_IndexerModule__indexer_statistic", staticmethod(lambda **_kw: None))
+    monkeypatch.setattr(
+        IndexerModule,
+        "_IndexerModule__async_indexer_statistic",
+        staticmethod(AsyncMock(return_value=None)),
+    )
+
+    torrents = asyncio.run(module.async_search_torrents(site=site_conf, keyword="beAst", cat="401", page=0))
+    assert captured_payloads[-1][1]["categories"] == [401]
+    assert len(torrents) == 2
+    assert torrents[0].hit_and_run is True
+    assert torrents[1].hit_and_run is False
+

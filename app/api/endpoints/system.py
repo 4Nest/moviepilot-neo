@@ -918,17 +918,22 @@ async def get_user_global_setting(
         }
     )
 
-    # 追加用户唯一ID和订阅分享管理权限
-    share_admin = (
-        await MoviePilotServerHelper.async_is_admin_user()
+    # 追加用户唯一ID和细粒度分享管理权限
+    permissions = (
+        await MoviePilotServerHelper.async_get_user_permissions()
         if current_user.is_superuser
-        else False
+        else {}
     )
+    is_server_admin = bool(permissions.get("is_admin"))
     info.update(
         {
             "USER_UNIQUE_ID": MoviePilotServerHelper.get_user_uuid(),
-            "SUBSCRIBE_SHARE_MANAGE": share_admin,
-            "WORKFLOW_SHARE_MANAGE": share_admin,
+            "SUBSCRIBE_SHARE_MANAGE": bool(
+                is_server_admin or permissions.get("subscribe_share_manage")
+            ),
+            "WORKFLOW_SHARE_MANAGE": bool(
+                is_server_admin or permissions.get("workflow_share_manage")
+            ),
         }
     )
     return schemas.Response(success=True, data=info)

@@ -45,6 +45,36 @@ class MoviePilotServerHelper:
     _RECOGNIZE_SHARE_PATH = "/recognize/share"
     _USER_PERMISSIONS_PATH = "/user/permissions"
     _LOCAL_REPO_PREFIX = "local://"
+    _SUBSCRIBE_SHARE_FIELDS = (
+        "name",
+        "year",
+        "type",
+        "keyword",
+        "tmdbid",
+        "doubanid",
+        "bangumiid",
+        "anilistid",
+        "mediaid",
+        "media_source",
+        "media_id",
+        "season",
+        "poster",
+        "backdrop",
+        "vote",
+        "description",
+        "filter",
+        "include",
+        "exclude",
+        "quality",
+        "resolution",
+        "effect",
+        "total_episode",
+        "start_episode",
+        "custom_words",
+        "media_category",
+        "filter_groups",
+        "episode_group",
+    )
     _user_uid: Optional[str] = None
     _github_user: Optional[str] = None
 
@@ -248,6 +278,61 @@ class MoviePilotServerHelper:
         )
 
     @classmethod
+    @cached(
+        region="server_user_permissions",
+        maxsize=8,
+        ttl=60,
+        skip_empty=False,
+        shared_key="user_permissions",
+    )
+    def _get_cached_user_permissions(cls, github_user: str) -> Optional[Dict[str, Any]]:
+        """
+        带进程内短缓存拉取服务端用户权限，请求异常或非 200 时返回 None 以避免缓存瞬态故障。
+        """
+        try:
+            res = cls.user_permissions(github_user)
+            if res is not None and res.status_code == 200:
+                payload = res.json()
+                if isinstance(payload, dict):
+                    return payload
+        except Exception as err:
+            logger.debug(f"获取服务端用户权限失败：{str(err)}")
+        return None
+
+    @classmethod
+    @cached(
+        region="server_user_permissions",
+        maxsize=8,
+        ttl=60,
+        skip_empty=False,
+        shared_key="user_permissions",
+    )
+    async def _async_get_cached_user_permissions(
+            cls,
+            github_user: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        异步带进程内短缓存拉取服务端用户权限，请求异常或非 200 时返回 None 以避免缓存瞬态故障。
+        """
+        try:
+            res = await cls.async_user_permissions(github_user)
+            if res is not None and res.status_code == 200:
+                payload = res.json()
+                if isinstance(payload, dict):
+                    return payload
+        except Exception as err:
+            logger.debug(f"异步获取服务端用户权限失败：{str(err)}")
+        return None
+
+    @classmethod
+    def clear_user_permissions_cache(cls) -> None:
+        """
+        清理进程内中心端用户权限缓存。
+        """
+        # 同步与异步权限查询共用 server_user_permissions 区域，调用同步清理避免产生未等待协程。
+        cls._get_cached_user_permissions.cache_clear()
+
+    @classmethod
     def get_user_permissions(cls) -> Dict[str, Any]:
         """
         获取当前用户在服务端配置中的权限。
@@ -255,13 +340,7 @@ class MoviePilotServerHelper:
         github_user = cls.get_github_user()
         if not github_user:
             return {}
-        try:
-            res = cls.user_permissions(github_user)
-            if res is not None and res.status_code == 200:
-                return res.json()
-        except Exception as err:
-            logger.debug(f"获取服务端用户权限失败：{str(err)}")
-        return {}
+        return cls._get_cached_user_permissions(github_user) or {}
 
     @classmethod
     async def async_get_user_permissions(cls) -> Dict[str, Any]:
@@ -271,13 +350,51 @@ class MoviePilotServerHelper:
         github_user = await cls.async_get_github_user()
         if not github_user:
             return {}
-        try:
-            res = await cls.async_user_permissions(github_user)
-            if res is not None and res.status_code == 200:
-                return res.json()
-        except Exception as err:
-            logger.debug(f"异步获取服务端用户权限失败：{str(err)}")
-        return {}
+        return await cls._async_get_cached_user_permissions(github_user) or {}
+
+    @classmethod
+    def can_manage_subscribe_share(cls) -> bool:
+        """
+        判断当前用户是否具备订阅分享管理权限。
+        """
+        permissions = cls.get_user_permissions()
+        return bool(
+            permissions.get("is_admin")
+            or permissions.get("subscribe_share_manage")
+        )
+
+    @classmethod
+    async def async_can_manage_subscribe_share(cls) -> bool:
+        """
+        异步判断当前用户是否具备订阅分享管理权限。
+        """
+        permissions = await cls.async_get_user_permissions()
+        return bool(
+            permissions.get("is_admin")
+            or permissions.get("subscribe_share_manage")
+        )
+
+    @classmethod
+    def can_manage_workflow_share(cls) -> bool:
+        """
+        判断当前用户是否具备工作流分享管理权限。
+        """
+        permissions = cls.get_user_permissions()
+        return bool(
+            permissions.get("is_admin")
+            or permissions.get("workflow_share_manage")
+        )
+
+    @classmethod
+    async def async_can_manage_workflow_share(cls) -> bool:
+        """
+        异步判断当前用户是否具备工作流分享管理权限。
+        """
+        permissions = await cls.async_get_user_permissions()
+        return bool(
+            permissions.get("is_admin")
+            or permissions.get("workflow_share_manage")
+        )
 
     @classmethod
     def is_admin_user(cls) -> bool:
@@ -958,6 +1075,31 @@ class MoviePilotServerHelper:
         return bool(res is not None and res.status_code == 200)
 
     @classmethod
+    def _build_subscribe_share_payload(
+            cls,
+            subscribe: Any,
+            share_title: str,
+            share_comment: str,
+            share_user: str,
+    ) -> Dict[str, Any]:
+        """
+        按公共业务字段白名单组装订阅分享载荷，剥离本地私有配置与运行事实。
+        """
+        raw_dict = subscribe.to_dict() or {}
+        subscribe_data = {
+            field: raw_dict[field]
+            for field in cls._SUBSCRIBE_SHARE_FIELDS
+            if field in raw_dict
+        }
+        return {
+            "share_title": share_title,
+            "share_comment": share_comment,
+            "share_user": share_user,
+            "share_uid": cls.get_user_uuid(),
+            **subscribe_data,
+        }
+
+    @classmethod
     def sub_share(
             cls,
             subscribe_id: int,
@@ -973,15 +1115,12 @@ class MoviePilotServerHelper:
         subscribe = SubscribeOper().get(subscribe_id)
         if not subscribe:
             return False, "订阅不存在"
-        subscribe_dict = subscribe.to_dict()
-        subscribe_dict.pop("id", None)
-        payload = {
-            "share_title": share_title,
-            "share_comment": share_comment,
-            "share_user": share_user,
-            "share_uid": cls.get_user_uuid(),
-            **subscribe_dict,
-        }
+        payload = cls._build_subscribe_share_payload(
+            subscribe=subscribe,
+            share_title=share_title,
+            share_comment=share_comment,
+            share_user=share_user,
+        )
         return cls._handle_response(cls.subscribe_share(payload), cls._clear_subscribe_share_cache)
 
     @classmethod
@@ -1000,37 +1139,60 @@ class MoviePilotServerHelper:
         subscribe = await SubscribeOper().async_get(subscribe_id)
         if not subscribe:
             return False, "订阅不存在"
-        subscribe_dict = subscribe.to_dict()
-        subscribe_dict.pop("id", None)
-        payload = {
-            "share_title": share_title,
-            "share_comment": share_comment,
-            "share_user": share_user,
-            "share_uid": cls.get_user_uuid(),
-            **subscribe_dict,
-        }
+        payload = cls._build_subscribe_share_payload(
+            subscribe=subscribe,
+            share_title=share_title,
+            share_comment=share_comment,
+            share_user=share_user,
+        )
         return cls._handle_response(
             await cls.async_subscribe_share(payload),
             cls._clear_subscribe_share_cache,
         )
 
     @classmethod
-    def share_delete(cls, share_id: int) -> Tuple[bool, str]:
+    def share_delete(cls, share_id: int, share_uid: Optional[str] = None) -> Tuple[bool, str]:
         """
-        撤回已有订阅分享，关闭数据共享后仍允许撤回。
+        撤回或管理删除已有订阅分享，关闭数据共享后仍允许撤回。
+
+        :param share_id: 分享记录 ID
+        :param share_uid: 目标分享所属用户唯一 ID，为空时默认使用当前实例身份
+        :return: (是否成功, 错误信息)
         """
+        local_uid = cls.get_user_uuid()
+        requested_uid = (share_uid or "").strip()
+        target_uid = local_uid
+        if requested_uid and requested_uid != local_uid:
+            if not cls.can_manage_subscribe_share():
+                return False, "无权限删除他人分享"
+            target_uid = requested_uid
         return cls._handle_response(
-            cls.subscribe_share_delete(share_id, cls.get_user_uuid()),
+            cls.subscribe_share_delete(share_id, target_uid),
             cls._clear_subscribe_share_cache,
         )
 
     @classmethod
-    async def async_share_delete(cls, share_id: int) -> Tuple[bool, str]:
+    async def async_share_delete(
+            cls,
+            share_id: int,
+            share_uid: Optional[str] = None,
+    ) -> Tuple[bool, str]:
         """
-        异步撤回已有订阅分享，关闭数据共享后仍允许撤回。
+        异步撤回或管理删除已有订阅分享，关闭数据共享后仍允许撤回。
+
+        :param share_id: 分享记录 ID
+        :param share_uid: 目标分享所属用户唯一 ID，为空时默认使用当前实例身份
+        :return: (是否成功, 错误信息)
         """
+        local_uid = cls.get_user_uuid()
+        requested_uid = (share_uid or "").strip()
+        target_uid = local_uid
+        if requested_uid and requested_uid != local_uid:
+            if not await cls.async_can_manage_subscribe_share():
+                return False, "无权限删除他人分享"
+            target_uid = requested_uid
         return cls._handle_response(
-            await cls.async_subscribe_share_delete(share_id, cls.get_user_uuid()),
+            await cls.async_subscribe_share_delete(share_id, target_uid),
             cls._clear_subscribe_share_cache,
         )
 
@@ -1260,26 +1422,52 @@ class MoviePilotServerHelper:
         )
 
     @classmethod
-    def workflow_share_delete_by_id(cls, share_id: int) -> Tuple[bool, str]:
+    def workflow_share_delete_by_id(
+            cls,
+            share_id: int,
+            share_uid: Optional[str] = None,
+    ) -> Tuple[bool, str]:
         """
-        删除工作流分享。
+        撤回或管理删除已有工作流分享，关闭数据共享后仍允许撤回。
+
+        :param share_id: 分享记录 ID
+        :param share_uid: 目标分享所属用户唯一 ID，为空时默认使用当前实例身份
+        :return: (是否成功, 错误信息)
         """
-        if not settings.WORKFLOW_STATISTIC_SHARE:
-            return False, "当前没有开启工作流数据共享功能"
+        local_uid = cls.get_user_uuid()
+        requested_uid = (share_uid or "").strip()
+        target_uid = local_uid
+        if requested_uid and requested_uid != local_uid:
+            if not cls.can_manage_workflow_share():
+                return False, "无权限删除他人分享"
+            target_uid = requested_uid
         return cls._handle_response(
-            cls.workflow_share_delete(share_id, cls.get_user_uuid()),
+            cls.workflow_share_delete(share_id, target_uid),
             cls._clear_workflow_share_cache,
         )
 
     @classmethod
-    async def async_workflow_share_delete_by_id(cls, share_id: int) -> Tuple[bool, str]:
+    async def async_workflow_share_delete_by_id(
+            cls,
+            share_id: int,
+            share_uid: Optional[str] = None,
+    ) -> Tuple[bool, str]:
         """
-        异步删除工作流分享。
+        异步撤回或管理删除已有工作流分享，关闭数据共享后仍允许撤回。
+
+        :param share_id: 分享记录 ID
+        :param share_uid: 目标分享所属用户唯一 ID，为空时默认使用当前实例身份
+        :return: (是否成功, 错误信息)
         """
-        if not settings.WORKFLOW_STATISTIC_SHARE:
-            return False, "当前没有开启工作流数据共享功能"
+        local_uid = cls.get_user_uuid()
+        requested_uid = (share_uid or "").strip()
+        target_uid = local_uid
+        if requested_uid and requested_uid != local_uid:
+            if not await cls.async_can_manage_workflow_share():
+                return False, "无权限删除他人分享"
+            target_uid = requested_uid
         return cls._handle_response(
-            await cls.async_workflow_share_delete(share_id, cls.get_user_uuid()),
+            await cls.async_workflow_share_delete(share_id, target_uid),
             cls._clear_workflow_share_cache,
         )
 

@@ -144,12 +144,13 @@ class WorkflowSimulateRequest(BaseModel):
     """
     工作流零副作用模拟试跑请求参数
     """
+    workflow_id: Optional[int] = Field(default=None, description="工作流ID（用于只读比对增量基线与下载去重缓存）")
     actions: Optional[List[dict]] = Field(default_factory=list, description="动作节点列表")
     flows: Optional[List[dict]] = Field(default_factory=list, description="流程连线列表")
     execution_config: Optional[dict] = Field(default_factory=dict, description="工作流执行配置")
     scenario: Optional[str] = Field(
         default="normal",
-        description="模拟场景：normal-常规有数据 empty_source-源数据为空 empty_filter-过滤结果为空",
+        description="模拟场景：live_dry_run-真实只读演练 normal-常规有数据 empty_source-源数据为空 empty_filter-过滤结果为空",
     )
 
 

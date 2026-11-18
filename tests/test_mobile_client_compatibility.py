@@ -93,3 +93,38 @@ def test_token_without_admin_identity_does_not_advertise_permissions() -> None:
         "subscribe": True,
         "manage": False,
     }
+
+
+def test_update_current_user_verifies_current_password(
+    client_context: tuple[TestClient, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """个人中心修改密码携带 current_password 时必须校验原密码正确性且不落库该字段。"""
+    client, account = client_context
+    updated_payloads: list[dict] = []
+
+    async def fake_async_update(_db, payload: dict) -> None:
+        updated_payloads.append(payload)
+
+    account.async_update = fake_async_update
+    monkeypatch.setattr(user, "verify_password", lambda plain, hashed: plain == "OldPass123" and hashed == "secret")
+    monkeypatch.setattr(user, "get_password_hash", lambda plain: f"hashed:{plain}")
+
+    bad = client.put(
+        "/api/v1/user/current",
+        json={"current_password": "wrong", "password": "NewPass123!"},
+    )
+    assert bad.status_code == 200
+    assert bad.json()["success"] is False
+    assert updated_payloads == []
+
+    good = client.put(
+        "/api/v1/user/current",
+        json={"current_password": "OldPass123", "password": "NewPass123!"},
+    )
+    assert good.status_code == 200
+    assert good.json()["success"] is True
+    assert len(updated_payloads) == 1
+    assert "current_password" not in updated_payloads[0]
+    assert updated_payloads[0]["hashed_password"] == "hashed:NewPass123!"
+
