@@ -33,6 +33,7 @@ from app.helper.interaction import (
     supports_markdown,
     update_or_post_message,
 )
+from app.helper.mediaserver import MediaServerHelper
 from app.helper.service import ServiceConfigHelper
 from app.helper.thread import ThreadHelper
 from app.helper.torrent import (
@@ -45,7 +46,7 @@ from app.modules.indexer.spider.fluxtorrent import (
     FluxTorrentSpider,
     is_fluxtorrent_download_url,
 )
-from app.schemas import ExistMediaInfo, FileURI, NotExistMediaInfo, DownloaderTorrent, Notification, ResourceSelectionEventData, \
+from app.schemas import ExistMediaInfo, FileURI, MediaServerQueryError, NotExistMediaInfo, DownloaderTorrent, Notification, ResourceSelectionEventData, \
     ResourceDownloadEventData
 from app.schemas.types import MediaType, TorrentStatus, EventType, MessageChannel, NotificationType, ContentType, \
     ChainEventType, DownloadTaskState, TorrentQueryStatus
@@ -1869,12 +1870,95 @@ class DownloadChain(ChainBase):
             return []
         return target
 
+    @staticmethod
+    def _get_mediaserver_names() -> List[str]:
+        """获取已启用的媒体服务器名称列表。"""
+        try:
+            configs = MediaServerHelper().get_configs()
+        except Exception:
+            return []
+        if isinstance(configs, dict):
+            return [str(name) for name in configs.keys() if name]
+        return [
+            str(config.name)
+            for config in (configs or [])
+            if getattr(config, "name", None)
+        ]
+
+    def _media_exists_with_server_cache(
+        self,
+        mediainfo: MediaInfo,
+        mediaserver: MediaServerOper,
+        query: Dict[str, Any],
+        *,
+        raise_on_query_failure: bool = False,
+    ) -> Optional[ExistMediaInfo]:
+        """
+        按媒体服务器隔离缓存条目，并合并各服务器已确认存在的剧集。
+
+        :param mediainfo: 本次查询的媒体信息
+        :param mediaserver: 媒体服务器缓存操作对象
+        :param query: 本次查询的媒体服务器缓存参数
+        :param raise_on_query_failure: 任一服务器剧集查询失败时抛 MediaServerQueryError，
+            避免用其他服务器的部分集数推断缺失；默认 False 时保留已确认结果
+        :return: 已确认存在的媒体信息；宽松模式全部失败时返回 query_failed=True 的结果；未找到返回 None
+        :raises MediaServerQueryError: 任一剧集查询失败且 raise_on_query_failure 为 True
+        """
+        server_names = self._get_mediaserver_names()
+        if not server_names:
+            itemid = mediaserver.get_item_id(**query)
+            return self.media_exists(
+                mediainfo=mediainfo,
+                itemid=itemid,
+                raise_on_query_failure=raise_on_query_failure,
+            )
+        combined: Optional[ExistMediaInfo] = None
+        seasons: Dict[int, set] = {}
+        failed_servers: List[str] = []
+        query_failure: Optional[ExistMediaInfo] = None
+        for server in server_names:
+            itemid = mediaserver.get_item_id(server=server, **query)
+            try:
+                exists = self.media_exists(
+                    mediainfo=mediainfo,
+                    itemid=itemid,
+                    server=server,
+                    raise_on_query_failure=raise_on_query_failure,
+                )
+            except MediaServerQueryError:
+                # 收集失败并继续查询其余服务器；严格口径不能据部分结果推断缺集。
+                failed_servers.append(server)
+                continue
+            if isinstance(exists, ExistMediaInfo) and exists.query_failed:
+                failed_servers.append(server)
+                query_failure = exists
+                continue
+            if exists:
+                if mediainfo.type != MediaType.TV:
+                    return exists
+                combined = combined or exists
+                for season, episodes in (exists.seasons or {}).items():
+                    seasons.setdefault(season, set()).update(episodes)
+        if failed_servers and raise_on_query_failure:
+            raise MediaServerQueryError(
+                f"媒体库查询失败，未能确认 {mediainfo.title_year} 是否已入库：{', '.join(failed_servers)}"
+            )
+        if combined:
+            return combined.model_copy(update={
+                "seasons": {season: sorted(episodes) for season, episodes in seasons.items()},
+                "query_failed": False,
+            })
+        if query_failure is not None:
+            return query_failure
+        return None
+
     def get_no_exists_info(self, meta: MetaBase,
                            mediainfo: MediaInfo,
                            no_exists: Dict[int, Dict[int, NotExistMediaInfo]] = None,
                            totals: Dict[int, int] = None,
                            *,
                            totals_are_episode_numbers: bool = False,
+                           raise_on_query_failure: bool = False,
                            ) -> Tuple[bool, Dict[Union[int, str], Dict[int, NotExistMediaInfo]]]:
         """
         检查媒体库，查询是否存在，对于剧集同时返回不存在的季集信息。
@@ -1884,7 +1968,10 @@ class DownloadChain(ChainBase):
         :param no_exists: 在调用该方法前已经存储的不存在的季集信息，有传入时该函数搜索的内容将会叠加后输出
         :param totals: 电视剧每季的总集数；非正数视为未指定
         :param totals_are_episode_numbers: 指定的总集数为季内末集号；早于季首时沿用原有集数口径
+        :param raise_on_query_failure: 剧集查询失败时抛 MediaServerQueryError 而不是写出整季缺失；
+            默认 False 保持既有行为，仅订阅等需要区分失败与未找到的调用方传入 True
         :return: 当前媒体是否缺失，各标题总的季集和缺失的季集
+        :raises MediaServerQueryError: 剧集查询失败且 raise_on_query_failure 为 True 时
         """
         media_source, media_id = resolve_media_identity(media=mediainfo)
 
@@ -1925,10 +2012,16 @@ class DownloadChain(ChainBase):
         mediaserver = MediaServerOper()
         if mediainfo.type == MediaType.MOVIE:
             # 电影
-            itemid = mediaserver.get_item_id(mtype=mediainfo.type.value,
-                                             title=mediainfo.title,
-                                             tmdbid=mediainfo.tmdb_id)
-            exists_movies: Optional[ExistMediaInfo] = self.media_exists(mediainfo=mediainfo, itemid=itemid)
+            exists_movies: Optional[ExistMediaInfo] = self._media_exists_with_server_cache(
+                mediainfo=mediainfo,
+                mediaserver=mediaserver,
+                query={
+                    "mtype": mediainfo.type.value,
+                    "title": mediainfo.title,
+                    "tmdbid": mediainfo.tmdb_id,
+                },
+                raise_on_query_failure=False,
+            )
             if exists_movies:
                 logger.info(f"媒体库中已存在电影：{mediainfo.title_year}")
                 return True, {}
@@ -1951,14 +2044,23 @@ class DownloadChain(ChainBase):
                 if not mediainfo.seasons:
                     logger.error(f"媒体信息中没有季集信息：{mediainfo.title_year}")
                     return False, {}
-            # 电视剧
-            itemid = mediaserver.get_item_id(mtype=mediainfo.type.value,
-                                             title=mediainfo.title,
-                                             tmdbid=mediainfo.tmdb_id,
-                                             season=mediainfo.season)
-            # 媒体库已存在的剧集
-            exists_tvs: Optional[ExistMediaInfo] = self.media_exists(mediainfo=mediainfo, itemid=itemid)
+            # 电视剧：按媒体服务器隔离缓存并合并已确认剧集
+            exists_tvs: Optional[ExistMediaInfo] = self._media_exists_with_server_cache(
+                mediainfo=mediainfo,
+                mediaserver=mediaserver,
+                query={
+                    "mtype": mediainfo.type.value,
+                    "title": mediainfo.title,
+                    "tmdbid": mediainfo.tmdb_id,
+                    "season": mediainfo.season,
+                },
+                raise_on_query_failure=raise_on_query_failure,
+            )
             if isinstance(exists_tvs, ExistMediaInfo) and exists_tvs.query_failed:
+                if raise_on_query_failure:
+                    raise MediaServerQueryError(
+                        f"媒体库查询失败，未能确认 {mediainfo.title_year} 是否已入库"
+                    )
                 logger.warning(f"媒体库季集查询失败，暂不更新缺集信息：{mediainfo.title_year}")
                 return False, {}
             existing_seasons = (exists_tvs.seasons or {}) if exists_tvs else {}

@@ -17,10 +17,14 @@ class _FakeResponse:
 
     def __init__(self, payload: dict):
         self._payload = payload
+        self.status_code = 200
 
     def json(self):
         """返回测试预置的响应体。"""
         return self._payload
+
+    def close(self):
+        """保留响应释放接缝，测试替身不持有网络资源。"""
 
 
 class MediaServerTvStaleItemIdTest(unittest.TestCase):

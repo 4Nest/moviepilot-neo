@@ -327,3 +327,35 @@ def test_hddolby_spider_maps_hr_field_and_category_filter(monkeypatch):
     assert torrents[0].hit_and_run is True
     assert torrents[1].hit_and_run is False
 
+
+def test_hddolby_spider_parse_result_maps_hit_and_run():
+    """
+    hr 标记应映射为 hit_and_run，兼容数值、字符串、布尔值和缺失字段。
+    """
+    spider = HddolbySpider({
+        "id": 6,
+        "name": "高清杜比",
+        "domain": "https://www.uhddolby.com/",
+        "apikey": "test-key",
+    })
+    results = spider._HddolbySpider__parse_result([
+        {"id": 1, "name": "The Odyssey 2026 2160p", "category": 401, "size": 1024, "hr": 1},
+        {"id": 2, "name": "Example Movie 1080p", "category": 401, "size": 1024, "hr": 0},
+        {"id": 3, "name": "Example TV 1080p", "category": 402, "size": 1024, "hr": "1"},
+        {"id": 4, "name": "Example TV 720p", "category": 402, "size": 1024, "hr": "0"},
+        {"id": 5, "name": "Example TV 4K", "category": 402, "size": 1024, "hr": "false"},
+        {"id": 6, "name": "Example TV Bool", "category": 402, "size": 1024, "hr": True},
+        {"id": 7, "name": "Example TV Missing", "category": 402, "size": 1024},
+    ])
+
+    assert [torrent["hit_and_run"] for torrent in results] == [
+        True,
+        False,
+        True,
+        False,
+        False,
+        True,
+        False,
+    ]
+
+

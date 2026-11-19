@@ -7,6 +7,7 @@ from requests import Response
 
 from app import schemas
 from app.core.config import settings
+from app.helper.mediaserver import read_emby_query_items
 from app.log import logger
 from app.schemas import MediaType
 from app.utils.http import RequestUtils
@@ -418,14 +419,10 @@ class Jellyfin:
             "api_key": self._apikey
         }
         try:
-            res = self._request().get_res(url, params)
-            if res:
-                res_items = res.json().get("Items")
-                if res_items:
-                    for res_item in res_items:
-                        if res_item.get('Name') == name and (
-                                not year or str(res_item.get('ProductionYear')) == str(year)):
-                            return res_item.get('Id')
+            for res_item in read_emby_query_items(self._request(), url, params):
+                if res_item.get('Name') == name and (
+                        not year or str(res_item.get('ProductionYear')) == str(year)):
+                    return res_item.get('Id')
         except Exception as e:
             logger.error(f"连接Items出错：" + str(e))
             return None
@@ -512,7 +509,8 @@ class Jellyfin:
                 return None, {}
             item_info = self.get_iteminfo(item_id)
         if not item_info:
-            return None, {}
+            # 无法读取条目详情时，不能确认该媒体已经从库中删除。
+            return None, None
         if item_info:
             if tmdb_id and item_info.tmdbid:
                 if str(tmdb_id) != str(item_info.tmdbid):
@@ -527,29 +525,24 @@ class Jellyfin:
             "api_key": self._apikey
         }
         try:
-            res_json = self._request().get_res(url, params)
-            if res_json:
-                tv_info = res_json.json()
-                res_items = tv_info.get("Items")
-                # 返回的季集信息
-                season_episodes = {}
-                for res_item in res_items:
-                    season_index = res_item.get("ParentIndexNumber")
-                    if season_index is None:
-                        continue
-                    if season is not None and season != season_index:
-                        continue
-                    episode_index = res_item.get("IndexNumber")
-                    if episode_index is None:
-                        continue
-                    if not season_episodes.get(season_index):
-                        season_episodes[season_index] = []
-                    season_episodes[season_index].append(episode_index)
-                return item_id, season_episodes
+            # 返回的季集信息
+            season_episodes = {}
+            for res_item in read_emby_query_items(self._request(), url, params):
+                season_index = res_item.get("ParentIndexNumber")
+                if season_index is None:
+                    continue
+                if season is not None and season != season_index:
+                    continue
+                episode_index = res_item.get("IndexNumber")
+                if episode_index is None:
+                    continue
+                if not season_episodes.get(season_index):
+                    season_episodes[season_index] = []
+                season_episodes[season_index].append(episode_index)
+            return item_id, season_episodes
         except Exception as e:
             logger.error(f"连接Shows/Id/Episodes出错：" + str(e))
             return None, None
-        return None, {}
 
     def get_season_episode_ids(self, item_id: str, season: int) -> Dict[int, str]:
         """

@@ -2886,3 +2886,87 @@ class TestPluginHelper:
         asyncio.run(helper.async_install("DemoPlugin", "https://github.com/demo/repo", force_install=False))
         asyncio.run(helper.async_install("DemoPlugin", "https://github.com/demo/repo", force_install=True))
         assert observed_fresh == [False, True]
+
+    def test_plugin_index_parse_error_logs_source_without_cache_buster_or_credentials(self, monkeypatch):
+        """同步获取插件索引解析失败时，日志应附带脱敏后的仓库来源并省略响应正文。"""
+        from app.helper.plugin import PluginHelper
+
+        messages: list[str] = []
+        monkeypatch.setattr(
+            "app.helper.plugin.logger.warning",
+            lambda message: messages.append(message),
+        )
+        helper = PluginHelper()
+        helper.clear_repo_failures()
+        helper.get_plugins.cache_clear()
+
+        fake_res = SimpleNamespace(
+            status_code=200,
+            text="not-json-PRIVATE-PAYLOAD",
+            url="https://user:secret@mirror.example.com/example/repo/main/package.v2.json?_refresh=123",
+        )
+        monkeypatch.setattr(
+            helper,
+            "_PluginHelper__request_with_fallback",
+            lambda *_args, **_kwargs: fake_res,
+        )
+
+        result = helper.get_plugins("https://github.com/example/repo", "v2")
+
+        assert result is None
+        assert any(
+            "mirror.example.com/example/repo/main/package.v2.json" in message
+            for message in messages
+        )
+        assert all("_refresh=" not in message for message in messages)
+        assert all("secret" not in message for message in messages)
+        assert all("PRIVATE-PAYLOAD" not in message for message in messages)
+
+    def test_async_plugin_index_parse_error_logs_source(self, monkeypatch):
+        """异步获取插件索引响应非 dict JSON 时，日志应附带仓库来源及文件名。"""
+        from app.helper.plugin import PluginHelper
+
+        messages: list[str] = []
+        monkeypatch.setattr(
+            "app.helper.plugin.logger.warning",
+            lambda message: messages.append(message),
+        )
+        helper = PluginHelper()
+        helper.clear_repo_failures()
+
+        async def fake_async_request(*_args, **_kwargs):
+            return SimpleNamespace(status_code=200, text="[]")
+
+        monkeypatch.setattr(
+            helper,
+            "_PluginHelper__async_request_with_fallback",
+            fake_async_request,
+        )
+
+        async def run_async_get():
+            await helper.async_get_plugins.cache_clear()
+            return await helper.async_get_plugins("https://github.com/example/repo", "v2")
+
+        result = asyncio.run(run_async_get())
+
+        assert result is None
+        assert any(
+            "example/repo/main/package.v2.json" in message for message in messages
+        )
+
+    def test_local_plugin_index_parse_error_logs_package_file(self, monkeypatch, tmp_path):
+        """本地插件索引非法时，解析失败日志应指出具体插件包文件路径。"""
+        from app.helper.plugin import PluginHelper
+
+        messages: list[str] = []
+        monkeypatch.setattr(
+            "app.helper.plugin.logger.warning",
+            lambda message: messages.append(message),
+        )
+        package_file = tmp_path / "package.v2.json"
+        package_file.write_text("not-json", encoding="utf-8")
+
+        result = PluginHelper._PluginHelper__get_local_package(tmp_path, "v2")
+
+        assert result is None
+        assert any(str(package_file) in message for message in messages)

@@ -45,3 +45,14 @@ class StorageQueryError(Exception):
     调用方不应把该状态当作文件不存在处理。
     """
     pass
+
+
+class MediaServerQueryError(RuntimeError):
+    """
+    媒体服务器存在性查询失败，未能确认媒体是否已入库。
+
+    与“未找到”不同：查询失败时调用方不得把目标当作缺失处理。订阅入口遇到
+    该异常应跳过本轮，不更新缺集、不触发补下；异常消息携带失败的服务器名
+    称与媒体标题，供日志定位。
+    """
+    pass

@@ -228,6 +228,7 @@ def _load_subscribe_chain_class():
     schemas_module.SubscribeDownloadFileInfo = _SubscribeDownloadFileInfo
     schemas_module.SubscribeLibraryFileInfo = _SubscribeLibraryFileInfo
     schemas_module.MediaRecognizeConvertEventData = _MediaRecognizeConvertEventData
+    schemas_module.MediaServerQueryError = type("MediaServerQueryError", (RuntimeError,), {})
     schemas_module.SubscribeEpisodesRefreshEventData = _SubscribeEpisodesRefreshEventData
     schemas_module.SubscribeCompletionCheckEventData = _SubscribeCompletionCheckEventData
 

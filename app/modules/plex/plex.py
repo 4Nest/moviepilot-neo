@@ -260,38 +260,42 @@ class Plex:
         :return: 所有集的列表
         """
         if not self._plex:
-            return None, {}
-        if item_id:
-            try:
-                videos = self.__fetch_item(item_id)
-            except NotFound:
-                # Plex删除并重新入库后metadata id会变化，缓存的旧item_id失效时回退到搜索路径。
-                logger.warning(f"Plex缓存的电视剧媒体ID {item_id} 已失效，尝试按标题重新搜索：{title}")
+            return None, None
+        try:
+            if item_id:
+                try:
+                    videos = self.__fetch_item(item_id)
+                except NotFound:
+                    # Plex删除并重新入库后metadata id会变化，缓存的旧item_id失效时回退到搜索路径。
+                    logger.warning(f"Plex缓存的电视剧媒体ID {item_id} 已失效，尝试按标题重新搜索：{title}")
+                    videos = self.__search_show(title=title,
+                                                original_title=original_title,
+                                                year=year)
+            else:
                 videos = self.__search_show(title=title,
                                             original_title=original_title,
                                             year=year)
-        else:
-            videos = self.__search_show(title=title,
-                                        original_title=original_title,
-                                        year=year)
 
-        if not videos:
-            return None, {}
-        if isinstance(videos, list):
-            videos = videos[0]
-        video_tmdbid = self.__get_ids(videos.guids).get('tmdb_id')
-        if tmdb_id and video_tmdbid:
-            if str(video_tmdbid) != str(tmdb_id):
+            if not videos:
                 return None, {}
-        episodes = videos.episodes()
-        season_episodes = {}
-        for episode in episodes:
-            if season is not None and episode.seasonNumber != int(season):
-                continue
-            if episode.seasonNumber not in season_episodes:
-                season_episodes[episode.seasonNumber] = []
-            season_episodes[episode.seasonNumber].append(episode.index)
-        return videos.key, season_episodes
+            if isinstance(videos, list):
+                videos = videos[0]
+            video_tmdbid = self.__get_ids(videos.guids).get('tmdb_id')
+            if tmdb_id and video_tmdbid:
+                if str(video_tmdbid) != str(tmdb_id):
+                    return None, {}
+            episodes = videos.episodes()
+            season_episodes = {}
+            for episode in episodes:
+                if season is not None and episode.seasonNumber != int(season):
+                    continue
+                if episode.seasonNumber not in season_episodes:
+                    season_episodes[episode.seasonNumber] = []
+                season_episodes[episode.seasonNumber].append(episode.index)
+            return videos.key, season_episodes
+        except Exception as e:
+            logger.error(f"连接Plex查询剧集出错：{str(e)}")
+            return None, None
 
     def get_season_episode_ids(self, item_id: str, season: int) -> Dict[int, str]:
         """

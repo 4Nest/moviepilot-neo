@@ -1,10 +1,11 @@
 import asyncio
+import inspect
 import queue
 import re
 import threading
 import traceback
 import uuid
-from copy import deepcopy
+from copy import copy, deepcopy
 from pathlib import Path
 from time import monotonic
 from typing import List, Optional, Tuple, Union, Dict, Callable, Any
@@ -1180,19 +1181,22 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                 )
 
             # task登记转移成功文件清单
-            target_files = transferinfo.file_list_new
+            target_files = list(transferinfo.file_list_new or [])
             if target_dir_path:
                 with job_lock:
                     if self._success_target_files.get(target_dir_path):
                         self._success_target_files[target_dir_path].extend(target_files)
                     else:
-                        self._success_target_files[target_dir_path] = target_files
+                        self._success_target_files[target_dir_path] = list(target_files)
 
             # 设置任务成功
             self.jobview.finish_task(task)
 
             # 登记批次级刮削目标
             self.__record_scrape_target(task, transferinfo)
+            # 立即模式下每个主媒体任务成功结算即发送刮削事件，不等整批或同作业剩余任务结束（#7415）
+            if self.__should_scrape_immediately(task):
+                self.__send_metadata_scrape_event(task, transferinfo)
 
         # 全部整理完成且有成功的任务时，发送消息和事件
         if self.jobview.is_finished(task):
@@ -1205,8 +1209,6 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                 else:
                     transferinfo.file_list_new = transferinfo.file_list_new or []
             __notify()
-            if not task.transfer_batch_id:
-                self.__send_metadata_scrape_event(task, transferinfo)
 
         # 只要该种子的所有任务都已整理完成，则设置种子状态为已整理
         self.__mark_torrent_completed_if_done(task.download_hash, task.downloader)
@@ -1344,6 +1346,25 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
             logger.error(f"检查种子 {download_hash} 下载进度失败：{e}")
             return False
 
+    @staticmethod
+    def __scrape_batch_aggregation_enabled() -> bool:
+        """
+        判断是否启用批次级刮削聚合。
+        默认关闭（逐主媒体文件入库后立即发送刮削事件），显式开启时整批结束后统一发送。
+        """
+        return bool(getattr(settings, "TRANSFER_SCRAPE_BATCH_AGGREGATION", False))
+
+    def __should_scrape_immediately(self, task: TransferTask) -> bool:
+        """
+        判断任务完成后是否立即发送刮削事件。
+        非批次任务始终立即发送；批次任务仅在关闭批次聚合（默认）时立即发送。
+        """
+        return (
+            not task
+            or not task.transfer_batch_id
+            or not self.__scrape_batch_aggregation_enabled()
+        )
+
     def __send_metadata_scrape_event(
             self, task: TransferTask, transferinfo: TransferInfo
     ):
@@ -1368,7 +1389,7 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                 "meta": task.meta,
                 "mediainfo": task.mediainfo,
                 "fileitem": target_diritem,
-                "file_list": transferinfo.file_list_new,
+                "file_list": list(transferinfo.file_list_new or []),
                 "overwrite": False,
             },
         )
@@ -1419,6 +1440,10 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                 or not transferinfo.need_scrape
                 or not self.__is_media_file(task.fileitem)
         ):
+            return
+
+        # 默认逐文件立即发送，不再登记批次汇总目标，避免批次收尾重复发送
+        if not self.__scrape_batch_aggregation_enabled():
             return
 
         target_diritem = transferinfo.target_diritem
@@ -1652,124 +1677,331 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
             except Exception as e:
                 logger.error(f"整理队列处理出现错误：{e} - {traceback.format_exc()}")
 
+    @staticmethod
+    def _create_preview_cache() -> Dict[str, Dict[Any, Any]]:
+        """创建单次预览请求作用域内的临时缓存容器。"""
+        return {
+            "download_history": {},
+            "subscribe_custom_words": {},
+            "mediainfo": {},
+            "supplement_mediainfo": {},
+            "transfer_history": {},
+            "tmdb_episodes": {},
+            "target_directory": {},
+            "storage_oper": {},
+            "opers": {},
+        }
+
+    @staticmethod
+    def _clone_preview_mediainfo(
+            mediainfo: Optional[MediaInfo],
+    ) -> Optional[MediaInfo]:
+        """拷贝媒体信息浅副本，避免预览缓存对象在多集间被原地修改。"""
+        return copy(mediainfo) if mediainfo is not None else None
+
+    @staticmethod
+    def _build_preview_media_cache_key(
+            task: TransferTask,
+            history_year_conflict: bool,
+    ) -> Tuple[Any, ...]:
+        """构造预览模式媒体识别缓存键，确保不同标题/年份/来源独立识别。"""
+        download_history = task.download_history
+        if download_history:
+            download_history_key: Any = (
+                history_year_conflict,
+                getattr(download_history, "type", None),
+                getattr(download_history, "media_id", None),
+                getattr(download_history, "tmdbid", None),
+                getattr(download_history, "doubanid", None),
+                getattr(download_history, "bangumiid", None),
+                getattr(download_history, "anilistid", None),
+                getattr(download_history, "media_source", None),
+                getattr(download_history, "episode_group", None),
+                getattr(download_history, "media_category", None),
+            )
+        else:
+            download_history_key = None
+
+        return (
+            getattr(task.meta, "name", None),
+            getattr(task.meta, "year", None),
+            getattr(task.meta, "type", None),
+            task.media_source,
+            getattr(task.meta, "tmdbid", None),
+            getattr(task.meta, "doubanid", None),
+            getattr(task.meta, "bangumiid", None),
+            getattr(task.meta, "anilistid", None),
+            download_history_key,
+        )
+
+    @staticmethod
+    def _build_preview_supplement_cache_key(
+            mediainfo: MediaInfo,
+            meta: Optional[MetaBase],
+    ) -> Tuple[Any, ...]:
+        """构造预指定媒体在预览模式下的 TMDB 辅助补充缓存键。"""
+        return (
+            getattr(mediainfo, "source", None),
+            getattr(mediainfo, "type", None),
+            getattr(mediainfo, "tmdb_id", None),
+            getattr(mediainfo, "douban_id", None),
+            getattr(mediainfo, "bangumi_id", None),
+            getattr(mediainfo, "media_id", None),
+            getattr(mediainfo, "season", None),
+            getattr(mediainfo, "episode_group", None),
+            getattr(meta, "type", None),
+            getattr(meta, "year", None),
+        )
+
+    @staticmethod
+    def _build_preview_directory_cache_key(task: TransferTask) -> Tuple[Any, ...]:
+        """构造预览模式目标目录匹配缓存键。"""
+        media = task.mediainfo
+        media_key = (
+            getattr(media, "type", None),
+            getattr(media, "category", None),
+            getattr(media, "tmdb_id", None),
+            getattr(media, "douban_id", None),
+            getattr(media, "bangumi_id", None),
+            getattr(media, "media_id", None),
+        )
+        src_path = Path(task.fileitem.path)
+        src_scope = (
+            src_path.as_posix()
+            if task.fileitem.type == "dir"
+            else src_path.parent.as_posix()
+        )
+        target_path_key = (
+            task.target_path.as_posix()
+            if isinstance(task.target_path, Path)
+            else task.target_path
+        )
+        return (
+            media_key,
+            task.fileitem.storage,
+            src_scope,
+            target_path_key,
+            task.target_storage,
+        )
+
+    @staticmethod
+    def _select_storage_oper(
+            storage: Optional[str],
+            preview_cache: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """广播存储操作器选择事件，预览模式下按存储名称复用单次请求缓存。"""
+        storage_oper_cache = (
+            preview_cache.setdefault("storage_oper", {})
+            if preview_cache is not None
+            else None
+        )
+        if storage_oper_cache is not None and storage in storage_oper_cache:
+            return storage_oper_cache[storage]
+
+        oper = None
+        event_data = StorageOperSelectionEventData(storage=storage)
+        event = eventmanager.send_event(
+            ChainEventType.StorageOperSelection, event_data
+        )
+        if event and event.event_data:
+            event_data = event.event_data
+            if event_data.storage_oper:
+                oper = event_data.storage_oper
+
+        if storage_oper_cache is not None:
+            storage_oper_cache[storage] = oper
+        return oper
+
+    @staticmethod
+    def _supports_preview_cache(handler: Callable) -> bool:
+        """检查处理函数是否接收 preview_cache 参数，兼容测试替身签名。"""
+        try:
+            sig = inspect.signature(handler)
+            return "preview_cache" in sig.parameters or any(
+                param.kind == inspect.Parameter.VAR_KEYWORD
+                for param in sig.parameters.values()
+            )
+        except (TypeError, ValueError):
+            return False
+
     def __handle_transfer(
-            self, task: TransferTask, callback: Optional[Callable] = None
+            self,
+            task: TransferTask,
+            callback: Optional[Callable] = None,
+            preview_cache: Optional[Dict[str, Any]] = None,
     ) -> Optional[Tuple[bool, str]]:
         """
         处理整理任务
         """
         try:
             # 识别
-            transferhis = TransferHistoryOper()
+            if preview_cache is not None:
+                opers_cache = preview_cache.setdefault("opers", {})
+                transferhis = opers_cache.get("transferhis")
+                if transferhis is None:
+                    transferhis = TransferHistoryOper()
+                    opers_cache["transferhis"] = transferhis
+            else:
+                transferhis = TransferHistoryOper()
             mediainfo = task.mediainfo
             mediainfo_changed = False
             need_obtain_images = False
+            supplemented_from_cache = False
+            media_cache = (
+                preview_cache.setdefault("mediainfo", {})
+                if preview_cache is not None
+                else None
+            )
+            media_cache_key: Optional[Tuple[Any, ...]] = None
             if not mediainfo:
                 download_history = task.download_history
+                history_year_conflict = (
+                    self._is_movie_year_conflict(task.meta, download_history)
+                    if download_history
+                    else False
+                )
                 # 下载用户
                 if download_history:
                     task.username = download_history.username
-                    # 识别媒体信息
-                    history_year_conflict = self._is_movie_year_conflict(
-                        task.meta, download_history
+
+                if media_cache is not None:
+                    media_cache_key = self._build_preview_media_cache_key(
+                        task, history_year_conflict
                     )
-                    if (
-                            (
-                                download_history.media_id
-                                or download_history.tmdbid
-                                or download_history.doubanid
-                                or download_history.bangumiid
-                                or download_history.anilistid
+                    if media_cache_key in media_cache:
+                        cached_media = media_cache[media_cache_key]
+                        if cached_media is None:
+                            return False, "未识别到媒体信息"
+                        mediainfo = self._clone_preview_mediainfo(cached_media)
+                        mediainfo_changed = True
+                        supplemented_from_cache = True
+
+                if not mediainfo:
+                    if download_history:
+                        # 识别媒体信息
+                        if (
+                                (
+                                    download_history.media_id
+                                    or download_history.tmdbid
+                                    or download_history.doubanid
+                                    or download_history.bangumiid
+                                    or download_history.anilistid
+                                )
+                                and not history_year_conflict
+                        ):
+                            # 下载记录中已存在识别信息
+                            mediainfo = self.recognize_media(
+                                mtype=MediaType(download_history.type),
+                                tmdbid=download_history.tmdbid,
+                                doubanid=download_history.doubanid,
+                                bangumiid=download_history.bangumiid,
+                                anilistid=download_history.anilistid,
+                                source=download_history.media_source,
+                                mediaid=download_history.media_id,
+                                episode_group=download_history.episode_group,
                             )
-                            and not history_year_conflict
-                    ):
-                        # 下载记录中已存在识别信息
-                        mediainfo: Optional[MediaInfo] = self.recognize_media(
-                            mtype=MediaType(download_history.type),
-                            tmdbid=download_history.tmdbid,
-                            doubanid=download_history.doubanid,
-                            bangumiid=download_history.bangumiid,
-                            anilistid=download_history.anilistid,
-                            source=download_history.media_source,
-                            mediaid=download_history.media_id,
-                            episode_group=download_history.episode_group,
-                        )
-                        need_obtain_images = True
-                        if mediainfo:
-                            # 更新自定义媒体类别
-                            if download_history.media_category:
+                            need_obtain_images = not task.preview
+                            if mediainfo:
+                                # 更新自定义媒体类别
+                                if download_history.media_category:
+                                    mediainfo.category = download_history.media_category
+                        else:
+                            if history_year_conflict:
+                                logger.info(
+                                    f"{task.fileitem.name} 文件年份 {task.meta.year} 与下载记录年份 "
+                                    f"{download_history.year} 不一致，按文件名重新识别"
+                                )
+                            recognize_kwargs = {"obtain_images": not task.preview}
+                            if task.media_source:
+                                recognize_kwargs["source"] = task.media_source
+                            mediainfo = MediaChain().recognize_by_meta(
+                                task.meta, **recognize_kwargs
+                            )
+                            if mediainfo and download_history.media_category:
                                 mediainfo.category = download_history.media_category
                     else:
-                        if history_year_conflict:
-                            logger.info(
-                                f"{task.fileitem.name} 文件年份 {task.meta.year} 与下载记录年份 "
-                                f"{download_history.year} 不一致，按文件名重新识别"
-                            )
-                        recognize_kwargs = {"obtain_images": True}
+                        # 识别媒体信息
+                        recognize_kwargs = {"obtain_images": not task.preview}
                         if task.media_source:
                             recognize_kwargs["source"] = task.media_source
                         mediainfo = MediaChain().recognize_by_meta(
                             task.meta, **recognize_kwargs
                         )
-                        if mediainfo and download_history.media_category:
-                            mediainfo.category = download_history.media_category
-                else:
-                    # 识别媒体信息
-                    recognize_kwargs = {"obtain_images": True}
-                    if task.media_source:
-                        recognize_kwargs["source"] = task.media_source
-                    mediainfo = MediaChain().recognize_by_meta(
-                        task.meta, **recognize_kwargs
-                    )
 
-                # 按名称识别时已在识别链路补图，这里只补齐显式ID识别的场景。
-                if mediainfo and need_obtain_images:
-                    self.obtain_images(mediainfo=mediainfo)
+                    # 按名称识别时已在识别链路补图，这里只补齐显式ID识别的场景。
+                    if mediainfo and need_obtain_images and not task.preview:
+                        self.obtain_images(mediainfo=mediainfo)
 
-                if mediainfo and task.media_source:
-                    mediainfo.scrape_source = task.media_source
+                    if mediainfo and task.media_source:
+                        mediainfo.scrape_source = task.media_source
 
-                if not mediainfo:
-                    if task.preview:
-                        return False, "未识别到媒体信息"
-                    # 新增整理失败历史记录
-                    his = transferhis.add_fail(
-                        fileitem=task.fileitem,
-                        mode=task.transfer_type,
-                        meta=task.meta,
-                        downloader=task.downloader,
-                        download_hash=task.download_hash,
-                    )
-                    self.post_message(
-                        Notification(
-                            mtype=NotificationType.Manual,
-                            title=f"{task.fileitem.name} 未识别到媒体信息，无法入库！",
-                            text=(
-                                "原因：未识别到媒体信息\n"
-                                "如果按钮不可用，可回复：\n"
-                                f"```\n/redo {his.id}\n/redo {his.id} [tmdbid]|[类型]\n```\n"
-                                "自动重试或手动识别整理。"
-                            ),
-                            username=task.username,
-                            link=settings.MP_DOMAIN("#/history"),
-                            buttons=self.build_failed_transfer_buttons(
-                                his.id if his else None
-                            ),
+                    if not mediainfo:
+                        if media_cache is not None and media_cache_key is not None:
+                            media_cache[media_cache_key] = None
+                        if task.preview:
+                            return False, "未识别到媒体信息"
+                        # 新增整理失败历史记录
+                        his = transferhis.add_fail(
+                            fileitem=task.fileitem,
+                            mode=task.transfer_type,
+                            meta=task.meta,
+                            downloader=task.downloader,
+                            download_hash=task.download_hash,
                         )
-                    )
-                    # 任务失败，直接移除task
-                    self.jobview.remove_task(task.fileitem)
-                    self.__mark_torrent_completed_if_done(
-                        task.download_hash, task.downloader
-                    )
+                        self.post_message(
+                            Notification(
+                                mtype=NotificationType.Manual,
+                                title=f"{task.fileitem.name} 未识别到媒体信息，无法入库！",
+                                text=(
+                                    "原因：未识别到媒体信息\n"
+                                    "如果按钮不可用，可回复：\n"
+                                    f"```\n/redo {his.id}\n/redo {his.id} [tmdbid]|[类型]\n```\n"
+                                    "自动重试或手动识别整理。"
+                                ),
+                                username=task.username,
+                                link=settings.MP_DOMAIN("#/history"),
+                                buttons=self.build_failed_transfer_buttons(
+                                    his.id if his else None
+                                ),
+                            )
+                        )
+                        # 任务失败，直接移除task
+                        self.jobview.remove_task(task.fileitem)
+                        self.__mark_torrent_completed_if_done(
+                            task.download_hash, task.downloader
+                        )
 
+                        return False, "未识别到媒体信息"
 
-                    return False, "未识别到媒体信息"
-
-                mediainfo_changed = True
+                    mediainfo_changed = True
 
             # TMDB 仅作为辅助信息合并，不能改变原识别源的主身份和标题。
-            mediainfo = MediaChain().supplement_tmdb_info(mediainfo, task.meta)
+            if not supplemented_from_cache:
+                if media_cache is not None and media_cache_key is not None:
+                    mediainfo = MediaChain().supplement_tmdb_info(mediainfo, task.meta)
+                    media_cache[media_cache_key] = self._clone_preview_mediainfo(
+                        mediainfo
+                    )
+                elif preview_cache is not None:
+                    supplement_cache = preview_cache.setdefault(
+                        "supplement_mediainfo", {}
+                    )
+                    supplement_key = self._build_preview_supplement_cache_key(
+                        mediainfo, task.meta
+                    )
+                    if supplement_key in supplement_cache:
+                        mediainfo = self._clone_preview_mediainfo(
+                            supplement_cache[supplement_key]
+                        )
+                    else:
+                        mediainfo = MediaChain().supplement_tmdb_info(
+                            mediainfo, task.meta
+                        )
+                        supplement_cache[supplement_key] = (
+                            self._clone_preview_mediainfo(mediainfo)
+                        )
+                else:
+                    mediainfo = MediaChain().supplement_tmdb_info(mediainfo, task.meta)
             task.mediainfo = mediainfo
 
             # 只有 TMDB 主源沿用历史 TMDB 标题，避免辅助 ID 改写其它识别源标题。
@@ -1777,9 +2009,22 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                     not settings.SCRAP_FOLLOW_TMDB
                     and normalize_media_source(mediainfo.source) == "themoviedb"
             ):
-                transfer_history = transferhis.get_by_type_tmdbid(
-                    tmdbid=mediainfo.tmdb_id, mtype=mediainfo.type.value
-                )
+                if preview_cache is not None:
+                    transfer_his_cache = preview_cache.setdefault(
+                        "transfer_history", {}
+                    )
+                    transfer_his_key = (mediainfo.tmdb_id, mediainfo.type.value)
+                    if transfer_his_key in transfer_his_cache:
+                        transfer_history = transfer_his_cache[transfer_his_key]
+                    else:
+                        transfer_history = transferhis.get_by_type_tmdbid(
+                            tmdbid=mediainfo.tmdb_id, mtype=mediainfo.type.value
+                        )
+                        transfer_his_cache[transfer_his_key] = transfer_history
+                else:
+                    transfer_history = transferhis.get_by_type_tmdbid(
+                        tmdbid=mediainfo.tmdb_id, mtype=mediainfo.type.value
+                    )
                 if transfer_history and mediainfo.title != transfer_history.title:
                     mediainfo.title = transfer_history.title
                     mediainfo_changed = True
@@ -1806,15 +2051,63 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                 # 默认值1
                 if season_num is None:
                     season_num = 1
-                task.episodes_info = TmdbChain().tmdb_episodes(
-                    tmdbid=task.mediainfo.tmdb_id,
-                    season=season_num,
-                    episode_group=task.mediainfo.episode_group,
-                )
+                if preview_cache is not None:
+                    episodes_cache = preview_cache.setdefault("tmdb_episodes", {})
+                    episodes_key = (
+                        task.mediainfo.tmdb_id,
+                        season_num,
+                        task.mediainfo.episode_group,
+                    )
+                    if episodes_key in episodes_cache:
+                        cached_episodes = episodes_cache[episodes_key]
+                        task.episodes_info = (
+                            list(cached_episodes)
+                            if cached_episodes is not None
+                            else None
+                        )
+                    else:
+                        episodes_info = TmdbChain().tmdb_episodes(
+                            tmdbid=task.mediainfo.tmdb_id,
+                            season=season_num,
+                            episode_group=task.mediainfo.episode_group,
+                        )
+                        episodes_cache[episodes_key] = episodes_info
+                        task.episodes_info = (
+                            list(episodes_info) if episodes_info is not None else None
+                        )
+                else:
+                    task.episodes_info = TmdbChain().tmdb_episodes(
+                        tmdbid=task.mediainfo.tmdb_id,
+                        season=season_num,
+                        episode_group=task.mediainfo.episode_group,
+                    )
 
             # 查询整理目标目录
             if not task.target_directory:
-                if task.target_path:
+                if preview_cache is not None:
+                    dir_cache = preview_cache.setdefault("target_directory", {})
+                    dir_cache_key = self._build_preview_directory_cache_key(task)
+                    if dir_cache_key in dir_cache:
+                        task.target_directory = dir_cache[dir_cache_key]
+                    else:
+                        if task.target_path:
+                            # 指定目标路径，`手动整理`场景下使用，忽略源目录匹配，使用指定目录匹配
+                            target_dir = DirectoryHelper().get_dir(
+                                media=task.mediainfo,
+                                dest_path=task.target_path,
+                                target_storage=task.target_storage,
+                            )
+                        else:
+                            # 启用源目录匹配时，根据源目录匹配下载目录，否则按源目录同盘优先原则，如无源目录，则根据媒体信息获取目标目录
+                            target_dir = DirectoryHelper().get_dir(
+                                media=task.mediainfo,
+                                storage=task.fileitem.storage,
+                                src_path=Path(task.fileitem.path),
+                                target_storage=task.target_storage,
+                            )
+                        dir_cache[dir_cache_key] = target_dir
+                        task.target_directory = target_dir
+                elif task.target_path:
                     # 指定目标路径，`手动整理`场景下使用，忽略源目录匹配，使用指定目录匹配
                     task.target_directory = DirectoryHelper().get_dir(
                         media=task.mediainfo,
@@ -1854,36 +2147,16 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
             self.jobview.running_task(task)
 
             # 广播事件，请示额外的源存储支持
-            source_oper = None
-            source_event_data = StorageOperSelectionEventData(
+            source_oper = self._select_storage_oper(
                 storage=task.fileitem.storage,
+                preview_cache=preview_cache,
             )
-            source_event = eventmanager.send_event(
-                ChainEventType.StorageOperSelection, source_event_data
-            )
-            # 使用事件返回的上下文数据
-            if source_event and source_event.event_data:
-                source_event_data: StorageOperSelectionEventData = (
-                    source_event.event_data
-                )
-                if source_event_data.storage_oper:
-                    source_oper = source_event_data.storage_oper
 
             # 广播事件，请示额外的目标存储支持
-            target_oper = None
-            target_event_data = StorageOperSelectionEventData(
+            target_oper = self._select_storage_oper(
                 storage=task.target_storage,
+                preview_cache=preview_cache,
             )
-            target_event = eventmanager.send_event(
-                ChainEventType.StorageOperSelection, target_event_data
-            )
-            # 使用事件返回的上下文数据
-            if target_event and target_event.event_data:
-                target_event_data: StorageOperSelectionEventData = (
-                    target_event.event_data
-                )
-                if target_event_data.storage_oper:
-                    target_oper = target_event_data.storage_oper
 
             # 执行整理
             transferinfo: TransferInfo = self.transfer(
@@ -2991,6 +3264,75 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                 if _is_allowed_transfer_item(candidate_item, candidate_bluray_dir)
             ]
 
+        preview_cache: Optional[Dict[str, Any]] = (
+            self._create_preview_cache() if preview else None
+        )
+
+        def _get_download_history_oper() -> DownloadHistoryOper:
+            """预览模式复用单个 DownloadHistoryOper 实例，非预览保持原样创建。"""
+            if preview_cache is None:
+                return DownloadHistoryOper()
+            opers_cache = preview_cache.setdefault("opers", {})
+            download_oper = opers_cache.get("downloadhis")
+            if download_oper is None:
+                download_oper = DownloadHistoryOper()
+                opers_cache["downloadhis"] = download_oper
+            return download_oper
+
+        def _resolve_cached_download_history(
+                downloadhis: DownloadHistoryOper,
+                target_file_path: Path,
+                is_bluray_dir: bool,
+                target_download_hash: Optional[str],
+        ) -> Optional[DownloadHistory]:
+            """预览模式按目录/蓝光标记/hash 复用下载历史查询结果。"""
+            if preview_cache is None:
+                return self._resolve_download_history(
+                    downloadhis=downloadhis,
+                    file_path=target_file_path,
+                    bluray_dir=is_bluray_dir,
+                    download_hash=target_download_hash,
+                )
+            history_cache = preview_cache.setdefault("download_history", {})
+            scope_path = (
+                target_file_path.as_posix()
+                if is_bluray_dir
+                else target_file_path.parent.as_posix()
+            )
+            cache_key = (scope_path, is_bluray_dir, target_download_hash)
+            if cache_key not in history_cache:
+                history_cache[cache_key] = self._resolve_download_history(
+                    downloadhis=downloadhis,
+                    file_path=target_file_path,
+                    bluray_dir=is_bluray_dir,
+                    download_hash=target_download_hash,
+                )
+            return history_cache[cache_key]
+
+        def _get_cached_subscribe_custom_words(
+                history_record: Optional[DownloadHistory],
+        ) -> Optional[List[str]]:
+            """预览模式复用同一下载历史的自定义识别词查询结果。"""
+            if preview_cache is None:
+                return self._get_subscribe_custom_words(history_record)
+            if not history_record:
+                return None
+            words_cache = preview_cache.setdefault("subscribe_custom_words", {})
+            note = getattr(history_record, "note", None)
+            note_source = note.get("source") if isinstance(note, dict) else None
+            cache_key = (
+                getattr(history_record, "id", None),
+                getattr(history_record, "download_hash", None),
+                getattr(history_record, "custom_words", None),
+                note_source,
+            )
+            if cache_key not in words_cache:
+                words_cache[cache_key] = self._get_subscribe_custom_words(
+                    history_record
+                )
+            cached_words = words_cache[cache_key]
+            return list(cached_words) if cached_words is not None else None
+
         def _build_main_meta(
                 main_fileitem: FileItem,
                 main_bluray_dir: bool,
@@ -3000,15 +3342,17 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
             构建主视频元数据。
             """
             main_path = Path(main_fileitem.path)
-            main_download_history = self._resolve_download_history(
+            main_download_history = _resolve_cached_download_history(
                 downloadhis=download_history_oper,
-                file_path=main_path,
-                bluray_dir=main_bluray_dir,
-                download_hash=download_hash,
+                target_file_path=main_path,
+                is_bluray_dir=main_bluray_dir,
+                target_download_hash=download_hash,
             )
             return _build_file_meta(
                 main_path,
-                custom_word_list=self._get_subscribe_custom_words(main_download_history),
+                custom_word_list=_get_cached_subscribe_custom_words(
+                    main_download_history
+                ),
             )
 
         def _append_item(
@@ -3086,7 +3430,7 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
             if not items:
                 return [], {}
 
-            download_history_oper = DownloadHistoryOper()
+            download_history_oper = _get_download_history_oper()
             inherited_map: Dict[Tuple[str, str], MetaBase] = {}
             main_items_by_dir, extra_items_by_dir = _build_directory_index(items)
             main_items = [
@@ -3160,13 +3504,13 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                     continue
 
                 main_path = Path(main_item.path)
-                main_download_history = self._resolve_download_history(
+                main_download_history = _resolve_cached_download_history(
                     downloadhis=download_history_oper,
-                    file_path=main_path,
-                    bluray_dir=main_bluray_dir,
-                    download_hash=download_hash,
+                    target_file_path=main_path,
+                    is_bluray_dir=main_bluray_dir,
+                    target_download_hash=download_hash,
                 )
-                subscribe_custom_words = self._get_subscribe_custom_words(
+                subscribe_custom_words = _get_cached_subscribe_custom_words(
                     main_download_history
                 )
                 main_meta = _build_file_meta(
@@ -3229,6 +3573,8 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
             candidate_file_items.clear()
 
         if not file_items:
+            if not preview and download_hash:
+                self.__mark_torrent_completed_if_done(download_hash, downloader)
             if has_episode_format_template and not matched_episode_format_template:
                 logger.info(f"{fileitem.path} 未匹配到集数定位模板，跳过整理")
                 if preview:
@@ -3256,8 +3602,9 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
 
         # 整理所有文件
         transfer_tasks: List[TransferTask] = []
+        queued_count = 0
         skipped_history_count = 0
-        skipped_torrents = set()
+        skipped_torrents: Dict[str, Optional[str]] = {}
         try:
             for file_item, bluray_dir in file_items:
                 if global_vars.is_system_stopped:
@@ -3298,10 +3645,8 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                             all_success = False
                         candidate_hash = download_hash or transferd.download_hash
                         candidate_downloader = downloader or transferd.downloader
-                        if candidate_hash and candidate_downloader:
-                            skipped_torrents.add(
-                                (candidate_hash, candidate_downloader)
-                            )
+                        if candidate_hash and not skipped_torrents.get(candidate_hash):
+                            skipped_torrents[candidate_hash] = candidate_downloader
                         logger.info(
                             f"{file_item.path} 已整理过，如需重新处理，请删除整理记录。"
                         )
@@ -3309,12 +3654,12 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                         continue
 
                 # 提前获取下载历史，以便获取自定义识别词
-                downloadhis = DownloadHistoryOper()
-                download_history = self._resolve_download_history(
+                downloadhis = _get_download_history_oper()
+                download_history = _resolve_cached_download_history(
                     downloadhis=downloadhis,
-                    file_path=file_path,
-                    bluray_dir=bluray_dir,
-                    download_hash=download_hash,
+                    target_file_path=file_path,
+                    is_bluray_dir=bluray_dir,
+                    target_download_hash=download_hash,
                 )
 
                 if not meta:
@@ -3327,13 +3672,23 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                     else:
                         file_meta = _build_file_meta(
                             file_path,
-                            custom_word_list=self._get_subscribe_custom_words(download_history),
+                            custom_word_list=_get_cached_subscribe_custom_words(
+                                download_history
+                            ),
                         )
                 else:
                     file_meta = _build_file_meta(file_path)
 
                 if not file_meta:
                     all_success = False
+                    candidate_hash = download_hash or (
+                        download_history.download_hash if download_history else None
+                    )
+                    candidate_downloader = downloader or (
+                        download_history.downloader if download_history else None
+                    )
+                    if candidate_hash and not skipped_torrents.get(candidate_hash):
+                        skipped_torrents[candidate_hash] = candidate_downloader
                     logger.error(f"{file_path.name} 无法识别有效信息")
                     err_msgs.append(f"{file_path.name} 无法识别有效信息")
                     continue
@@ -3377,6 +3732,7 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                 )
                 if background:
                     if self.put_to_queue(task=transfer_task):
+                        queued_count += 1
                         logger.info(f"{file_path.name} 已添加到整理队列")
                     else:
                         logger.debug(f"{file_path.name} 已在整理队列中，跳过")
@@ -3385,6 +3741,7 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                     if self.__put_to_jobview(transfer_task):
                         self.__register_scrape_batch_task(transfer_task)
                         transfer_tasks.append(transfer_task)
+                        queued_count += 1
                     else:
                         logger.debug(f"{file_path.name} 已在整理列表中，跳过")
         except OperationInterrupted:
@@ -3439,6 +3796,10 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                 __process_msg = f"开始整理，共 {total_num} 个文件 ..."
                 logger.info(__process_msg)
                 progress.update(value=0, text=__process_msg)
+            pass_preview_cache = (
+                preview_cache is not None
+                and self._supports_preview_cache(self.__handle_transfer)
+            )
             try:
                 for transfer_task in transfer_tasks:
                     if global_vars.is_system_stopped:
@@ -3459,10 +3820,17 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                         )
                     try:
                         self.__start_job_execution(transfer_task)
-                        state, err_msg = self.__handle_transfer(
-                            task=transfer_task,
-                            callback=_preview_callback if preview else self.__default_callback,
-                        )
+                        handle_kwargs: Dict[str, Any] = {
+                            "task": transfer_task,
+                            "callback": (
+                                _preview_callback
+                                if preview
+                                else self.__default_callback
+                            ),
+                        }
+                        if pass_preview_cache:
+                            handle_kwargs["preview_cache"] = preview_cache
+                        state, err_msg = self.__handle_transfer(**handle_kwargs)
                     except Exception as e:
                         logger.error(
                             f"{transfer_task.fileitem.name} 整理任务处理出现错误："
@@ -3523,13 +3891,12 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
                 progress.update(value=100, text=__end_msg, data={})
                 progress.end()
 
-        # 下载器任务在这一轮可能因为历史记录全部命中而没有进入整理队列，
-        # 这里补打一遍已整理标签，避免同一种子被重复扫描。
-        if (
-                skipped_history_count == planned_file_count
-                and skipped_torrents
-        ):
-            for skipped_hash, skipped_downloader in skipped_torrents:
+        # 下载器任务在这一轮可能因为全部命中历史或无法识别元数据而没有实际入队，
+        # 这里补打一遍已整理标签，避免同一种子被重复扫描（#6909）。
+        if not preview and queued_count == 0:
+            if download_hash and not skipped_torrents.get(download_hash):
+                skipped_torrents[download_hash] = downloader
+            for skipped_hash, skipped_downloader in skipped_torrents.items():
                 logger.info(f"补充设置下载任务已整理标签：{skipped_hash}")
                 self.__mark_torrent_completed_if_done(
                     skipped_hash, skipped_downloader
@@ -3717,6 +4084,7 @@ class TransferChain(ChainBase, ConfigReloadMixin, metaclass=Singleton):
             state, errmsg = self.do_transfer(
                 fileitem=FileItem(**history.src_fileitem),
                 mediainfo=mediainfo,
+                downloader=history.downloader,
                 download_hash=history.download_hash,
                 force=True,
                 background=False,

@@ -393,6 +393,8 @@ class ConfigModel(BaseModel):
     TRANSFER_THREADS: int = 1
     # 外部接管的运行中整理任务无状态心跳超时（分钟），0 表示禁用
     TRANSFER_TASK_TIMEOUT: int = 120
+    # 是否将同一批次整理的元数据刮削事件聚合到批次结束后统一发送（默认关闭：每个主媒体文件入库后立即发送）
+    TRANSFER_SCRAPE_BATCH_AGGREGATION: bool = False
     # 电影重命名格式
     MOVIE_RENAME_FORMAT: str = (
         "{{title}}{% if year %} ({{year}}){% endif %}"

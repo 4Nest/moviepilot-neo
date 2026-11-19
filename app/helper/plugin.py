@@ -45,6 +45,8 @@ PLUGIN_DIR = Path(settings.ROOT_PATH) / "app" / "plugins"
 LOCAL_REPO_PREFIX = "local://"
 PLUGIN_SYSTEM_VERSION_FIELD = "system_version"
 PLUGIN_REPO_FAILURE_TTL = 300
+# 失败日志中的索引来源标识上限，避免异常仓库地址放大日志体积。
+PLUGIN_INDEX_LOG_SOURCE_LIMIT = 512
 
 
 class PluginHelper(metaclass=WeakSingleton):
@@ -239,8 +241,8 @@ class PluginHelper(metaclass=WeakSingleton):
             paths.append(path.resolve())
         return paths
 
-    @staticmethod
-    def __get_local_package(repo_path: Path, package_version: Optional[str] = None) -> Optional[Dict[str, dict]]:
+    @classmethod
+    def __get_local_package(cls, repo_path: Path, package_version: Optional[str] = None) -> Optional[Dict[str, dict]]:
         """
         从本地插件仓库读取 package.json 或 package.{version}.json
         """
@@ -251,14 +253,13 @@ class PluginHelper(metaclass=WeakSingleton):
             return {}
         try:
             content = package_file.read_text(encoding="utf-8", errors="replace")
-            payload = json.loads(content)
         except Exception as e:
-            logger.warn(f"读取本地插件包 {package_file} 失败：{e}")
+            logger.warning(f"读取本地插件包 {package_file} 失败：{e}")
             return None
-        if not isinstance(payload, dict):
-            logger.warn(f"本地插件包 {package_file} 格式不正确")
-            return None
-        return payload
+        return cls.__parse_plugin_index_response(
+            content,
+            source=f"本地插件包 {package_file}",
+        )
 
     @staticmethod
     def __get_local_plugin_dir(repo_path: Path, pid: str, package_version: Optional[str]) -> Path:
@@ -413,19 +414,61 @@ class PluginHelper(metaclass=WeakSingleton):
         return parts._replace(query=query).geturl()
 
     @staticmethod
-    def __parse_plugin_index_response(content: str) -> Optional[Dict[str, dict]]:
+    def __plugin_index_log_source(source: Optional[str]) -> str:
+        """
+        生成失败日志使用的有界来源标识，去掉凭据、缓存穿透参数并限制长度。
+        """
+        if not isinstance(source, str):
+            return ""
+        label = source.strip()
+        if not label:
+            return ""
+        parts = urlsplit(label)
+        if "@" in parts.netloc:
+            parts = parts._replace(netloc=parts.netloc.rsplit("@", 1)[-1])
+        if parts.query:
+            query = "&".join(
+                item
+                for item in parts.query.split("&")
+                if not item.startswith("_refresh=")
+            )
+            parts = parts._replace(query=query)
+        label = parts.geturl()
+        if len(label) > PLUGIN_INDEX_LOG_SOURCE_LIMIT:
+            label = f"{label[:PLUGIN_INDEX_LOG_SOURCE_LIMIT]}..."
+        return label
+
+    @classmethod
+    def __plugin_index_log_suffix(cls, source: Optional[str]) -> str:
+        """
+        把索引来源追加到警告文案；没有来源时保持原有日志不变。
+        """
+        label = cls.__plugin_index_log_source(source)
+        return f"（来源：{label}）" if label else ""
+
+    @classmethod
+    def __parse_plugin_index_response(
+        cls,
+        content: str,
+        source: Optional[str] = None,
+    ) -> Optional[Dict[str, dict]]:
         """
         解析插件索引响应，仅缓存成功解析出的字典结果。
+
+        :param content: 索引响应文本
+        :param source: 可选索引来源，仅用于失败日志定位仓库或本地文件
         """
+        suffix = cls.__plugin_index_log_suffix(source)
         try:
-            payload = json.loads(content)
-        except json.JSONDecodeError:
-            if "404: Not Found" not in content:
-                logger.warn(f"插件包数据解析失败：{content}")
+            payload = json.loads(content.lstrip("\ufeff"))
+        except (ValueError, RecursionError):
+            logger.warning(f"插件包数据解析失败：响应不是有效 JSON{suffix}")
             return None
 
         if not isinstance(payload, dict):
-            logger.warn(f"插件包数据格式不正确，期望 dict，实际为 {type(payload).__name__}")
+            logger.warning(
+                f"插件包数据格式不正确，期望 dict，实际为 {type(payload).__name__}{suffix}"
+            )
             return None
 
         return payload
@@ -567,7 +610,10 @@ class PluginHelper(metaclass=WeakSingleton):
         if res.status_code != 200:
             self._mark_repo_failure(failure_key)
             return None
-        parsed = self.__parse_plugin_index_response(res.text)
+        parsed = self.__parse_plugin_index_response(
+            res.text,
+            source=str(getattr(res, "url", "") or package_url),
+        )
         if parsed is None:
             self._mark_repo_failure(failure_key)
             return None
@@ -2318,7 +2364,10 @@ class PluginHelper(metaclass=WeakSingleton):
         if res.status_code != 200:
             self._mark_repo_failure(failure_key)
             return None
-        parsed = self.__parse_plugin_index_response(res.text)
+        parsed = self.__parse_plugin_index_response(
+            res.text,
+            source=str(getattr(res, "url", "") or package_url),
+        )
         if parsed is None:
             self._mark_repo_failure(failure_key)
             return None

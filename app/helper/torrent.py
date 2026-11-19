@@ -23,6 +23,7 @@ from app.modules.indexer.spider.fluxtorrent import (
 )
 from app.schemas.types import MediaType, SystemConfigKey
 from app.utils.http import RequestUtils
+from app.utils.media import resolve_media_identity
 from app.utils.string import StringUtils
 
 
@@ -716,6 +717,132 @@ class TorrentHelper:
         # 未匹配
         logger.debug(f'{torrent.site_name} - {torrent.title} 标题不匹配，识别名称：{meta_names}')
         return False
+
+    @staticmethod
+    def requires_identity_disambiguation(
+            mediainfo: MediaInfo,
+            torrent_meta: MetaBase,
+    ) -> bool:
+        """
+        判断是否需要对仅靠别名命中的剧集再识别一次。
+
+        目标和资源只有一侧缺年份时才消歧。两侧都有年份时沿用普通年份校验，
+        两侧都缺年份时按别名兜底，避免用无日期约束的同名查询排除资源。
+        """
+        if mediainfo.type != MediaType.TV or bool(mediainfo.year) == bool(torrent_meta.year):
+            return False
+        if any((
+            torrent_meta.tmdbid and torrent_meta.tmdbid == mediainfo.tmdb_id,
+            torrent_meta.doubanid and torrent_meta.doubanid == mediainfo.douban_id,
+            torrent_meta.bangumiid and torrent_meta.bangumiid == mediainfo.bangumi_id,
+            torrent_meta.anilistid and torrent_meta.anilistid == mediainfo.anilist_id,
+        )):
+            return False
+        media_titles = {
+            StringUtils.clear_upper(value)
+            for value in (mediainfo.title, mediainfo.original_title)
+            if value
+        } - {""}
+        media_names = {
+            StringUtils.clear_upper(name)
+            for name in (mediainfo.names or [])
+            if name
+        } - {""}
+        meta_names = {
+            StringUtils.clear_upper(value)
+            for value in (torrent_meta.cn_name, torrent_meta.en_name)
+            if value
+        } - {""}
+        return bool(
+            meta_names
+            and meta_names.intersection(media_names)
+            and not meta_names.intersection(media_titles)
+        )
+
+    @staticmethod
+    def _matches_torrent_year(mediainfo: MediaInfo, torrent_meta: MetaBase) -> bool:
+        """
+        判断媒体已知日期是否能印证种子标注的年份。
+
+        优先使用资源覆盖的季的首播年份。查不到对应季的日期时才使用整剧首播年，
+        不拿其他季的年份证明这是同一条资源。
+        """
+        torrent_year = str(torrent_meta.year or "")[:4]
+        if not torrent_year:
+            return False
+        season_years = mediainfo.season_years or {}
+        known_years = {
+            str(year)[:4]
+            for season in (torrent_meta.season_list or [])
+            if (year := season_years.get(season))
+        }
+        return torrent_year in (known_years or {str(mediainfo.year or "")[:4]})
+
+    @staticmethod
+    def match_same_work_evidence(
+            target_mediainfo: MediaInfo,
+            candidate_mediainfo: MediaInfo,
+            torrent_meta: MetaBase,
+    ) -> Tuple[bool, str]:
+        """
+        判断缺少年份的别名命中能否按目标作品处理。
+
+        当目标缺少整剧首播年时，即使按名字查到不同编号，也需要候选的日期符合资源年份，
+        才能把它当作另一部作品。目标有年份时，保留无年份资源原有的比较规则。
+        TMDB 的电影与电视剧数字 ID 不可跨类型比较。
+
+        :param target_mediainfo: 搜索或订阅指定的目标
+        :param candidate_mediainfo: 按资源名称及日期尝试识别出的候选
+        :param torrent_meta: 资源自身解析出的名称、年份和季集
+        :return: 是否按目标处理，以及给用户看的依据或拒绝原因
+        """
+        target_identity = resolve_media_identity(media=target_mediainfo)
+        candidate_identity = resolve_media_identity(media=candidate_mediainfo)
+        same_type = target_mediainfo.type == candidate_mediainfo.type
+        if same_type and all(target_identity) and target_identity == candidate_identity:
+            return True, "识别结果就是订阅的作品"
+
+        candidate_year = str(candidate_mediainfo.year or "")[:4]
+        torrent_year = str(torrent_meta.year or "")[:4]
+        if target_mediainfo.year:
+            if not candidate_year:
+                return True, f"按名字查到的《{candidate_mediainfo.title}》没有首播日期，不能说明是另一部作品"
+            target_years = {
+                str(year)[:4]
+                for year in [target_mediainfo.year, *(target_mediainfo.season_years or {}).values()]
+                if year
+            }
+            if candidate_year in target_years or (torrent_year and torrent_year in target_years):
+                return True, "年份与订阅的作品一致"
+
+        for field in ("tmdb_id", "imdb_id", "tvdb_id", "douban_id", "bangumi_id", "anilist_id"):
+            if field == "tmdb_id" and not same_type:
+                continue
+            target_id = getattr(target_mediainfo, field, None)
+            candidate_id = getattr(candidate_mediainfo, field, None)
+            if target_id and candidate_id and str(target_id) == str(candidate_id):
+                return True, "与订阅的作品有相同的媒体编号"
+
+        if not target_mediainfo.year:
+            if TorrentHelper._matches_torrent_year(target_mediainfo, torrent_meta):
+                return True, "资源标注的年份与订阅的作品一致"
+            if (
+                    same_type
+                    and all(target_identity)
+                    and all(candidate_identity)
+                    and target_identity[0] == candidate_identity[0]
+                    and target_identity != candidate_identity
+                    and TorrentHelper._matches_torrent_year(candidate_mediainfo, torrent_meta)
+            ):
+                return False, (
+                    f"按名字查到的《{candidate_mediainfo.title}》与资源年份（{torrent_year}）一致，"
+                    f"与订阅的《{target_mediainfo.title}》媒体编号不同"
+                )
+            return True, "没有找到资源年份吻合且媒体编号不同的作品"
+        return False, (
+            f"按名字查到的是另一部作品《{candidate_mediainfo.title}》（{candidate_year}），"
+            f"和订阅的《{target_mediainfo.title}》（{target_mediainfo.year}）首播年份不同"
+        )
 
     @staticmethod
     def filter_torrent(torrent_info: TorrentInfo,

@@ -27,6 +27,7 @@ from app.helper.server import MoviePilotServerHelper
 from app.helper.service import ServiceConfigHelper
 from app.log import logger
 from app.schemas import (
+    MediaServerQueryError,
     RateLimitExceededException,
     TransferInfo,
     ExistMediaInfo,
@@ -299,6 +300,7 @@ class ChainBase(metaclass=ABCMeta):
 
     _OPTIONAL_MODULE_KWARGS = {
         "download": {"custom_words", "episode_selection"},
+        "media_exists": {"raise_on_query_failure", "raise_exception"},
     }
 
     @classmethod
@@ -1641,17 +1643,34 @@ class ChainBase(metaclass=ABCMeta):
             mediainfo: MediaInfo,
             itemid: Optional[str] = None,
             server: Optional[str] = None,
+            *,
+            raise_on_query_failure: bool = False,
     ) -> Optional[ExistMediaInfo]:
         """
         判断媒体文件是否存在
         :param mediainfo:  识别的媒体信息
         :param itemid:  媒体服务器ItemID
         :param server:  媒体服务器
-        :return: 不存在返回 None；查询失败返回 query_failed=True 的信息；存在时返回已有季集
+        :param raise_on_query_failure: 剧集查询失败时抛 MediaServerQueryError 而不是返回 query_failed 标记；
+            默认 False 保持既有行为。
+        :return: 不存在返回 None；宽松模式查询失败返回 query_failed=True 的信息；存在时返回已有季集
+        :raises MediaServerQueryError: 剧集查询失败且 raise_on_query_failure 为 True 时
         """
-        return self.run_module(
-            "media_exists", mediainfo=mediainfo, itemid=itemid, server=server
-        )
+        kwargs: Dict[str, Any] = {
+            "mediainfo": mediainfo,
+            "itemid": itemid,
+            "server": server,
+            "raise_on_query_failure": raise_on_query_failure,
+        }
+        if raise_on_query_failure:
+            kwargs["raise_exception"] = True
+        result = self.run_module("media_exists", **kwargs)
+        if raise_on_query_failure and isinstance(result, ExistMediaInfo) and result.query_failed:
+            server_desc = result.server or server or "媒体服务器"
+            raise MediaServerQueryError(
+                f"媒体库查询失败，未能确认 {mediainfo.title_year} 是否已入库：{server_desc}"
+            )
+        return result
 
     def media_files(self, mediainfo: MediaInfo) -> Optional[List[FileItem]]:
         """

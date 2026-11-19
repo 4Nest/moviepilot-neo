@@ -1079,7 +1079,9 @@ class TransferJobManagerTest(unittest.TestCase):
         batch_id = "batch-tv-multi-season"
 
         for task in tasks:
-            task.mediainfo = FakeMedia()
+            media = FakeMedia()
+            media.get_message_image = lambda: ""
+            task.mediainfo = media
             task.transfer_batch_id = batch_id
             task.background = False
             task.manual = True
@@ -1127,7 +1129,9 @@ class TransferJobManagerTest(unittest.TestCase):
             ),
         ]
 
-        with patch(
+        with patch.object(
+            settings, "TRANSFER_SCRAPE_BATCH_AGGREGATION", True
+        ), patch(
             "app.chain.transfer.TransferHistoryOper",
             return_value=SimpleNamespace(add_success=lambda **kwargs: SimpleNamespace(id=1)),
         ), patch(
@@ -1152,6 +1156,182 @@ class TransferJobManagerTest(unittest.TestCase):
                 "/library/Test Show (2026)/Season 2/Test.Show.S02E01.mkv",
             ],
             event_data["file_list"],
+        )
+        self.assertEqual({}, chain._scrape_batches)
+
+    def test_scrape_event_sends_immediately_per_episode_by_default(self):
+        """
+        #7415：默认关闭批次聚合时，每个主媒体任务成功结算即刻发送刮削事件，
+        不等待同作业/同批次后续分集，也不在批次收尾重复补发。
+        """
+        self.assertFalse(settings.TRANSFER_SCRAPE_BATCH_AGGREGATION)
+        chain = make_transfer_chain()
+        chain.eventmanager = MagicMock()
+        chain.transfer_completed = lambda *args, **kwargs: None
+
+        tasks = [make_task(1, season=1), make_task(2, season=1)]
+        target_diritem = FileItem(
+            storage="local",
+            path="/library/Test Show (2026)",
+            type="dir",
+            name="Test Show (2026)",
+        )
+        batch_id = "batch-tv-immediate"
+
+        for task in tasks:
+            media = FakeMedia()
+            media.get_message_image = lambda: ""
+            task.mediainfo = media
+            task.transfer_batch_id = batch_id
+            task.background = False
+            task.manual = True
+            self.assertTrue(chain._TransferChain__put_to_jobview(task))
+            chain._TransferChain__register_scrape_batch_task(task)
+
+        chain._TransferChain__close_scrape_batch(batch_id)
+
+        transferinfos = [
+            TransferInfo(
+                success=True,
+                fileitem=task.fileitem,
+                target_diritem=target_diritem,
+                target_item=FileItem(
+                    storage="local",
+                    path=f"/library/Test Show (2026)/Season 1/Test.Show.S01E0{idx}.mkv",
+                    type="file",
+                    name=f"Test.Show.S01E0{idx}.mkv",
+                    extension="mkv",
+                ),
+                file_list_new=[
+                    f"/library/Test Show (2026)/Season 1/Test.Show.S01E0{idx}.mkv"
+                ],
+                transfer_type="copy",
+                need_scrape=True,
+                need_notify=False,
+            )
+            for idx, task in enumerate(tasks, start=1)
+        ]
+
+        with patch(
+            "app.chain.transfer.TransferHistoryOper",
+            return_value=SimpleNamespace(add_success=lambda **kwargs: SimpleNamespace(id=1)),
+        ), patch(
+            "app.chain.transfer.StorageChain"
+        ) as storage_chain_cls:
+            storage_chain_cls.return_value.is_bluray_folder.return_value = False
+            # 第一集完成后应立即发送只含第一集的刮削事件，不登记批次汇总目标
+            chain._TransferChain__default_callback(tasks[0], transferinfos[0])
+            chain._TransferChain__finish_scrape_batch_task(tasks[0])
+
+            first_calls = [
+                call
+                for call in chain.eventmanager.send_event.call_args_list
+                if call.args[0] == EventType.MetadataScrape
+            ]
+            self.assertEqual(1, len(first_calls))
+            self.assertEqual(
+                ["/library/Test Show (2026)/Season 1/Test.Show.S01E01.mkv"],
+                first_calls[0].args[1]["file_list"],
+            )
+            self.assertEqual({}, chain._scrape_batches[batch_id]["targets"])
+
+            # 第二集完成后立即发送只含第二集的刮削事件，批次收尾不重复补发
+            chain._TransferChain__default_callback(tasks[1], transferinfos[1])
+            chain._TransferChain__finish_scrape_batch_task(tasks[1])
+
+        metadata_calls = [
+            call
+            for call in chain.eventmanager.send_event.call_args_list
+            if call.args[0] == EventType.MetadataScrape
+        ]
+        self.assertEqual(2, len(metadata_calls))
+        self.assertEqual(
+            [
+                ["/library/Test Show (2026)/Season 1/Test.Show.S01E01.mkv"],
+                ["/library/Test Show (2026)/Season 1/Test.Show.S01E02.mkv"],
+            ],
+            [call.args[1]["file_list"] for call in metadata_calls],
+        )
+        self.assertEqual({}, chain._scrape_batches)
+
+    def test_scrape_event_sends_immediately_when_later_episode_fails(self):
+        """
+        #7415：默认立即模式下，先成功分集已发出刮削事件，不受同作业后续分集失败影响。
+        """
+        chain = make_transfer_chain()
+        chain.eventmanager = MagicMock()
+        chain.post_message = MagicMock()
+        chain.transfer_completed = lambda *args, **kwargs: None
+
+        tasks = [make_task(1, season=1), make_task(2, season=1)]
+        target_diritem = FileItem(
+            storage="local",
+            path="/library/Test Show (2026)",
+            type="dir",
+            name="Test Show (2026)",
+        )
+        batch_id = "batch-tv-partial-fail"
+
+        for task in tasks:
+            media = FakeMedia()
+            media.get_message_image = lambda: ""
+            task.mediainfo = media
+            task.transfer_batch_id = batch_id
+            task.background = False
+            task.manual = True
+            self.assertTrue(chain._TransferChain__put_to_jobview(task))
+            chain._TransferChain__register_scrape_batch_task(task)
+        chain._TransferChain__close_scrape_batch(batch_id)
+
+        ok_info = TransferInfo(
+            success=True,
+            fileitem=tasks[0].fileitem,
+            target_diritem=target_diritem,
+            target_item=FileItem(
+                storage="local",
+                path="/library/Test Show (2026)/Season 1/Test.Show.S01E01.mkv",
+                type="file",
+                name="Test.Show.S01E01.mkv",
+                extension="mkv",
+            ),
+            file_list_new=["/library/Test Show (2026)/Season 1/Test.Show.S01E01.mkv"],
+            transfer_type="copy",
+            need_scrape=True,
+            need_notify=False,
+        )
+        fail_info = TransferInfo(
+            success=False,
+            fileitem=tasks[1].fileitem,
+            message="disk full",
+            transfer_type="copy",
+            need_scrape=True,
+            need_notify=False,
+        )
+
+        with patch(
+            "app.chain.transfer.TransferHistoryOper",
+            return_value=SimpleNamespace(
+                add_success=lambda **kwargs: SimpleNamespace(id=1),
+                add_fail=lambda **kwargs: SimpleNamespace(id=2),
+            ),
+        ), patch(
+            "app.chain.transfer.StorageChain"
+        ) as storage_chain_cls:
+            storage_chain_cls.return_value.is_bluray_folder.return_value = False
+            chain._TransferChain__default_callback(tasks[0], ok_info)
+            chain._TransferChain__finish_scrape_batch_task(tasks[0])
+            chain._TransferChain__default_callback(tasks[1], fail_info)
+            chain._TransferChain__finish_scrape_batch_task(tasks[1])
+
+        metadata_calls = [
+            call
+            for call in chain.eventmanager.send_event.call_args_list
+            if call.args[0] == EventType.MetadataScrape
+        ]
+        self.assertEqual(1, len(metadata_calls))
+        self.assertEqual(
+            ["/library/Test Show (2026)/Season 1/Test.Show.S01E01.mkv"],
+            metadata_calls[0].args[1]["file_list"],
         )
         self.assertEqual({}, chain._scrape_batches)
 

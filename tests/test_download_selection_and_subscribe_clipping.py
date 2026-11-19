@@ -356,7 +356,15 @@ def test_subscribe_no_exists_passes_manual_total_and_non_negative_lack(monkeypat
     sub_chain = object.__new__(SubscribeChain)
     captured = {}
 
-    def fake_get_no_exists(self, meta, mediainfo, totals=None, *, totals_are_episode_numbers=False):
+    def fake_get_no_exists(
+        self,
+        meta,
+        mediainfo,
+        totals=None,
+        *,
+        totals_are_episode_numbers=False,
+        raise_on_query_failure=False,
+    ):
         captured["totals"] = totals
         captured["totals_are_episode_numbers"] = totals_are_episode_numbers
         return False, {

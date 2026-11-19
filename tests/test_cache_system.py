@@ -16,6 +16,7 @@ from app.core.cache import (
 )
 from app.core.config import settings
 from app.helper.redis import AsyncRedisHelper, RedisHelper, serialize
+from app.utils.singleton import Singleton
 
 def test_file_backend_items_keep_relative_keys_and_bytes(tmp_path):
     """
@@ -639,3 +640,148 @@ def test_file_backend_items_skip_directories(tmp_path):
     (tmp_path / "region" / "empty_dir").mkdir()
 
     assert list(cache.items(region="region")) == [("nested/value", b"value")]
+
+
+def test_async_redis_get_coalesces_concurrent_reads(monkeypatch):
+    """
+    同一事件循环中相同区域和 key 的并发异步读取应共享一次 Redis 请求。
+    """
+    singleton_key = (AsyncRedisHelper, (), frozenset())
+    monkeypatch.delitem(Singleton._instances, singleton_key, raising=False)
+
+    class FakeAsyncClient:
+        """记录底层 get 调用次数，通过事件同步让并发协程重叠。"""
+
+        def __init__(self):
+            self.calls = 0
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def get(self, _key):
+            """返回序列化后的测试值。"""
+            self.calls += 1
+            self.started.set()
+            await self.release.wait()
+            return serialize({"ok": True})
+
+    async def run_reads():
+        helper = AsyncRedisHelper()
+        client = FakeAsyncClient()
+        helper.client = client
+
+        async def fake_connect():
+            return None
+
+        monkeypatch.setattr(helper, "_connect", fake_connect)
+        reads = [
+            asyncio.create_task(helper.get("shared:key", region="progress"))
+            for _ in range(32)
+        ]
+        await client.started.wait()
+        client.release.set()
+
+        results = await asyncio.gather(*reads)
+        assert results == [{"ok": True}] * 32
+        assert client.calls == 1
+
+    asyncio.run(run_reads())
+
+
+def test_async_redis_get_failure_backoff_cap_and_recovery(monkeypatch):
+    """
+    异步读取失败应按 1、2、4...30 秒指数退避，且同 key 成功读写可清除退避状态。
+    """
+    singleton_key = (AsyncRedisHelper, (), frozenset())
+    monkeypatch.delitem(Singleton._instances, singleton_key, raising=False)
+
+    class FakeAsyncClient:
+        """可控失败/成功的异步 Redis 客户端替身。"""
+
+        def __init__(self):
+            self.calls = 0
+            self.fail = True
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def get(self, _key):
+            """首次调用阻塞以验证并发失败合并，随后按 fail 标志决定抛错或返回。"""
+            self.calls += 1
+            if self.calls == 1:
+                self.started.set()
+                await self.release.wait()
+            if self.fail:
+                raise ConnectionError("No connection available.")
+            return serialize({"recovered": True})
+
+        async def set(self, _key, _value, **_kwargs):
+            """模拟写入成功。"""
+
+        async def exists(self, _key):
+            """模拟存在性检查成功。"""
+            return 1
+
+        async def delete(self, _key):
+            """模拟删除成功。"""
+
+    async def run_reads():
+        helper = AsyncRedisHelper()
+        client = FakeAsyncClient()
+        helper.client = client
+
+        async def fake_connect():
+            return None
+
+        monkeypatch.setattr(helper, "_connect", fake_connect)
+        key = "scheduler:mediaserver_sync_test"
+        identity = ("region:progress", key)
+        loop = asyncio.get_running_loop()
+
+        # 并发失败合并为一次底层调用，并进入 1s 退避
+        reads = [
+            asyncio.create_task(helper.get(key, region="progress"))
+            for _ in range(64)
+        ]
+        await client.started.wait()
+        client.release.set()
+
+        assert await asyncio.gather(*reads) == [None] * 64
+        assert client.calls == 1
+        # 冷却期内直接短路，不再请求 Redis
+        assert await helper.get(key, region="progress") is None
+        assert client.calls == 1
+        assert helper._read_failures[loop][identity][1] == 1.0
+
+        # 验证指数退避序列：2, 4, 8, 16, 30, 30
+        for expected_delay in (2.0, 4.0, 8.0, 16.0, 30.0, 30.0):
+            current_delay = helper._read_failures[loop][identity][1]
+            helper._read_failures[loop][identity] = (0.0, current_delay)
+            prev_calls = client.calls
+            assert await helper.get(key, region="progress") is None
+            assert client.calls == prev_calls + 1
+            assert helper._read_failures[loop][identity][1] == expected_delay
+
+        # 成功 set 清除退避
+        await helper.set(key, {"fresh": True}, region="progress")
+        assert identity not in helper._read_failures[loop]
+
+        # 重新失败从 1.0s 开始，成功 exists 清除退避
+        assert await helper.get(key, region="progress") is None
+        assert helper._read_failures[loop][identity][1] == 1.0
+        assert await helper.exists(key, region="progress") is True
+        assert identity not in helper._read_failures[loop]
+
+        # 重新失败后，成功 delete 清除退避
+        assert await helper.get(key, region="progress") is None
+        assert helper._read_failures[loop][identity][1] == 1.0
+        await helper.delete(key, region="progress")
+        assert identity not in helper._read_failures[loop]
+
+        # 重新失败后冷却到期且底层恢复正常，成功 get 清除退避
+        assert await helper.get(key, region="progress") is None
+        assert helper._read_failures[loop][identity][1] == 1.0
+        helper._read_failures[loop][identity] = (0.0, 1.0)
+        client.fail = False
+        assert await helper.get(key, region="progress") == {"recovered": True}
+        assert identity not in helper._read_failures[loop]
+
+    asyncio.run(run_reads())

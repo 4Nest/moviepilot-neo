@@ -10,10 +10,12 @@ from uuid import uuid4
 from fastapi.concurrency import run_in_threadpool
 
 from app.chain import ChainBase
+from app.chain.media import MediaChain
 from app.core.config import global_vars, settings
 from app.core.context import Context
 from app.core.context import MediaInfo, SubtitleInfo, TorrentInfo
 from app.core.event import eventmanager, Event
+from app.core.meta import MetaBase
 from app.core.metainfo import MetaInfo
 from app.db.systemconfig_oper import SystemConfigOper
 from app.helper.progress import ProgressHelper
@@ -1187,6 +1189,10 @@ class SearchChain(ChainBase):
 
         # 开始匹配
         _match_torrents = []
+        disambiguation_cache: Dict[
+            Tuple[str, str, str, Optional[int], Optional[int]],
+            Optional[MediaInfo],
+        ] = {}
         try:
             # 英文标题应该在别名/原标题中，不需要再匹配
             logger.info(f"开始匹配结果 标题：{mediainfo.title}，原标题：{mediainfo.original_title}，别名：{mediainfo.names}")
@@ -1231,9 +1237,18 @@ class SearchChain(ChainBase):
                 if TorrentHelper.match_torrent(mediainfo=mediainfo,
                                                torrent_meta=torrent_meta,
                                                torrent=torrent):
-                    # 匹配成功
-                    _match_torrents.append((torrent, torrent_meta, "title"))
-                    continue
+                    if not TorrentHelper.requires_identity_disambiguation(
+                        mediainfo=mediainfo,
+                        torrent_meta=torrent_meta,
+                    ) or self._same_work_matched(
+                        mediainfo=mediainfo,
+                        torrent_meta=torrent_meta,
+                        torrent=torrent,
+                        cache=disambiguation_cache,
+                    ):
+                        # 匹配成功
+                        _match_torrents.append((torrent, torrent_meta, "title"))
+                        continue
                 if diagnostics is not None:
                     diagnostics["identity_mismatch"] += 1
                 if rejected_items is not None:
@@ -1292,6 +1307,53 @@ class SearchChain(ChainBase):
                 mediainfo=mediainfo,
             )
         return contexts
+
+    @staticmethod
+    def _disambiguation_key(
+            meta: MetaBase,
+    ) -> Tuple[str, str, str, Optional[int], Optional[int]]:
+        """
+        按名称、年份及季范围缓存识别，避免同名同年的不同季互相复用结果。
+        """
+        return (
+            meta.cn_name or "",
+            meta.en_name or "",
+            str(meta.year or ""),
+            meta.begin_season,
+            meta.end_season,
+        )
+
+    @classmethod
+    def _same_work_matched(
+            cls,
+            mediainfo: MediaInfo,
+            torrent_meta: MetaBase,
+            torrent: TorrentInfo,
+            cache: Dict[
+                Tuple[str, str, str, Optional[int], Optional[int]],
+                Optional[MediaInfo],
+            ],
+    ) -> bool:
+        """
+        目标或资源缺少年份时核对别名命中，只有明确属于另一部作品才跳过。
+        """
+        key = cls._disambiguation_key(torrent_meta)
+        if key not in cache:
+            cache[key] = MediaChain().recognize_by_meta(torrent_meta, obtain_images=False)
+        candidate = cache[key]
+        if not candidate:
+            logger.debug(f"{torrent.site_name} - {torrent.title} 按名称未识别到作品，保留别名匹配结果")
+            return True
+        matched, evidence = TorrentHelper.match_same_work_evidence(
+            target_mediainfo=mediainfo,
+            candidate_mediainfo=candidate,
+            torrent_meta=torrent_meta,
+        )
+        if matched:
+            logger.debug(f"{torrent.site_name} - {torrent.title}，{evidence}，保留别名匹配结果")
+        else:
+            logger.info(f"跳过 {torrent.title}（{torrent.site_name}）：{evidence}")
+        return matched
 
     @staticmethod
     def __remove_duplicate(_torrents: List[Context]) -> List[Context]:
@@ -2030,17 +2092,30 @@ class SearchChain(ChainBase):
                     for future in done_tasks:
                         site, page_index, search_page, search_keyword = pending_tasks.pop(future)
                         finish_count += 1
-                        result = future.result()
+                        page_failed = False
+                        try:
+                            result = future.result()
+                        except Exception as err:
+                            page_failed = True
+                            result = []
+                            if page_index > 0:
+                                logger.warning(
+                                    f"{site.get('name')} 第 {search_page} 页搜索失败，"
+                                    f"按没有更多结果结束该站点翻页：{err}"
+                                )
+                            else:
+                                logger.error(f"{site.get('name')} 第 {search_page} 页搜索异常：{err}")
                         if result:
                             results.extend(result)
                         if (
-                            self._should_continue_search_pages(
+                            not page_failed
+                            and self._should_continue_search_pages(
                                 site=site, page_results=result, keyword=search_keyword
                             )
                             and page_index + 1 < len(search_pages)
                         ):
                             submit_site_page(site=site, page_index=page_index + 1)
-                        else:
+                        elif not page_failed:
                             logger.debug(
                                 f"{site.get('name')} 第 {search_page} 页返回 {len(result or [])} 条，停止继续翻页"
                             )
@@ -2150,17 +2225,30 @@ class SearchChain(ChainBase):
                 for future in done_tasks:
                     site, page_index, search_page, search_keyword = pending_tasks.pop(future)
                     finish_count += 1
-                    result = await future
+                    page_failed = False
+                    try:
+                        result = await future
+                    except Exception as err:
+                        page_failed = True
+                        result = []
+                        if page_index > 0:
+                            logger.warning(
+                                f"{site.get('name')} 第 {search_page} 页搜索失败，"
+                                f"按没有更多结果结束该站点翻页：{err}"
+                            )
+                        else:
+                            logger.error(f"{site.get('name')} 第 {search_page} 页搜索异常：{err}")
                     if result:
                         results.extend(result)
                     if (
-                        self._should_continue_search_pages(
+                        not page_failed
+                        and self._should_continue_search_pages(
                             site=site, page_results=result, keyword=search_keyword
                         )
                         and page_index + 1 < len(search_pages)
                     ):
                         submit_site_page(site=site, page_index=page_index + 1)
-                    else:
+                    elif not page_failed:
                         logger.debug(
                             f"{site.get('name')} 第 {search_page} 页返回 {len(result or [])} 条，停止继续翻页"
                         )
@@ -2301,16 +2389,38 @@ class SearchChain(ChainBase):
                 for future in done_tasks:
                     site, page_index, search_page, search_keyword = tasks.pop(future)
                     finish_count += 1
-                    result, site_diagnostic = await future
+                    page_failed = False
+                    try:
+                        result, site_diagnostic = await future
+                    except Exception as err:
+                        page_failed = True
+                        result = []
+                        if page_index > 0:
+                            logger.warning(
+                                f"{site.get('name')} 第 {search_page} 页搜索失败，"
+                                f"按没有更多结果结束该站点翻页：{err}"
+                            )
+                            outcome = "empty"
+                        else:
+                            logger.error(f"{site.get('name')} 第 {search_page} 页搜索异常：{err}")
+                            outcome = "error"
+                        site_diagnostic = SearchDiagnosticSite(
+                            site_id=site.get("id"),
+                            site_name=site.get("name") or "未知站点",
+                            attempted=True,
+                            outcome=outcome,
+                            raw_count=0,
+                        )
                     results_count += len(result)
                     if (
-                        self._should_continue_search_pages(
+                        not page_failed
+                        and self._should_continue_search_pages(
                             site=site, page_results=result, keyword=search_keyword
                         )
                         and page_index + 1 < len(search_pages)
                     ):
                         submit_site_page(site=site, page_index=page_index + 1)
-                    else:
+                    elif not page_failed:
                         logger.debug(
                             f"{site.get('name')} 第 {search_page} 页返回 {len(result)} 条，停止继续翻页"
                         )
@@ -2413,15 +2523,28 @@ class SearchChain(ChainBase):
                 for future in done_tasks:
                     site, page_index, search_page = pending_tasks.pop(future)
                     finish_count += 1
-                    result = await future
+                    page_failed = False
+                    try:
+                        result = await future
+                    except Exception as err:
+                        page_failed = True
+                        result = []
+                        if page_index > 0:
+                            logger.warning(
+                                f"{site.get('name')} 字幕第 {search_page} 页搜索失败，"
+                                f"按没有更多结果结束该站点翻页：{err}"
+                            )
+                        else:
+                            logger.error(f"{site.get('name')} 字幕第 {search_page} 页搜索异常：{err}")
                     if result:
                         results.extend(result)
                     if (
-                            self._should_continue_subtitle_search_pages(site=site, page_results=result)
+                            not page_failed
+                            and self._should_continue_subtitle_search_pages(site=site, page_results=result)
                             and page_index + 1 < len(search_pages)
                     ):
                         submit_site_page(site=site, page_index=page_index + 1)
-                    else:
+                    elif not page_failed:
                         logger.debug(
                             f"{site.get('name')} 字幕第 {search_page} 页返回 {len(result or [])} 条，停止继续翻页"
                         )
@@ -2529,14 +2652,27 @@ class SearchChain(ChainBase):
                 for future in done_tasks:
                     site, page_index, search_page = tasks.pop(future)
                     finish_count += 1
-                    result = await future
+                    page_failed = False
+                    try:
+                        result = await future
+                    except Exception as err:
+                        page_failed = True
+                        result = []
+                        if page_index > 0:
+                            logger.warning(
+                                f"{site.get('name')} 字幕第 {search_page} 页搜索失败，"
+                                f"按没有更多结果结束该站点翻页：{err}"
+                            )
+                        else:
+                            logger.error(f"{site.get('name')} 字幕第 {search_page} 页搜索异常：{err}")
                     results_count += len(result)
                     if (
-                            self._should_continue_subtitle_search_pages(site=site, page_results=result)
+                            not page_failed
+                            and self._should_continue_subtitle_search_pages(site=site, page_results=result)
                             and page_index + 1 < len(search_pages)
                     ):
                         submit_site_page(site=site, page_index=page_index + 1)
-                    else:
+                    elif not page_failed:
                         logger.debug(
                             f"{site.get('name')} 字幕第 {search_page} 页返回 {len(result)} 条，停止继续翻页"
                         )

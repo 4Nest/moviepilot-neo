@@ -41,7 +41,8 @@ from app.helper.mediaserver import MediaServerHelper
 from app.helper.server import MoviePilotServerHelper
 from app.helper.torrent import TorrentHelper
 from app.log import logger
-from app.schemas import (MediaRecognizeConvertEventData, SubscribeEpisodesRefreshEventData,
+from app.schemas import (MediaRecognizeConvertEventData, MediaServerQueryError,
+                         SubscribeEpisodesRefreshEventData,
                          SubscribeCompletionCheckEventData)
 from app.schemas.event import SubscribeModifiedEventData
 from app.schemas.subscribe import compute_subscribe_version_total_episode
@@ -1813,10 +1814,15 @@ class SubscribeChain(ChainBase):
                             continue
 
                         # 如果媒体已存在或已下载完毕，跳过当前订阅处理
-                        exist_flag, no_exists = self.check_and_handle_existing_media(subscribe=subscribe,
-                                                                                     meta=meta,
-                                                                                     mediainfo=mediainfo,
-                                                                                     mediakey=mediakey)
+                        try:
+                            exist_flag, no_exists = self.check_and_handle_existing_media(subscribe=subscribe,
+                                                                                         meta=meta,
+                                                                                         mediainfo=mediainfo,
+                                                                                         mediakey=mediakey)
+                        except MediaServerQueryError as err:
+                            # 媒体库查询失败时缺集未知，跳过本轮搜索，不更新订阅状态，下一轮重新查询。
+                            logger.warning(f"订阅 {subscribe.name} 媒体库查询失败，本轮跳过搜索：{err}")
+                            continue
                         if meta.type == MediaType.TV and not exist_flag and not no_exists:
                             logger.warning(f'订阅 {subscribe.name} 缺集查询失败，保留原进度')
                             continue
@@ -2383,9 +2389,14 @@ class SubscribeChain(ChainBase):
                         continue
 
                     # 如果媒体已存在或已下载完毕，跳过当前订阅处理
-                    exist_flag, no_exists = self.check_and_handle_existing_media(subscribe=subscribe, meta=meta,
-                                                                                 mediainfo=mediainfo,
-                                                                                 mediakey=mediakey)
+                    try:
+                        exist_flag, no_exists = self.check_and_handle_existing_media(subscribe=subscribe, meta=meta,
+                                                                                     mediainfo=mediainfo,
+                                                                                     mediakey=mediakey)
+                    except MediaServerQueryError as err:
+                        # 媒体库查询失败时缺集未知，跳过本轮刷新，不更新订阅状态，下一轮重新查询。
+                        logger.warning(f"订阅 {subscribe.name} 媒体库查询失败，本轮跳过刷新：{err}")
+                        continue
                     if meta.type == MediaType.TV and not exist_flag and not no_exists:
                         logger.warning(f'订阅 {subscribe.name} 缺集查询失败，保留原进度')
                         continue
@@ -3271,8 +3282,10 @@ class SubscribeChain(ChainBase):
                 for rule in expand_subscribe_version_rules(subscribe)
             }
             updated = any(item["updated"] for item in summaries.values())
-            failed = any(item["reason"] in ("recognize_failed", "resolve_missing_failed")
-                         for item in summaries.values())
+            failed = any(
+                item["reason"] in ("recognize_failed", "resolve_missing_failed", "media_query_failed")
+                for item in summaries.values()
+            )
             fields = ["version_progress"] if updated else []
             if subscribe.total_episode != original_total_episode:
                 fields.append("total_episode")
@@ -3300,12 +3313,17 @@ class SubscribeChain(ChainBase):
                 return {"scene": scene, "updated": False, "fields": [], "reason": "recognize_failed"}
             effective_total_episode = self.__resolve_effective_total_episode(subscribe, mediainfo)
             mediakey = _subscribe_media_key(subscribe)
-            exist_flag, no_exists = self.resolve_subscribe_missing(
-                subscribe=subscribe,
-                meta=meta,
-                mediainfo=mediainfo,
-                mediakey=mediakey,
-            )
+            try:
+                exist_flag, no_exists = self.resolve_subscribe_missing(
+                    subscribe=subscribe,
+                    meta=meta,
+                    mediainfo=mediainfo,
+                    mediakey=mediakey,
+                )
+            except MediaServerQueryError as err:
+                # 媒体库查询失败时缺集未知，不写回进度，下一轮重新查询。
+                logger.warning(f"订阅 {subscribe.name} 媒体库查询失败，本轮不刷新进度：{err}")
+                return {"scene": scene, "updated": False, "fields": [], "reason": "media_query_failed"}
             if not exist_flag and not no_exists:
                 return {"scene": scene, "updated": False, "fields": [], "reason": "resolve_missing_failed"}
             if version_rule_id and effective_total_episode != subscribe.total_episode:
@@ -3552,9 +3570,13 @@ class SubscribeChain(ChainBase):
             force_search = is_current_version and getattr(runtime_view, "_force_search", False)
             version_missing = None if force_search else no_exists
             if _version_uses_library(view) and version_missing is None and not force_search:
-                exist_flag, version_missing = self.resolve_subscribe_missing(
-                    subscribe=view, meta=build_subscribe_meta(view), mediainfo=mediainfo,
-                )
+                try:
+                    exist_flag, version_missing = self.resolve_subscribe_missing(
+                        subscribe=view, meta=build_subscribe_meta(view), mediainfo=mediainfo,
+                    )
+                except MediaServerQueryError as err:
+                    logger.warning(f"订阅 {subscribe.name} 媒体库查询失败，本轮不刷新版本媒体库缺集：{err}")
+                    exist_flag, version_missing = False, None
                 if not exist_flag and not version_missing:
                     version_missing = None
             self.__refresh_subscribe_progress_with_no_exists(
@@ -4956,6 +4978,8 @@ class SubscribeChain(ChainBase):
                     mediainfo=mediainfo,
                     totals=totals,
                     totals_are_episode_numbers=bool(subscribe.manual_total_episode),
+                    # 仅电视剧服务能区分查询失败与未找到；电影查询失败仍按未找到处理。
+                    raise_on_query_failure=mediainfo.type == MediaType.TV,
                 )
         elif meta.type != MediaType.TV and self.__is_best_version_complete(subscribe):
             return True, {}

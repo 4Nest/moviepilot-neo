@@ -9,6 +9,7 @@ from requests import Response
 
 from app import schemas
 from app.core.config import settings
+from app.helper.mediaserver import read_emby_query_items
 from app.log import logger
 from app.schemas import MediaServerItem
 from app.schemas.types import MediaType
@@ -641,13 +642,7 @@ class Emby:
             "api_key": self._apikey
         }
         try:
-            res = RequestUtils().get_res(url, params)
-            if not res:
-                return None
-            res_items = res.json().get("Items")
-            if not isinstance(res_items, list):
-                return None
-            for res_item in res_items:
+            for res_item in read_emby_query_items(RequestUtils(), url, params):
                 if res_item.get('Name') == name and (
                         not year or str(res_item.get('ProductionYear')) == str(year)):
                     return res_item.get('Id')
@@ -755,29 +750,24 @@ class Emby:
                 "IsMissing": "false",
                 "api_key": self._apikey
             }
-            res_json = RequestUtils().get_res(url, params)
-            if res_json:
-                tv_item = res_json.json()
-                res_items = tv_item.get("Items")
-                season_episodes = {}
-                for res_item in res_items:
-                    season_index = res_item.get("ParentIndexNumber")
-                    if season_index is None:
-                        continue
-                    if season is not None and season != season_index:
-                        continue
-                    episode_index = res_item.get("IndexNumber")
-                    if episode_index is None:
-                        continue
-                    if season_index not in season_episodes:
-                        season_episodes[season_index] = []
-                    season_episodes[season_index].append(episode_index)
-                # 返回
-                return item_id, season_episodes
+            season_episodes = {}
+            for res_item in read_emby_query_items(RequestUtils(), url, params):
+                season_index = res_item.get("ParentIndexNumber")
+                if season_index is None:
+                    continue
+                if season is not None and season != season_index:
+                    continue
+                episode_index = res_item.get("IndexNumber")
+                if episode_index is None:
+                    continue
+                if season_index not in season_episodes:
+                    season_episodes[season_index] = []
+                season_episodes[season_index].append(episode_index)
+            # 返回
+            return item_id, season_episodes
         except Exception as e:
             logger.error(f"连接Shows/Id/Episodes出错：" + str(e))
             return None, None
-        return None, None
 
     def get_season_episode_ids(self, item_id: str, season: int) -> Dict[int, str]:
         """

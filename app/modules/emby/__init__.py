@@ -174,19 +174,26 @@ class EmbyModule(_ModuleBase, _MediaServerBase[Emby]):
         return None
 
     def media_exists(self, mediainfo: MediaInfo, itemid: Optional[str] = None,
-                     server: Optional[str] = None) -> Optional[schemas.ExistMediaInfo]:
+                     server: Optional[str] = None,
+                     *,
+                     raise_on_query_failure: bool = False) -> Optional[schemas.ExistMediaInfo]:
         """
         判断媒体文件是否存在
         :param mediainfo:  识别的媒体信息
         :param itemid:  媒体服务器ItemID
         :param server:  媒体服务器名称
+        :param raise_on_query_failure: 剧集查询失败时抛 MediaServerQueryError 而不是返回 query_failed 标记
         :return: 如不存在返回 None；查询失败返回带 query_failed 标记的信息；存在时返回已有季集
+        :raises MediaServerQueryError: 剧集查询失败且 raise_on_query_failure 为 True 时
         """
         if server:
             servers = [(server, self.get_instance(server))]
         else:
             servers = self.get_instances().items()
         query_failure = None
+        failed_servers: List[str] = []
+        combined_result: Optional[schemas.ExistMediaInfo] = None
+        combined_seasons: Dict[int, set] = {}
         for name, s in servers:
             if not s:
                 continue
@@ -217,11 +224,12 @@ class EmbyModule(_ModuleBase, _MediaServerBase[Emby]):
                     )
             else:
                 resolved_itemid, tvs = s.get_tv_episodes(title=mediainfo.title,
-                                                       year=mediainfo.year,
-                                                       tmdb_id=mediainfo.tmdb_id,
-                                                       item_id=itemid)
+                                                         year=mediainfo.year,
+                                                         tmdb_id=mediainfo.tmdb_id,
+                                                         item_id=itemid)
                 if tvs is None:
                     logger.warning(f"{mediainfo.title_year} 在媒体库 {name} 中的季集查询失败")
+                    failed_servers.append(str(name))
                     query_failure = schemas.ExistMediaInfo(
                         type=MediaType.TV,
                         server_type="emby",
@@ -232,16 +240,29 @@ class EmbyModule(_ModuleBase, _MediaServerBase[Emby]):
                 if not tvs:
                     logger.info(f"{mediainfo.title_year} 没有在媒体库 {name} 中")
                     continue
-                else:
-                    logger.info(f"{mediainfo.title_year} 在媒体库 {name} 中找到了这些季集：{tvs}")
-                    return schemas.ExistMediaInfo(
-                        type=MediaType.TV,
-                        seasons=tvs,
-                        server_type="emby",
-                        server=name,
-                        itemid=resolved_itemid,
-                        query_failed=query_failure is not None,
-                    )
+                logger.info(f"{mediainfo.title_year} 在媒体库 {name} 中找到了这些季集：{tvs}")
+                found = schemas.ExistMediaInfo(
+                    type=MediaType.TV,
+                    seasons=tvs,
+                    server_type="emby",
+                    server=name,
+                    itemid=resolved_itemid,
+                    query_failed=query_failure is not None,
+                )
+                if not raise_on_query_failure:
+                    return found
+                combined_result = combined_result or found
+                for season_index, episodes in tvs.items():
+                    combined_seasons.setdefault(season_index, set()).update(episodes)
+        if failed_servers and raise_on_query_failure:
+            raise schemas.MediaServerQueryError(
+                f"媒体库查询失败，未能确认 {mediainfo.title_year} 是否已入库：{', '.join(failed_servers)}"
+            )
+        if combined_result is not None:
+            return combined_result.model_copy(update={
+                "seasons": {season_index: sorted(episodes) for season_index, episodes in combined_seasons.items()},
+                "query_failed": False,
+            })
         return query_failure
 
     def media_statistic(self, server: Optional[str] = None) -> Optional[List[schemas.Statistic]]:
