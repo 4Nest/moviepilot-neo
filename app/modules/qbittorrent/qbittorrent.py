@@ -356,18 +356,20 @@ class Qbittorrent:
         """
         return self._force_resume
 
-    def torrents_set_force_start(self, ids: Union[str, list]):
+    def torrents_set_force_start(self, ids: Union[str, list]) -> bool:
         """
         设置强制作种
         """
         if not self.qbc:
-            return
+            return False
         if not self._force_resume:
-            return
+            return False
         try:
             self.qbc.torrents_set_force_start(enable=True, torrent_hashes=ids)
+            return True
         except Exception as err:
             logger.error(f"设置强制作种出错：{str(err)}")
+            return False
 
     def __get_last_add_torrentid_by_tag(self, tags: Union[str, list],
                                         status: Optional[str] = None) -> Optional[str]:

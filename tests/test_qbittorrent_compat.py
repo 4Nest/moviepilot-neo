@@ -167,12 +167,23 @@ def _load_qbittorrent_modules():
     modules_module.qbittorrent = qbittorrent_package_module
     torrentool_module.torrent = torrentool_torrent_module
 
+    from app.helper.torrent import EpisodeSelection, select_torrent_files
+
+    helper_module = types.ModuleType("app.helper")
+    helper_torrent_module = types.ModuleType("app.helper.torrent")
+    helper_torrent_module.EpisodeSelection = EpisodeSelection
+    helper_torrent_module.select_torrent_files = select_torrent_files
+    helper_module.torrent = helper_torrent_module
+    app_module.helper = helper_module
+
     stub_modules = {
         "app": app_module,
         "app.core": core_module,
         "app.core.cache": cache_module,
         "app.core.config": config_module,
         "app.core.metainfo": metainfo_module,
+        "app.helper": helper_module,
+        "app.helper.torrent": helper_torrent_module,
         "app.log": log_module,
         "app.modules": modules_module,
         "app.modules.qbittorrent": qbittorrent_package_module,
@@ -184,6 +195,7 @@ def _load_qbittorrent_modules():
         "qbittorrentapi.client": qbittorrentapi_client_module,
         "qbittorrentapi.transfer": qbittorrentapi_transfer_module,
         "torrentool": torrentool_module,
+        "torrentool.api": torrentool_torrent_module,
         "torrentool.torrent": torrentool_torrent_module,
     }
 
@@ -784,3 +796,131 @@ def test_set_speed_limit_allows_single_direction_limit():
     assert downloader.set_speed_limit(download_limit=1024)
     assert fake_client.transfer.download_limit == 1024 * 1024
     assert fake_client.transfer.upload_limit == 0
+
+
+def test_torrents_set_force_start_returns_boolean_status():
+    """torrents_set_force_start 应按客户端状态与 API 调用结果返回明确的布尔值。"""
+    fake_client = MagicMock()
+
+    with patch.object(Qbittorrent, "_Qbittorrent__login_qbittorrent", return_value=fake_client):
+        disabled = Qbittorrent(
+            host="http://127.0.0.1",
+            port=8080,
+            username="admin",
+            password="adminadmin",
+            force_resume=False,
+        )
+        enabled = Qbittorrent(
+            host="http://127.0.0.1",
+            port=8080,
+            username="admin",
+            password="adminadmin",
+            force_resume=True,
+        )
+
+    assert disabled.torrents_set_force_start("hash-1") is False
+    fake_client.torrents_set_force_start.assert_not_called()
+
+    assert enabled.torrents_set_force_start("hash-1") is True
+    fake_client.torrents_set_force_start.assert_called_once_with(enable=True, torrent_hashes="hash-1")
+
+    fake_client.torrents_set_force_start.side_effect = RuntimeError("qb api error")
+    assert enabled.torrents_set_force_start("hash-2") is False
+
+    enabled.qbc = None
+    assert enabled.torrents_set_force_start("hash-3") is False
+
+
+def test_download_episode_selection_with_real_force_start_succeeds():
+    """真实 Qbittorrent 实例开启 force_resume 时，选集后强制启动成功不应被误判失败或移除任务。"""
+
+    class _EpisodeMetaInfo:
+        """测试用集数识别对象。"""
+
+        def __init__(self, name):
+            self.episode_list = [6] if "E06" in name else [5]
+
+    fake_client = MagicMock()
+    fake_client.torrents_files.return_value = [
+        {"id": 0, "name": "Show.S01E05.mkv"},
+        {"id": 1, "name": "Show.S01E06.mkv"},
+    ]
+
+    with patch.object(Qbittorrent, "_Qbittorrent__login_qbittorrent", return_value=fake_client):
+        downloader = Qbittorrent(
+            host="http://127.0.0.1",
+            port=8080,
+            username="admin",
+            password="adminadmin",
+            force_resume=True,
+        )
+
+    downloader.add_torrent = MagicMock(return_value=(True, ["hash-ok"]))
+    downloader.get_content_layout = MagicMock(return_value="Original")
+    downloader.delete_torrents = MagicMock(return_value=True)
+    downloader.stop_torrents = MagicMock(return_value=True)
+
+    module = _build_module(downloader)
+    with patch.object(qbittorrent_package_module, "MetaInfo", _EpisodeMetaInfo):
+        result = module.download(
+            content=b"torrent-content",
+            download_dir=Path("/downloads"),
+            cookie="",
+            episodes={6},
+            downloader="qb",
+        )
+
+    assert result == ("qb", "hash-ok", "Original", "添加下载成功，已选择集数：[6]")
+    fake_client.torrents_file_priority.assert_called_once_with(torrent_hash="hash-ok", file_ids=[0], priority=0)
+    fake_client.torrents_set_force_start.assert_called_once_with(enable=True, torrent_hashes="hash-ok")
+    downloader.stop_torrents.assert_not_called()
+    downloader.delete_torrents.assert_not_called()
+
+
+def test_download_episode_selection_with_real_force_start_error_stops_and_discards():
+    """真实 Qbittorrent 实例开启 force_resume 且强制启动抛异常时，应暂停并移除新增任务（保留文件）。"""
+
+    class _EpisodeMetaInfo:
+        """测试用集数识别对象。"""
+
+        def __init__(self, name):
+            self.episode_list = [6] if "E06" in name else [5]
+
+    fake_client = MagicMock()
+    fake_client.torrents_files.return_value = [
+        {"id": 0, "name": "Show.S01E05.mkv"},
+        {"id": 1, "name": "Show.S01E06.mkv"},
+    ]
+    fake_client.torrents_set_force_start.side_effect = RuntimeError("force start failed")
+
+    with patch.object(Qbittorrent, "_Qbittorrent__login_qbittorrent", return_value=fake_client):
+        downloader = Qbittorrent(
+            host="http://127.0.0.1",
+            port=8080,
+            username="admin",
+            password="adminadmin",
+            force_resume=True,
+        )
+
+    downloader.add_torrent = MagicMock(return_value=(True, ["hash-err"]))
+    downloader.get_content_layout = MagicMock(return_value="Original")
+    downloader.delete_torrents = MagicMock(return_value=True)
+    downloader.stop_torrents = MagicMock(return_value=True)
+
+    module = _build_module(downloader)
+    with patch.object(qbittorrent_package_module, "MetaInfo", _EpisodeMetaInfo):
+        result = module.download(
+            content=b"torrent-content",
+            download_dir=Path("/downloads"),
+            cookie="",
+            episodes={6},
+            downloader="qb",
+        )
+
+    assert result is not None
+    assert result[0] is None
+    assert result[1] is None
+    assert "启动任务未确认" in result[3]
+    fake_client.torrents_set_force_start.assert_called_once_with(enable=True, torrent_hashes="hash-err")
+    downloader.stop_torrents.assert_called_once_with("hash-err")
+    downloader.delete_torrents.assert_called_once_with(delete_file=False, ids="hash-err")
