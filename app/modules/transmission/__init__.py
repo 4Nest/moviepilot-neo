@@ -132,6 +132,57 @@ class TransmissionModule(_ModuleBase, _DownloaderBase[Transmission]):
         return torrent_files, paused, None
 
     @staticmethod
+    def _append_download_files(
+            server: Transmission,
+            torrent_hash: str,
+            episodes: Set[int],
+            custom_words: Optional[str] = None,
+            episode_selection: Optional[EpisodeSelection] = None,
+    ) -> Tuple[bool, str, bool]:
+        """
+        为已有任务追加启用目标集数对应的文件，不取消已选中的其他文件，也不暂停或删除任务。
+        返回：(是否成功, 提示信息, 是否新增启用了文件)。
+        """
+        torrent_files = server.get_files(torrent_hash)
+        if not torrent_files:
+            return False, f"追加选集失败，已有任务 {torrent_hash} 获取种子文件失败", False
+        media_extensions = {
+            str(extension).lower()
+            for extension in getattr(settings, "RMT_MEDIAEXT", [])
+        }
+        file_entries = []
+        file_selected = {}
+        try:
+            for item in torrent_files:
+                file_entries.append((item.id, item.name))
+                file_selected[item.id] = getattr(item, "selected", None)
+            wanted, _unwanted, matched = select_torrent_files(
+                file_entries,
+                set(episodes or set()),
+                media_extensions,
+                custom_words,
+                episode_selection,
+            )
+        finally:
+            torrent_files.clear()
+        if not wanted or not episodes or not set(episodes).issubset(matched):
+            return False, (
+                f"追加选集失败，已有任务 {torrent_hash} 未找到目标集数 "
+                f"{sorted(set(episodes or set()) - matched)}，请检查季集映射"
+            ), False
+        to_enable = [
+            file_id for file_id in wanted
+            if file_selected.get(file_id) is not True
+        ]
+        if not to_enable:
+            return True, "下载任务已存在", False
+        if not server.set_files(torrent_hash, to_enable):
+            return False, f"追加选集失败，已有任务 {torrent_hash} 文件选择设置未确认", False
+        if not server.start_torrents(torrent_hash):
+            return False, f"追加选集失败，已有任务 {torrent_hash} 启动任务未确认，未记录成功", False
+        return True, f"下载任务已存在，已追加选择集数：{sorted(matched)}", True
+
+    @staticmethod
     def _select_download_files(
             server: Transmission,
             torrent_hash: str,
@@ -204,7 +255,7 @@ class TransmissionModule(_ModuleBase, _DownloaderBase[Transmission]):
                  episode_selection: Optional[EpisodeSelection] = None,
                  ) -> Optional[Tuple[Optional[str], Optional[str], Optional[str], str]]:
         """
-        根据种子文件，选择并添加下载任务。已有任务直接返回存在标志，不暂停或重选文件。
+        根据种子文件，选择并添加下载任务。已有任务在传入 episodes 时按目标追加启用未下载集数文件，不取消已有文件。
 
         :param content: 种子文件地址或者磁力链接或种子内容
         :param download_dir: 下载目录
@@ -214,7 +265,7 @@ class TransmissionModule(_ModuleBase, _DownloaderBase[Transmission]):
         :param label: 标签
         :param downloader: 下载器名称
         :param custom_words: 来源识别词，按行参与文件名识别
-        :param episode_selection: 目标季与已确认的季集对应关系；选集失败清理本次新增任务并保留文件
+        :param episode_selection: 目标季与已确认的季集对应关系；新增任务选集失败清理本次任务并保留文件
         :return: 下载器名称、种子 Hash、种子文件布局、错误原因
         """
 
@@ -285,7 +336,20 @@ class TransmissionModule(_ModuleBase, _DownloaderBase[Transmission]):
         torrent_layout = "Original"
 
         if added_torrent and already_exists:
-            return downloader or self.get_default_config_name(), added_torrent.hashString, torrent_layout, "下载任务已存在"
+            torrent_hash = added_torrent.hashString
+            if episodes:
+                appended, message, mutated = self._append_download_files(
+                    server, torrent_hash, episodes, custom_words, episode_selection,
+                )
+                if not appended:
+                    return None, None, None, message
+                if mutated:
+                    existing_tags = server.get_torrent_tags(ids=torrent_hash)
+                    if isinstance(existing_tags, list) and "已整理" in existing_tags:
+                        updated_tags = [tag for tag in existing_tags if tag != "已整理"]
+                        server.set_torrent_tag(ids=torrent_hash, tags=updated_tags)
+                return downloader or self.get_default_config_name(), torrent_hash, torrent_layout, message
+            return downloader or self.get_default_config_name(), torrent_hash, torrent_layout, "下载任务已存在"
 
         if not added_torrent:
             # 查询所有下载器的种子
@@ -296,22 +360,33 @@ class TransmissionModule(_ModuleBase, _DownloaderBase[Transmission]):
                 try:
                     for torrent in torrents:
                         # 名称与大小相等则认为是同一个种子
-                        if torrent.name == getattr(torrent_from_file, 'name', '') and torrent.total_size == getattr(torrent_from_file, 'total_size', 0):
+                        if (
+                            torrent_from_file is not None
+                            and torrent.name == getattr(torrent_from_file, 'name', '')
+                            and torrent.total_size == getattr(torrent_from_file, 'total_size', 0)
+                        ):
                             torrent_hash = torrent.hashString
                             logger.warn(f"下载器中已存在该种子任务：{torrent_hash} - {torrent.name}")
-                            # 给种子打上标签
-                            if settings.TORRENT_TAG:
+                            if episodes:
+                                appended, message, _mutated = self._append_download_files(
+                                    server, torrent_hash, episodes, custom_words, episode_selection,
+                                )
+                                if not appended:
+                                    return None, None, None, message
+                            else:
+                                message = "下载任务已存在"
+                            # 种子标签
+                            existing_labels = [
+                                str(tag).strip() for tag in torrent.labels
+                            ] if hasattr(torrent, "labels") else []
+                            if "已整理" in existing_labels:
+                                existing_labels.remove("已整理")
+                                server.set_torrent_tag(ids=torrent_hash, tags=existing_labels)
+                            if settings.TORRENT_TAG and settings.TORRENT_TAG not in existing_labels:
                                 logger.info(f"给种子 {torrent_hash} 打上标签：{settings.TORRENT_TAG}")
-                                # 种子标签
-                                labels = [str(tag).strip()
-                                          for tag in torrent.labels] if hasattr(torrent, "labels") else []
-                                if "已整理" in labels:
-                                    labels.remove("已整理")
-                                    server.set_torrent_tag(ids=torrent_hash, tags=labels)
-                                if settings.TORRENT_TAG and settings.TORRENT_TAG not in labels:
-                                    labels.append(settings.TORRENT_TAG)
-                                    server.set_torrent_tag(ids=torrent_hash, tags=labels)
-                            return downloader or self.get_default_config_name(), torrent_hash, torrent_layout, f"下载任务已存在"
+                                existing_labels.append(settings.TORRENT_TAG)
+                                server.set_torrent_tag(ids=torrent_hash, tags=existing_labels)
+                            return downloader or self.get_default_config_name(), torrent_hash, torrent_layout, message
                 finally:
                     torrents.clear()
                     del torrents

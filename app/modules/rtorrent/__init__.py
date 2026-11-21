@@ -1,5 +1,8 @@
+import base64
+import re
 from pathlib import Path
 from typing import Set, Tuple, Optional, Union, List, Dict
+from urllib.parse import parse_qs, urlparse
 
 from torrentool.torrent import Torrent
 
@@ -20,6 +23,59 @@ from app.schemas.types import (
     TorrentStatus,
 )
 from app.utils.string import StringUtils
+
+_MAGNET_BTIH_HEX_RE = re.compile(r"^urn:btih:([0-9a-fA-F]{40})$", re.IGNORECASE)
+_MAGNET_BTIH_B32_RE = re.compile(r"^urn:btih:([A-Za-z2-7]{32})$", re.IGNORECASE)
+_MAGNET_BTMH_SHA256_RE = re.compile(r"^urn:btmh:1220([0-9a-fA-F]{64})$", re.IGNORECASE)
+
+
+def _extract_expected_torrent_hash(
+    torrent_from_file: Optional[Torrent],
+    content: Optional[Union[str, bytes]],
+) -> Optional[str]:
+    """
+    从已解析的种子对象或磁力链接中提前提取 40 位小写十六进制 InfoHash。
+    """
+    info_hash = getattr(torrent_from_file, "info_hash", None)
+    if isinstance(info_hash, str):
+        normalized = info_hash.strip().lower()
+        if normalized:
+            return normalized
+
+    if isinstance(content, bytes):
+        magnet_text = content.decode("utf-8", errors="ignore")
+    elif isinstance(content, str):
+        magnet_text = content
+    else:
+        return None
+
+    if not magnet_text.lower().startswith("magnet:"):
+        return None
+
+    xt_values: List[str] = []
+    for key, values in parse_qs(urlparse(magnet_text).query).items():
+        if key.lower() == "xt":
+            xt_values.extend(value.strip() for value in values if value and value.strip())
+
+    for value in xt_values:
+        match = _MAGNET_BTIH_HEX_RE.match(value)
+        if match:
+            return match.group(1).lower()
+
+    for value in xt_values:
+        match = _MAGNET_BTIH_B32_RE.match(value)
+        if match:
+            try:
+                return base64.b32decode(match.group(1), casefold=True).hex()
+            except Exception:
+                continue
+
+    for value in xt_values:
+        match = _MAGNET_BTMH_SHA256_RE.match(value)
+        if match:
+            return match.group(1)[:40].lower()
+
+    return None
 
 
 class RtorrentModule(_ModuleBase, _DownloaderBase[Rtorrent]):
@@ -98,19 +154,123 @@ class RtorrentModule(_ModuleBase, _DownloaderBase[Rtorrent]):
                 server.reconnect()
 
     @staticmethod
+    def _append_episode_files(
+        server: Rtorrent,
+        torrent_hash: str,
+        episodes: Set[int],
+        custom_words: Optional[str] = None,
+        episode_selection: Optional[EpisodeSelection] = None,
+        torrent_files: Optional[List[Dict]] = None,
+    ) -> Tuple[bool, str]:
+        """
+        为已有任务追加启用目标集数对应的文件，不取消已选中的其他文件，也不暂停或删除任务。
+        """
+        if torrent_files is None:
+            torrent_files = server.get_files(torrent_hash)
+        if not torrent_files:
+            return False, f"追加选集失败，已有任务 {torrent_hash} 获取种子文件失败"
+        media_extensions = {
+            str(extension).lower()
+            for extension in getattr(settings, "RMT_MEDIAEXT", [])
+        }
+        file_entries = []
+        file_priorities = {}
+        try:
+            for idx, item in enumerate(torrent_files):
+                file_id = item.get("id")
+                if file_id is None:
+                    file_id = idx
+                file_entries.append((file_id, item.get("name")))
+                file_priorities[file_id] = item.get("priority")
+            wanted, _unwanted, selected_episodes = select_torrent_files(
+                file_entries,
+                set(episodes or set()),
+                media_extensions,
+                custom_words,
+                episode_selection,
+            )
+        finally:
+            torrent_files.clear()
+        if not wanted or not episodes or not set(episodes).issubset(selected_episodes):
+            return False, (
+                f"追加选集失败，已有任务 {torrent_hash} 未找到目标集数 "
+                f"{sorted(set(episodes or set()) - selected_episodes)}，请检查季集映射"
+            )
+        to_enable = [
+            file_id for file_id in wanted
+            if file_priorities.get(file_id) in (None, 0)
+        ]
+        if not to_enable:
+            return True, "下载任务已存在"
+        if not server.set_files(
+            torrent_hash=torrent_hash, file_ids=to_enable, priority=1
+        ):
+            return False, f"追加选集失败，已有任务 {torrent_hash} 设置选集优先级失败"
+        if not server.start_torrents(torrent_hash):
+            return False, f"追加选集失败，已有任务 {torrent_hash} 启动任务未确认，未记录成功"
+        return True, f"下载任务已存在，已追加选择集数：{sorted(selected_episodes)}"
+
+    def _handle_existing_torrent(
+        self,
+        server: Rtorrent,
+        torrent_hash: str,
+        torrent_tags: Optional[List[str]],
+        torrent_layout: str,
+        downloader: Optional[str] = None,
+        episodes: Optional[Set[int]] = None,
+        custom_words: Optional[str] = None,
+        episode_selection: Optional[EpisodeSelection] = None,
+    ) -> Tuple[Optional[str], Optional[str], Optional[str], str]:
+        """
+        处理 rTorrent 中已存在的任务：按需追加选集，成功后同步标签并返回任务信息。
+        """
+        if episodes:
+            appended, message = self._append_episode_files(
+                server, torrent_hash, episodes, custom_words, episode_selection,
+            )
+            if not appended:
+                return None, None, None, message
+        else:
+            message = "下载任务已存在"
+        if torrent_tags is not None:
+            if "已整理" in torrent_tags:
+                server.remove_torrents_tag(ids=torrent_hash, tag=["已整理"])
+            if settings.TORRENT_TAG and settings.TORRENT_TAG not in torrent_tags:
+                logger.info(f"给种子 {torrent_hash} 打上标签：{settings.TORRENT_TAG}")
+                server.set_torrents_tag(ids=torrent_hash, tags=[settings.TORRENT_TAG])
+        return (
+            downloader or self.get_default_config_name(),
+            torrent_hash,
+            torrent_layout,
+            message,
+        )
+
+    @staticmethod
     def _select_episode_files(
         server: Rtorrent,
         torrent_hash: str,
         episodes: Set[int],
         custom_words: Optional[str] = None,
         episode_selection: Optional[EpisodeSelection] = None,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, bool]:
         """
         对暂停添加的任务完成选集，所有 RPC 均成功才允许下载链确认任务。
+        若文件列表已存在优先级为 0 的跳过文件，判定为已有选集任务并自动切换为追加选集模式。
+        返回：(是否成功, 提示信息, 是否为已有任务)。
         """
         torrent_files = server.get_files(torrent_hash)
         if not torrent_files:
-            return False, "获取种子文件失败，下载任务保留暂停状态，请检查下载器"
+            return False, "获取种子文件失败，下载任务保留暂停状态，请检查下载器", False
+        if any(item.get("priority") == 0 for item in torrent_files):
+            appended, message = RtorrentModule._append_episode_files(
+                server,
+                torrent_hash,
+                episodes,
+                custom_words,
+                episode_selection,
+                torrent_files=torrent_files,
+            )
+            return appended, message, True
         media_extensions = {
             str(extension).lower()
             for extension in getattr(settings, "RMT_MEDIAEXT", [])
@@ -126,19 +286,19 @@ class RtorrentModule(_ModuleBase, _DownloaderBase[Rtorrent]):
         finally:
             torrent_files.clear()
         if not wanted or not episodes or not set(episodes).issubset(selected_episodes):
-            return False, "未匹配到目标集数，请检查季集映射，下载任务保留暂停状态"
+            return False, "未匹配到目标集数，请检查季集映射，下载任务保留暂停状态", False
         if unwanted and not server.set_files(
             torrent_hash=torrent_hash, file_ids=unwanted, priority=0
         ):
-            return False, "设置选集优先级失败，下载任务保留暂停状态"
+            return False, "设置选集优先级失败，下载任务保留暂停状态", False
         if not server.set_files(
             torrent_hash=torrent_hash, file_ids=wanted, priority=1
         ):
-            return False, "设置选集优先级失败，下载任务保留暂停状态"
+            return False, "设置选集优先级失败，下载任务保留暂停状态", False
         if not server.start_torrents(torrent_hash):
             server.stop_torrents(torrent_hash)
-            return False, "启动任务未确认，未记录成功"
-        return True, f"添加下载成功，已选择集数：{sorted(selected_episodes)}"
+            return False, "启动任务未确认，未记录成功", False
+        return True, f"添加下载成功，已选择集数：{sorted(selected_episodes)}", False
 
     def download(
         self,
@@ -153,7 +313,7 @@ class RtorrentModule(_ModuleBase, _DownloaderBase[Rtorrent]):
         episode_selection: Optional[EpisodeSelection] = None,
     ) -> Optional[Tuple[Optional[str], Optional[str], Optional[str], str]]:
         """
-        根据种子文件，选择并添加下载任务。已有任务直接返回存在标志，不暂停或重选文件。
+        根据种子文件，选择并添加下载任务。已有任务在传入 episodes 时按目标追加启用未下载集数文件，不取消已有文件。
 
         :param content: 种子文件地址或者磁力链接或种子内容
         :param download_dir: 下载目录
@@ -163,7 +323,7 @@ class RtorrentModule(_ModuleBase, _DownloaderBase[Rtorrent]):
         :param label: 标签
         :param downloader: 下载器名称
         :param custom_words: 来源识别词，按行参与文件名识别
-        :param episode_selection: 目标季与已确认的季集对应关系；选集失败清理本次新增任务并保留文件
+        :param episode_selection: 目标季与已确认的季集对应关系；新增任务选集失败清理本次任务并保留文件
         :return: 下载器名称、种子 Hash、种子文件布局、错误原因
         """
 
@@ -214,14 +374,17 @@ class RtorrentModule(_ModuleBase, _DownloaderBase[Rtorrent]):
         if not server:
             return None
 
-        # 生成随机Tag
-        tag = StringUtils.generate_random_str(10)
+        expected_hash = _extract_expected_torrent_hash(torrent_from_file, content)
+        # 仅当无法预知种子 Hash 时才生成随机临时标签，避免 rTorrent 残留无意义标签
+        temp_tag = None if expected_hash else StringUtils.generate_random_str(10)
         if label:
-            tags = label.split(",") + [tag]
+            tags = [t.strip() for t in label.split(",") if t.strip()]
+            if temp_tag:
+                tags.append(temp_tag)
         elif settings.TORRENT_TAG:
-            tags = [tag, settings.TORRENT_TAG]
+            tags = [temp_tag, settings.TORRENT_TAG] if temp_tag else [settings.TORRENT_TAG]
         else:
-            tags = [tag]
+            tags = [temp_tag] if temp_tag else []
         # 如果要选择文件则先暂停
         is_paused = True if episodes else False
         # 添加任务
@@ -229,7 +392,7 @@ class RtorrentModule(_ModuleBase, _DownloaderBase[Rtorrent]):
             content=content,
             download_dir=self.normalize_path(download_dir, downloader),
             is_paused=is_paused,
-            tags=tags,
+            tags=tags or None,
             cookie=cookie,
         )
 
@@ -244,41 +407,34 @@ class RtorrentModule(_ModuleBase, _DownloaderBase[Rtorrent]):
             if torrents:
                 try:
                     for torrent in torrents:
-                        # 名称与大小相等则认为是同一个种子
-                        if torrent.get("name") == getattr(
-                            torrent_from_file, "name", ""
-                        ) and torrent.get("total_size") == getattr(
-                            torrent_from_file, "total_size", 0
-                        ):
-                            torrent_hash = torrent.get("hash")
+                        # 优先按 InfoHash 匹配，其次按名称与大小相等判定为同一个种子
+                        torrent_hash = torrent.get("hash")
+                        is_same_torrent = (
+                            expected_hash
+                            and str(torrent_hash or "").strip().lower() == expected_hash
+                        ) or (
+                            torrent_from_file is not None
+                            and torrent.get("name") == getattr(torrent_from_file, "name", "")
+                            and torrent.get("total_size") == getattr(torrent_from_file, "total_size", 0)
+                        )
+                        if is_same_torrent:
                             torrent_tags = [
                                 str(t).strip()
-                                for t in torrent.get("tags", "").split(",")
+                                for t in (torrent.get("tags") or "").split(",")
                                 if t.strip()
                             ]
                             logger.warn(
                                 f"下载器中已存在该种子任务：{torrent_hash} - {torrent.get('name')}"
                             )
-                            # 给种子打上标签
-                            if "已整理" in torrent_tags:
-                                server.remove_torrents_tag(
-                                    ids=torrent_hash, tag=["已整理"]
-                                )
-                            if (
-                                settings.TORRENT_TAG
-                                and settings.TORRENT_TAG not in torrent_tags
-                            ):
-                                logger.info(
-                                    f"给种子 {torrent_hash} 打上标签：{settings.TORRENT_TAG}"
-                                )
-                                server.set_torrents_tag(
-                                    ids=torrent_hash, tags=[settings.TORRENT_TAG]
-                                )
-                            return (
-                                downloader or self.get_default_config_name(),
-                                torrent_hash,
-                                torrent_layout,
-                                f"下载任务已存在",
+                            return self._handle_existing_torrent(
+                                server=server,
+                                torrent_hash=torrent_hash,
+                                torrent_tags=torrent_tags,
+                                torrent_layout=torrent_layout,
+                                downloader=downloader,
+                                episodes=episodes,
+                                custom_words=custom_words,
+                                episode_selection=episode_selection,
                             )
                 finally:
                     torrents.clear()
@@ -286,7 +442,10 @@ class RtorrentModule(_ModuleBase, _DownloaderBase[Rtorrent]):
             return None, None, None, f"添加种子任务失败：{content}"
         else:
             # 获取种子Hash
-            torrent_hash = server.get_torrent_id_by_tag(tags=tag)
+            if expected_hash:
+                torrent_hash = expected_hash
+            else:
+                torrent_hash = server.get_torrent_id_by_tag(tags=temp_tag)
             if not torrent_hash:
                 if torrent_from_file:
                     torrents, error = server.get_torrents()
@@ -302,11 +461,15 @@ class RtorrentModule(_ModuleBase, _DownloaderBase[Rtorrent]):
                                     logger.warn(
                                         f"下载器中已存在该种子任务：{existing_hash} - {torrent.get('name')}"
                                     )
-                                    return (
-                                        downloader or self.get_default_config_name(),
-                                        existing_hash,
-                                        torrent_layout,
-                                        "下载任务已存在",
+                                    return self._handle_existing_torrent(
+                                        server=server,
+                                        torrent_hash=existing_hash,
+                                        torrent_tags=None,
+                                        torrent_layout=torrent_layout,
+                                        downloader=downloader,
+                                        episodes=episodes,
+                                        custom_words=custom_words,
+                                        episode_selection=episode_selection,
                                     )
                         finally:
                             torrents.clear()
@@ -319,7 +482,7 @@ class RtorrentModule(_ModuleBase, _DownloaderBase[Rtorrent]):
                 )
             else:
                 if is_paused:
-                    selected, message = self._select_episode_files(
+                    selected, message, is_existing = self._select_episode_files(
                         server,
                         torrent_hash,
                         episodes,
@@ -327,6 +490,8 @@ class RtorrentModule(_ModuleBase, _DownloaderBase[Rtorrent]):
                         episode_selection,
                     )
                     if not selected:
+                        if is_existing:
+                            return None, None, None, message
                         return (
                             None,
                             None,

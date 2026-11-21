@@ -24,7 +24,7 @@ from app.schemas.types import MediaType
 
 
 def test_transmission_duplicate_add_skips_pause_and_file_mutation(monkeypatch):
-    """Transmission 返回 torrent-duplicate 时必须跳过暂停与改勾选，保护已在跑的任务。"""
+    """Transmission 返回 torrent-duplicate 且目标集已启用或未传选集时跳过暂停与改勾选，保护已在跑的任务。"""
     tr = object.__new__(Transmission)
     tr._host = "127.0.0.1"
     tr._port = 9091
@@ -51,9 +51,15 @@ def test_transmission_duplicate_add_skips_pause_and_file_mutation(monkeypatch):
     fake_server.add_torrent_with_status = Mock(
         return_value=(SimpleNamespace(hashString="dup_hash_123"), True)
     )
+    fake_server.get_files.return_value = [
+        SimpleNamespace(id=0, name="Show.S01E01.mkv", selected=True),
+        SimpleNamespace(id=1, name="Show.S01E02.mkv", selected=True),
+        SimpleNamespace(id=2, name="Show.S01E03.mkv", selected=False),
+    ]
     monkeypatch.setattr(module, "get_instance", lambda _name=None: fake_server)
     monkeypatch.setattr(module, "get_default_config_name", lambda: "TRDefault")
 
+    # 目标集 E02 本来就已启用下载 -> 保持原有安全兼容行为
     res = module.download(
         content="magnet:?xt=urn:btih:dup_hash_123",
         download_dir=Path("/downloads"),
@@ -63,6 +69,118 @@ def test_transmission_duplicate_add_skips_pause_and_file_mutation(monkeypatch):
     assert res == ("TRDefault", "dup_hash_123", "Original", "下载任务已存在")
     fake_server.stop_torrents.assert_not_called()
     fake_server.set_files.assert_not_called()
+    fake_server.set_unwanted_files.assert_not_called()
+    fake_server.start_torrents.assert_not_called()
+    fake_server.delete_torrents.assert_not_called()
+
+    # 未传 episodes（整包下载） -> 直接返回已存在，不查文件也不改选集
+    fake_server.get_files.reset_mock()
+    res_whole = module.download(
+        content="magnet:?xt=urn:btih:dup_hash_123",
+        download_dir=Path("/downloads"),
+        cookie="",
+        episodes=None,
+    )
+    assert res_whole == ("TRDefault", "dup_hash_123", "Original", "下载任务已存在")
+    fake_server.get_files.assert_not_called()
+    fake_server.set_files.assert_not_called()
+
+
+def test_transmission_duplicate_appends_new_episode_without_disabling_existing(monkeypatch):
+    """Transmission 已有整季包追加新集数时，仅启用新增目标文件、移除已整理标签并启动，不取消旧集数。"""
+    module = TransmissionModule()
+    fake_server = Mock()
+    fake_server.add_torrent_with_status = Mock(
+        return_value=(SimpleNamespace(hashString="dup_hash_append"), True)
+    )
+    fake_server.get_files.return_value = [
+        SimpleNamespace(id=0, name="Show.S01E01.mkv", selected=True),
+        SimpleNamespace(id=1, name="Show.S01E02.mkv", selected=True),
+        SimpleNamespace(id=2, name="Show.S01E03.mkv", selected=False),
+        SimpleNamespace(id=3, name="Show.S01E04.mkv", selected=False),
+    ]
+    fake_server.set_files.return_value = True
+    fake_server.start_torrents.return_value = True
+    fake_server.get_torrent_tags.return_value = ["moviepilot-tag", "已整理"]
+    monkeypatch.setattr(module, "get_instance", lambda _name=None: fake_server)
+    monkeypatch.setattr(module, "get_default_config_name", lambda: "TRDefault")
+
+    res = module.download(
+        content="magnet:?xt=urn:btih:dup_hash_append",
+        download_dir=Path("/downloads"),
+        cookie="",
+        episodes={3},
+    )
+    assert res == ("TRDefault", "dup_hash_append", "Original", "下载任务已存在，已追加选择集数：[3]")
+    fake_server.set_files.assert_called_once_with("dup_hash_append", [2])
+    fake_server.set_unwanted_files.assert_not_called()
+    fake_server.start_torrents.assert_called_once_with("dup_hash_append")
+    fake_server.stop_torrents.assert_not_called()
+    fake_server.delete_torrents.assert_not_called()
+    fake_server.set_torrent_tag.assert_called_once_with(
+        ids="dup_hash_append", tags=["moviepilot-tag"]
+    )
+
+
+def test_transmission_duplicate_append_errors_do_not_delete_existing_task(monkeypatch):
+    """Transmission 已有任务追加选集遇目标集缺失、设选失败或启动失败时明确报错且不删已有任务。"""
+    module = TransmissionModule()
+    fake_server = Mock()
+    fake_server.add_torrent_with_status = Mock(
+        return_value=(SimpleNamespace(hashString="dup_hash_err"), True)
+    )
+    monkeypatch.setattr(module, "get_instance", lambda _name=None: fake_server)
+    monkeypatch.setattr(module, "get_default_config_name", lambda: "TRDefault")
+
+    # 1. 目标集数缺失
+    fake_server.get_files.return_value = [
+        SimpleNamespace(id=0, name="Show.S01E01.mkv", selected=True),
+        SimpleNamespace(id=1, name="Show.S01E02.mkv", selected=False),
+    ]
+    res_missing = module.download(
+        content="magnet:?xt=urn:btih:dup_hash_err",
+        download_dir=Path("/downloads"),
+        cookie="",
+        episodes={9},
+    )
+    assert res_missing[:3] == (None, None, None)
+    assert "未找到目标集数" in res_missing[3]
+    fake_server.set_files.assert_not_called()
+    fake_server.delete_torrents.assert_not_called()
+
+    # 2. 文件选择设置失败
+    fake_server.get_files.return_value = [
+        SimpleNamespace(id=0, name="Show.S01E01.mkv", selected=True),
+        SimpleNamespace(id=1, name="Show.S01E02.mkv", selected=False),
+    ]
+    fake_server.set_files.return_value = False
+    res_set_fail = module.download(
+        content="magnet:?xt=urn:btih:dup_hash_err",
+        download_dir=Path("/downloads"),
+        cookie="",
+        episodes={2},
+    )
+    assert res_set_fail[:3] == (None, None, None)
+    assert "文件选择设置未确认" in res_set_fail[3]
+    fake_server.start_torrents.assert_not_called()
+    fake_server.delete_torrents.assert_not_called()
+
+    # 3. 启动任务失败
+    fake_server.get_files.return_value = [
+        SimpleNamespace(id=0, name="Show.S01E01.mkv", selected=True),
+        SimpleNamespace(id=1, name="Show.S01E02.mkv", selected=False),
+    ]
+    fake_server.set_files.return_value = True
+    fake_server.start_torrents.return_value = False
+    res_start_fail = module.download(
+        content="magnet:?xt=urn:btih:dup_hash_err",
+        download_dir=Path("/downloads"),
+        cookie="",
+        episodes={2},
+    )
+    assert res_start_fail[:3] == (None, None, None)
+    assert "启动任务未确认" in res_start_fail[3]
+    fake_server.stop_torrents.assert_not_called()
     fake_server.delete_torrents.assert_not_called()
 
 
@@ -173,7 +291,6 @@ def test_downloaders_discard_paused_seed_when_episode_selection_empty(monkeypatc
     rt_mod = RtorrentModule()
     rt_server = Mock()
     rt_server.add_torrent.return_value = True
-    rt_server.get_torrent_id_by_tag.return_value = "rt_empty_hash"
     rt_server.get_files.return_value = [
         {"id": 0, "name": "Show.S01E01.mkv"},
         {"id": 1, "name": "Show.S01E02.mkv"},
@@ -181,7 +298,10 @@ def test_downloaders_discard_paused_seed_when_episode_selection_empty(monkeypatc
     monkeypatch.setattr(rt_mod, "get_instance", lambda _n=None: rt_server)
     rt_res = rt_mod.download(content=magnet_uri, download_dir=Path("/dl"), cookie="", episodes={9})
     assert rt_res[:3] == (None, None, None)
-    rt_server.delete_torrents.assert_called_once_with(delete_file=False, ids="rt_empty_hash")
+    rt_server.get_torrent_id_by_tag.assert_not_called()
+    rt_server.delete_torrents.assert_called_once_with(
+        delete_file=False, ids="0123456789abcdef0123456789abcdef01234567"
+    )
 
 
 def test_download_history_records_multi_episode_and_zero_episode_files(monkeypatch, tmp_path):

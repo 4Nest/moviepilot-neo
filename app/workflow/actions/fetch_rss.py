@@ -99,6 +99,7 @@ class FetchRssAction(BaseAction):
             torrentinfo = TorrentInfo(
                 title=item.get("title"),
                 description=item.get("description"),
+                site_proxy=bool(params.proxy),
                 enclosure=item.get("enclosure"),
                 page_url=item.get("link"),
                 size=item.get("size"),

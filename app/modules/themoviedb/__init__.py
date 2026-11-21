@@ -317,6 +317,27 @@ class TheMovieDbModule(_ModuleBase):
 
         return None
 
+    @staticmethod
+    def _match_result_year(info: dict) -> str:
+        """
+        取匹配结果的首播或上映年份；无有效日期时返回空串。
+        """
+        return (info.get("first_air_date") or info.get("release_date") or "")[:4]
+
+    def _warn_if_fallback_year_mismatch(self, name: str, meta: MetaBase, info: Optional[dict]) -> None:
+        """
+        回退匹配命中年份不符的条目时输出显式警告，避免同名不同年作品被静默误认。
+        """
+        if not info or not meta.year:
+            return
+        result_year = self._match_result_year(info)
+        if result_year and result_year != str(meta.year):
+            logger.warning(
+                f"{name} TMDB回退匹配年份不符：元数据年份={meta.year}，"
+                f"返回 {result_year} 年条目 tmdbid={info.get('id')}，"
+                "请核对是否为同名作品"
+            )
+
     def _search_by_name(self, name: str, meta: MetaBase, group_seasons: List[dict]) -> dict:
         """
         根据名称搜索媒体信息
@@ -338,8 +359,10 @@ class TheMovieDbModule(_ModuleBase):
                                        season_number=meta.begin_season,
                                        group_seasons=group_seasons)
                 if not info:
-                    # 去掉年份再查一次
-                    info = self.tmdb.match(name=name, mtype=meta.type)
+                    # 去掉硬年份过滤再查一次，保留软年份用于候选排序与校验
+                    soft_year = str(meta.year) if meta.year else None
+                    info = self.tmdb.match(name=name, mtype=meta.type, soft_year=soft_year)
+                    self._warn_if_fallback_year_mismatch(name, meta, info)
                 return info
             else:
                 # 有年份先按电影查
@@ -374,8 +397,10 @@ class TheMovieDbModule(_ModuleBase):
                                                    season_number=meta.begin_season,
                                                    group_seasons=group_seasons)
                 if not info:
-                    # 去掉年份再查一次
-                    info = await self.tmdb.async_match(name=name, mtype=meta.type)
+                    # 去掉硬年份过滤再查一次，保留软年份用于候选排序与校验
+                    soft_year = str(meta.year) if meta.year else None
+                    info = await self.tmdb.async_match(name=name, mtype=meta.type, soft_year=soft_year)
+                    self._warn_if_fallback_year_mismatch(name, meta, info)
                 return info
             else:
                 # 有年份先按电影查

@@ -15,7 +15,7 @@ from app.schemas.types import MediaType
 from app.utils import rust_accel
 from app.utils.http import RequestUtils, AsyncRequestUtils
 from app.utils.string import StringUtils
-from app.utils.url import UrlUtils
+from app.utils.url import UrlUtils, mask_url_credentials
 
 
 class SiteSpider:
@@ -257,7 +257,7 @@ class SiteSpider:
 
     def get_torrents(self) -> List[dict]:
         """
-        开始请求
+        开始请求，完整请求地址仅以脱敏后的 DEBUG 日志输出。
         """
         if not self.search or not self.domain:
             return []
@@ -265,7 +265,7 @@ class SiteSpider:
         # 获取搜索URL
         searchurl = self.__get_search_url()
 
-        logger.info(f"开始请求：{searchurl}")
+        logger.debug(f"开始请求：{mask_url_credentials(searchurl)}")
 
         # requests请求
         ret = RequestUtils(
@@ -286,7 +286,7 @@ class SiteSpider:
 
     async def async_get_torrents(self) -> List[dict]:
         """
-        异步请求
+        异步请求，完整请求地址仅以脱敏后的 DEBUG 日志输出。
         """
         if not self.search or not self.domain:
             return []
@@ -294,7 +294,7 @@ class SiteSpider:
         # 获取搜索URL
         searchurl = self.__get_search_url()
 
-        logger.info(f"开始异步请求：{searchurl}")
+        logger.debug(f"开始异步请求：{mask_url_credentials(searchurl)}")
 
         # httpx请求
         ret = await AsyncRequestUtils(

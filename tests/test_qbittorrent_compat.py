@@ -924,3 +924,352 @@ def test_download_episode_selection_with_real_force_start_error_stops_and_discar
     fake_client.torrents_set_force_start.assert_called_once_with(enable=True, torrent_hashes="hash-err")
     downloader.stop_torrents.assert_called_once_with("hash-err")
     downloader.delete_torrents.assert_called_once_with(delete_file=False, ids="hash-err")
+
+
+def test_download_torrent_file_with_info_hash_skips_temp_tag_and_uses_expected_hash():
+    """种子文件自带 info_hash 时不生成随机临时标签，added_torrent_ids 为空时直接使用预知 Hash。"""
+    expected_hash = "abcdef0123456789abcdef0123456789abcdef01"
+    fake_server = MagicMock()
+    fake_server.add_torrent.return_value = (True, [])
+    fake_server.get_content_layout.return_value = "Original"
+    fake_server.is_force_resume.return_value = False
+
+    module = _build_module(fake_server)
+    torrent_with_hash = types.SimpleNamespace(
+        name="Show.S01",
+        total_size=1024,
+        info_hash=f"  {expected_hash.upper()}  ",
+    )
+    with patch.object(qbittorrent_package_module.Torrent, "from_string", return_value=torrent_with_hash):
+        result = module.download(
+            content=b"torrent-bytes",
+            download_dir=Path("/downloads"),
+            cookie="",
+            downloader="qb",
+        )
+
+    assert result == ("qb", expected_hash, "Original", "添加下载成功")
+    assert fake_server.add_torrent.call_args.kwargs["tag"] == ["moviepilot-tag"]
+    fake_server.get_torrent_id_by_tag.assert_not_called()
+    fake_server.delete_torrents_tag.assert_not_called()
+
+
+def test_download_episode_selection_with_info_hash_skips_temp_tag_when_added_ids_empty():
+    """种子文件自带 info_hash 且 added_torrent_ids 为空时，选集下载直接用预知 Hash 拉取文件列表。"""
+
+    class _EpisodeMetaInfo:
+        """测试用集数识别对象。"""
+
+        def __init__(self, name):
+            self.episode_list = [12] if "E12" in name else [1]
+
+    expected_hash = "1234567890abcdef1234567890abcdef12345678"
+    fake_server = MagicMock()
+    fake_server.add_torrent.return_value = (True, [])
+    fake_server.get_content_layout.return_value = "Original"
+    fake_server.get_files.return_value = [
+        {"id": 1, "name": "Show.S01E01.mkv"},
+        {"id": 12, "name": "Show.S01E12.mkv"},
+    ]
+    fake_server.is_force_resume.return_value = False
+
+    module = _build_module(fake_server)
+    torrent_with_hash = types.SimpleNamespace(
+        name="Show.S01",
+        total_size=2048,
+        info_hash=expected_hash,
+    )
+    with patch.object(qbittorrent_package_module.Torrent, "from_string", return_value=torrent_with_hash), \
+            patch.object(qbittorrent_package_module, "MetaInfo", _EpisodeMetaInfo):
+        result = module.download(
+            content=b"torrent-bytes",
+            download_dir=Path("/downloads"),
+            cookie="",
+            episodes={12},
+            downloader="qb",
+        )
+
+    assert result == ("qb", expected_hash, "Original", "添加下载成功，已选择集数：[12]")
+    assert fake_server.add_torrent.call_args.kwargs["tag"] == ["moviepilot-tag"]
+    fake_server.get_torrent_id_by_tag.assert_not_called()
+    fake_server.delete_torrents_tag.assert_not_called()
+    fake_server.get_files.assert_called_once_with(expected_hash, retry=5, interval=1)
+    fake_server.set_files.assert_called_once_with(torrent_hash=expected_hash, file_ids=[1], priority=0)
+    fake_server.start_torrents.assert_called_once_with(expected_hash)
+
+
+@pytest.mark.parametrize(
+    ("magnet", "expected_hash"),
+    [
+        (
+            "magnet:?xt=urn:btih:ABCDEF0123456789ABCDEF0123456789ABCDEF01&dn=Test",
+            "abcdef0123456789abcdef0123456789abcdef01",
+        ),
+        (
+            b"magnet:?dn=Test&xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+            "0123456789abcdef0123456789abcdef01234567",
+        ),
+        (
+            "magnet:?xt=urn:btih:VPU66AJFIVP66AJFIVP66AJFIVP66AJF&dn=Base32",
+            "abe9ef0125455fef0125455fef0125455fef0125",
+        ),
+        (
+            b"magnet:?xt=urn:btih:vpu66ajfivp66ajfivp66ajfivp66ajf",
+            "abe9ef0125455fef0125455fef0125455fef0125",
+        ),
+        (
+            "magnet:?xt=urn:btmh:1220FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210&dn=V2",
+            "fedcba9876543210fedcba9876543210fedcba98",
+        ),
+    ],
+)
+def test_download_magnet_links_skip_temp_tag_and_extract_expected_hash(magnet, expected_hash):
+    """40 位 hex、32 位 Base32 与 v2 btmh 磁力链接应直接解析 Hash 且不生成随机临时标签。"""
+    fake_server = MagicMock()
+    fake_server.add_torrent.return_value = (True, [])
+    fake_server.get_content_layout.return_value = "Original"
+    fake_server.is_force_resume.return_value = False
+
+    module = _build_module(fake_server)
+    result = module.download(
+        content=magnet,
+        download_dir=Path("/downloads"),
+        cookie="",
+        label=" custom-a , custom-b ",
+        downloader="qb",
+    )
+
+    assert result == ("qb", expected_hash, "Original", "添加下载成功")
+    assert fake_server.add_torrent.call_args.kwargs["tag"] == ["custom-a", "custom-b"]
+    fake_server.get_torrent_id_by_tag.assert_not_called()
+    fake_server.delete_torrents_tag.assert_not_called()
+
+
+def test_download_expected_hash_with_no_tags_passes_none():
+    """无自定义标签且未配置内置标签、同时可预知 Hash 时，应传 None 且不生成临时标签。"""
+    expected_hash = "abcdef0123456789abcdef0123456789abcdef01"
+    fake_server = MagicMock()
+    fake_server.add_torrent.return_value = (True, [])
+    fake_server.get_content_layout.return_value = "Original"
+    fake_server.is_force_resume.return_value = False
+
+    module = _build_module(fake_server)
+    with patch.object(qbittorrent_package_module.settings, "TORRENT_TAG", ""):
+        result = module.download(
+            content=f"magnet:?xt=urn:btih:{expected_hash}",
+            download_dir=Path("/downloads"),
+            cookie="",
+            downloader="qb",
+        )
+
+    assert result == ("qb", expected_hash, "Original", "添加下载成功")
+    assert fake_server.add_torrent.call_args.kwargs["tag"] is None
+    fake_server.get_torrent_id_by_tag.assert_not_called()
+    fake_server.delete_torrents_tag.assert_not_called()
+
+
+def test_download_unknown_hash_falls_back_to_temp_tag_and_cleans_up():
+    """无法预知 Hash 时应回退使用临时标签，并在完成后清理。"""
+    fake_server = MagicMock()
+    fake_server.add_torrent.return_value = (True, ["fallback-id"])
+    fake_server.get_content_layout.return_value = "Original"
+    fake_server.is_force_resume.return_value = False
+
+    module = _build_module(fake_server)
+    result = module.download(
+        content="magnet:?dn=missing-xt",
+        download_dir=Path("/downloads"),
+        cookie="",
+        downloader="qb",
+    )
+
+    assert result == ("qb", "fallback-id", "Original", "添加下载成功")
+    assert fake_server.add_torrent.call_args.kwargs["tag"] == ["tmp-tag-01", "moviepilot-tag"]
+    fake_server.delete_torrents_tag.assert_called_once_with("fallback-id", "tmp-tag-01")
+    fake_server.get_torrent_id_by_tag.assert_not_called()
+
+
+@pytest.mark.parametrize("force_resume", [False, True])
+def test_download_existing_torrent_appends_new_episodes_without_disabling_existing(force_resume):
+    """已有整季包追加新集数时应仅启用未下载目标文件并启动任务，不关闭旧集数文件。"""
+    fake_server = MagicMock()
+    fake_server.add_torrent.return_value = (False, [])
+    fake_server.get_content_layout.return_value = "Original"
+    fake_server.is_force_resume.return_value = force_resume
+    fake_server.set_files.return_value = True
+    fake_server.start_torrents.return_value = True
+    fake_server.torrents_set_force_start.return_value = True
+    fake_server.get_torrents.return_value = ([{
+        "name": "test",
+        "total_size": len(b"torrent-content"),
+        "hash": "existing-pack-hash",
+        "tags": "moviepilot-tag, 已整理",
+    }], False)
+    fake_server.get_files.return_value = [
+        {"id": 0, "name": "Show.S01E01.mkv", "priority": 1},
+        {"id": 1, "name": "Show.S01E02.mkv", "priority": 1},
+        {"id": 2, "name": "Show.S01E03.mkv", "priority": 0},
+        {"id": 3, "name": "Show.S01E04.mkv", "priority": 0},
+    ]
+
+    module = _build_module(fake_server)
+    result = module.download(
+        content=b"torrent-content",
+        download_dir=Path("/downloads"),
+        cookie="",
+        episodes={3},
+        downloader="qb",
+    )
+
+    assert result == ("qb", "existing-pack-hash", "Original", "下载任务已存在，已追加选择集数：[3]")
+    fake_server.set_files.assert_called_once_with(
+        torrent_hash="existing-pack-hash", file_ids=[2], priority=1
+    )
+    if force_resume:
+        fake_server.torrents_set_force_start.assert_called_once_with("existing-pack-hash")
+        fake_server.start_torrents.assert_not_called()
+    else:
+        fake_server.start_torrents.assert_called_once_with("existing-pack-hash")
+        fake_server.torrents_set_force_start.assert_not_called()
+    fake_server.remove_torrents_tag.assert_called_once_with(
+        ids="existing-pack-hash", tag=["已整理"]
+    )
+    fake_server.stop_torrents.assert_not_called()
+    fake_server.delete_torrents.assert_not_called()
+
+
+def test_download_existing_torrent_returned_ok_by_add_appends_without_disabling_existing():
+    """qBittorrent add_torrent 对已有选集任务返回成功时，应识别跳过文件并严格追加选集。"""
+    expected_hash = "abcdef0123456789abcdef0123456789abcdef01"
+    fake_server = MagicMock()
+    fake_server.add_torrent.return_value = (True, [expected_hash])
+    fake_server.get_content_layout.return_value = "Original"
+    fake_server.is_force_resume.return_value = False
+    fake_server.set_files.return_value = True
+    fake_server.start_torrents.return_value = True
+    fake_server.get_files.return_value = [
+        {"index": 0, "name": "Show.S01E01.mkv", "priority": 1},
+        {"index": 1, "name": "Show.S01E02.mkv", "priority": 1},
+        {"index": 2, "name": "Show.S01E03.mkv", "priority": 0},
+    ]
+
+    module = _build_module(fake_server)
+    result = module.download(
+        content=f"magnet:?xt=urn:btih:{expected_hash}",
+        download_dir=Path("/downloads"),
+        cookie="",
+        episodes={3},
+        downloader="qb",
+    )
+
+    assert result == ("qb", expected_hash, "Original", "下载任务已存在，已追加选择集数：[3]")
+    fake_server.set_files.assert_called_once_with(
+        torrent_hash=expected_hash, file_ids=[2], priority=1
+    )
+    fake_server.start_torrents.assert_called_once_with(expected_hash)
+    fake_server.delete_torrents.assert_not_called()
+
+
+def test_download_existing_torrent_already_enabled_episodes_keeps_compat():
+    """已有任务中目标集文件本就已启用下载时，不重复改优先级也不强制重启任务。"""
+    fake_server = MagicMock()
+    fake_server.add_torrent.return_value = (False, [])
+    fake_server.get_content_layout.return_value = "Original"
+    fake_server.get_torrents.return_value = ([{
+        "name": "test",
+        "total_size": len(b"torrent-content"),
+        "hash": "existing-enabled",
+        "tags": "moviepilot-tag",
+    }], False)
+    fake_server.get_files.return_value = [
+        {"id": 0, "name": "Show.S01E01.mkv", "priority": 1},
+        {"id": 1, "name": "Show.S01E02.mkv", "priority": 1},
+        {"id": 2, "name": "Show.S01E03.mkv", "priority": 0},
+    ]
+
+    module = _build_module(fake_server)
+    result = module.download(
+        content=b"torrent-content",
+        download_dir=Path("/downloads"),
+        cookie="",
+        episodes={1, 2},
+        downloader="qb",
+    )
+
+    assert result == ("qb", "existing-enabled", "Original", "下载任务已存在")
+    fake_server.set_files.assert_not_called()
+    fake_server.start_torrents.assert_not_called()
+    fake_server.torrents_set_force_start.assert_not_called()
+    fake_server.delete_torrents.assert_not_called()
+
+
+def test_download_existing_torrent_append_failures_return_error_without_deleting():
+    """已有任务追加选集在目标集缺失、优先级设置失败或启动失败时应报错且不删任务。"""
+    fake_server = MagicMock()
+    fake_server.add_torrent.return_value = (False, [])
+    fake_server.get_content_layout.return_value = "Original"
+    fake_server.is_force_resume.return_value = False
+    existing_list = ([{
+        "name": "test",
+        "total_size": len(b"torrent-content"),
+        "hash": "existing-err",
+        "tags": "moviepilot-tag, 已整理",
+    }], False)
+    module = _build_module(fake_server)
+
+    # 1. 目标集缺失
+    fake_server.get_torrents.return_value = ([dict(existing_list[0][0])], False)
+    fake_server.get_files.return_value = [
+        {"id": 0, "name": "Show.S01E01.mkv", "priority": 1},
+        {"id": 1, "name": "Show.S01E02.mkv", "priority": 0},
+    ]
+    res_missing = module.download(
+        content=b"torrent-content",
+        download_dir=Path("/downloads"),
+        cookie="",
+        episodes={9},
+        downloader="qb",
+    )
+    assert res_missing[:3] == (None, None, None)
+    assert "未找到目标集数" in res_missing[3]
+    fake_server.remove_torrents_tag.assert_not_called()
+    fake_server.delete_torrents.assert_not_called()
+
+    # 2. 优先级设置失败
+    fake_server.get_torrents.return_value = ([dict(existing_list[0][0])], False)
+    fake_server.get_files.return_value = [
+        {"id": 0, "name": "Show.S01E01.mkv", "priority": 1},
+        {"id": 1, "name": "Show.S01E02.mkv", "priority": 0},
+    ]
+    fake_server.set_files.return_value = False
+    res_set_fail = module.download(
+        content=b"torrent-content",
+        download_dir=Path("/downloads"),
+        cookie="",
+        episodes={2},
+        downloader="qb",
+    )
+    assert res_set_fail[:3] == (None, None, None)
+    assert "文件优先级设置未确认" in res_set_fail[3]
+    fake_server.start_torrents.assert_not_called()
+    fake_server.delete_torrents.assert_not_called()
+
+    # 3. 启动任务失败
+    fake_server.get_torrents.return_value = ([dict(existing_list[0][0])], False)
+    fake_server.get_files.return_value = [
+        {"id": 0, "name": "Show.S01E01.mkv", "priority": 1},
+        {"id": 1, "name": "Show.S01E02.mkv", "priority": 0},
+    ]
+    fake_server.set_files.return_value = True
+    fake_server.start_torrents.return_value = False
+    res_start_fail = module.download(
+        content=b"torrent-content",
+        download_dir=Path("/downloads"),
+        cookie="",
+        episodes={2},
+        downloader="qb",
+    )
+    assert res_start_fail[:3] == (None, None, None)
+    assert "启动任务未确认" in res_start_fail[3]
+    fake_server.stop_torrents.assert_not_called()
+    fake_server.delete_torrents.assert_not_called()

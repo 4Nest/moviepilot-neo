@@ -2,9 +2,80 @@ import mimetypes
 from pathlib import Path
 from typing import Optional, Union, Tuple
 from urllib import parse
-from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse, urlsplit, urlunparse, urlunsplit
 
 from app.log import logger
+
+
+_SENSITIVE_QUERY_KEYS = frozenset({
+    "passkey",
+    "apikey",
+    "api_key",
+    "token",
+    "access_token",
+    "auth",
+    "auth_token",
+    "secret",
+    "key",
+    "password",
+    "passwd",
+    "pwd",
+    "sign",
+    "signature",
+    "rsskey",
+    "cookie",
+})
+
+_SENSITIVE_QUERY_SUBSTRINGS = (
+    "passkey",
+    "apikey",
+    "api_key",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+)
+
+
+def _is_sensitive_query_key(key: str) -> bool:
+    """
+    判断查询参数名是否可能包含凭据信息。
+    """
+    normalized = unquote(key).strip().lower()
+    if normalized in _SENSITIVE_QUERY_KEYS:
+        return True
+    return any(sub in normalized for sub in _SENSITIVE_QUERY_SUBSTRINGS)
+
+
+def mask_url_credentials(url: Optional[str]) -> str:
+    """
+    遮盖 URL 中的 userinfo 与敏感查询凭据，保留结构便于调试日志排查。
+    """
+    if not url:
+        return ""
+    try:
+        parts = urlsplit(str(url))
+    except ValueError:
+        return str(url)
+
+    netloc = parts.netloc
+    if "@" in netloc:
+        _, host = netloc.rsplit("@", 1)
+        netloc = f"<REDACTED>@{host}"
+
+    query = parts.query
+    if query:
+        masked_segments = []
+        for segment in query.split("&"):
+            if "=" in segment:
+                key, value = segment.split("=", 1)
+                if value and _is_sensitive_query_key(key):
+                    masked_segments.append(f"{key}=<REDACTED>")
+                    continue
+            masked_segments.append(segment)
+        query = "&".join(masked_segments)
+
+    return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
 
 
 class UrlUtils:

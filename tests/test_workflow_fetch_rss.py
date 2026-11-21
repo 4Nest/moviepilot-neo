@@ -69,3 +69,32 @@ def test_site_rss_preserves_description(monkeypatch, rss_items):
     assert torrents[0].title == "Beyond Time's Gaze S01E43 2025 2160p WEB-DL H265 AAC-ADWeb"
     assert torrents[0].description == "国创连载 光阴之外 第43集 [玄机科技出品]"
     assert torrents[0].site_name == "测试站点"
+
+
+@pytest.mark.parametrize("use_proxy", [False, True])
+def test_execute_propagates_proxy_to_torrent_info(monkeypatch, rss_items, use_proxy):
+    """工作流获取 RSS 的代理开关应透传到产出的 TorrentInfo.site_proxy。"""
+    captured = {}
+
+    class _FakeRssHelper:
+        def parse(self, **kwargs):
+            captured.update(kwargs)
+            return rss_items
+
+    monkeypatch.setattr(rss_module, "RssHelper", _FakeRssHelper)
+    monkeypatch.setattr(rss_module.global_vars, "is_workflow_stopped", lambda _: False)
+    monkeypatch.setattr(
+        rss_module,
+        "settings",
+        SimpleNamespace(PROXY={"https": "http://proxy.local:7890"}),
+    )
+
+    context = FetchRssAction("fetch-rss").execute(
+        workflow_id=1,
+        params={"url": "https://example.com/rss.xml", "proxy": use_proxy},
+        context=ActionContext(),
+    )
+
+    expected_proxy = {"https": "http://proxy.local:7890"} if use_proxy else None
+    assert captured["proxy"] == expected_proxy
+    assert context.torrents[0].torrent_info.site_proxy is use_proxy
