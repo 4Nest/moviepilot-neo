@@ -7,7 +7,7 @@ import os
 import re
 import shutil
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from io import StringIO
@@ -47,7 +47,10 @@ V3_ONLY_TABLES: frozenset[str] = frozenset({
     "agentinvocation",
     "agenttask",
     "agenttaskrun",
+    "channelauthorization",
+    "channelbinding",
     "outbox",
+    "outboxmessage",
     "pluginidentity",
     "plugininstallation",
     "plugininstance",
@@ -1328,6 +1331,28 @@ def _rebuild_sqlite_table_to_neo_schema(
         idx.create(bind=connection, checkfirst=True)
 
 
+def _drop_postgresql_foreign_keys(
+    connection: Connection,
+    table_names: Iterable[str],
+) -> set[str]:
+    """预先清理全部共用表的 PostgreSQL 外键约束，避免按表顺序删除唯一索引或列时触发依赖冲突。"""
+    inspector = sa.inspect(connection)
+    preparer = connection.dialect.identifier_preparer
+    changed_tables: set[str] = set()
+    for table_name in table_names:
+        quoted_table = preparer.quote(table_name)
+        for fk in inspector.get_foreign_keys(table_name):
+            if fk.get("name"):
+                connection.execute(
+                    sa.text(
+                        f"ALTER TABLE {quoted_table} DROP CONSTRAINT IF EXISTS "
+                        f"{preparer.quote(fk['name'])} CASCADE"
+                    )
+                )
+                changed_tables.add(table_name)
+    return changed_tables
+
+
 def _align_postgresql_table_to_neo_schema(
     connection: Connection,
     table_name: str,
@@ -1339,31 +1364,43 @@ def _align_postgresql_table_to_neo_schema(
     quoted_table = preparer.quote(table_name)
     changed = False
 
-    # 1. 移除外键、检查约束与多余唯一约束
+    # 1. 移除外键、检查约束与多余唯一约束（使用 CASCADE 防止外部残留对象阻塞）
     for fk in inspector.get_foreign_keys(table_name):
         if fk.get("name"):
             connection.execute(
-                sa.text(f"ALTER TABLE {quoted_table} DROP CONSTRAINT IF EXISTS {preparer.quote(fk['name'])}")
+                sa.text(
+                    f"ALTER TABLE {quoted_table} DROP CONSTRAINT IF EXISTS "
+                    f"{preparer.quote(fk['name'])} CASCADE"
+                )
             )
             changed = True
     for ck in inspector.get_check_constraints(table_name):
         if ck.get("name"):
             connection.execute(
-                sa.text(f"ALTER TABLE {quoted_table} DROP CONSTRAINT IF EXISTS {preparer.quote(ck['name'])}")
+                sa.text(
+                    f"ALTER TABLE {quoted_table} DROP CONSTRAINT IF EXISTS "
+                    f"{preparer.quote(ck['name'])} CASCADE"
+                )
             )
             changed = True
     for uq in inspector.get_unique_constraints(table_name):
         if uq.get("name"):
             connection.execute(
-                sa.text(f"ALTER TABLE {quoted_table} DROP CONSTRAINT IF EXISTS {preparer.quote(uq['name'])}")
+                sa.text(
+                    f"ALTER TABLE {quoted_table} DROP CONSTRAINT IF EXISTS "
+                    f"{preparer.quote(uq['name'])} CASCADE"
+                )
             )
             changed = True
 
+    pk_constraint_name = (inspector.get_pk_constraint(table_name) or {}).get("name")
     neo_index_names = {idx.name for idx in neo_table.indexes if idx.name}
-    for idx in inspector.get_indexes(table_name):
+    for idx in sa.inspect(connection).get_indexes(table_name):
         idx_name = idx.get("name")
-        if idx_name and idx_name not in neo_index_names:
-            connection.execute(sa.text(f"DROP INDEX IF EXISTS {preparer.quote(idx_name)}"))
+        if idx_name and idx_name != pk_constraint_name and idx_name not in neo_index_names:
+            connection.execute(
+                sa.text(f"DROP INDEX IF EXISTS {preparer.quote(idx_name)} CASCADE")
+            )
             changed = True
 
     # 2. 补齐缺失列、修正可空性并移除 v3 多余列
@@ -1379,12 +1416,38 @@ def _align_postgresql_table_to_neo_schema(
         elif not neo_col.primary_key:
             db_nullable = bool(db_cols[col_name].get("nullable", True))
             if db_nullable != bool(neo_col.nullable):
-                action = "DROP NOT NULL" if neo_col.nullable else "SET NOT NULL"
-                connection.execute(sa.text(f"ALTER TABLE {quoted_table} ALTER COLUMN {quoted_col} {action}"))
-                changed = True
+                if neo_col.nullable:
+                    connection.execute(
+                        sa.text(f"ALTER TABLE {quoted_table} ALTER COLUMN {quoted_col} DROP NOT NULL")
+                    )
+                    changed = True
+                else:
+                    # 早期经 pgloader 等工具迁移的 PostgreSQL 库可能把非空列建为可空并残留 NULL，
+                    # 若表内存在 NULL 值则跳过收紧，避免触发 NotNullViolation 中断迁移。
+                    has_null = connection.execute(
+                        sa.text(
+                            f"SELECT 1 FROM {quoted_table} WHERE {quoted_col} IS NULL LIMIT 1"
+                        )
+                    ).first()
+                    if has_null is None:
+                        connection.execute(
+                            sa.text(
+                                f"ALTER TABLE {quoted_table} ALTER COLUMN {quoted_col} SET NOT NULL"
+                            )
+                        )
+                        changed = True
+                    else:
+                        logger.warning(
+                            f"跳过 {table_name}.{col_name} 的 SET NOT NULL：历史数据包含 NULL 值"
+                        )
 
     for extra_col in sorted(set(db_cols.keys()) - set(neo_cols.keys())):
-        connection.execute(sa.text(f"ALTER TABLE {quoted_table} DROP COLUMN IF EXISTS {preparer.quote(extra_col)}"))
+        connection.execute(
+            sa.text(
+                f"ALTER TABLE {quoted_table} DROP COLUMN IF EXISTS "
+                f"{preparer.quote(extra_col)} CASCADE"
+            )
+        )
         changed = True
 
     for idx in neo_table.indexes:
@@ -1430,6 +1493,17 @@ def _align_schema_and_cleanup_v3_tables(
             connection.execute(sa.text(f"DROP TABLE IF EXISTS {preparer.quote(v3_table)}{cascade}"))
 
     # 2. 创建 NEO 新增缺失表（如 schedulerhistory）并对齐全部共用表
+    pg_fk_dropped_tables: set[str] = set()
+    if dialect_name != "sqlite" and not dry_run:
+        # 先统一移除所有共用表的外键约束，避免按表名顺序处理时（例如 user 先于 userconfig）
+        # 删除被引用表的唯一索引或列触发 DependentObjectsStillExist。
+        existing_shared_tables = [
+            table_name
+            for table_name in sorted(Base.metadata.tables.keys())
+            if table_name in existing_tables
+        ]
+        pg_fk_dropped_tables = _drop_postgresql_foreign_keys(connection, existing_shared_tables)
+
     for table_name, neo_table in sorted(Base.metadata.tables.items()):
         if table_name not in existing_tables:
             report.rebuilt_tables.append(table_name)
@@ -1454,7 +1528,8 @@ def _align_schema_and_cleanup_v3_tables(
                 ):
                     report.rebuilt_tables.append(table_name)
             else:
-                if _align_postgresql_table_to_neo_schema(connection, table_name, neo_table):
+                table_changed = _align_postgresql_table_to_neo_schema(connection, table_name, neo_table)
+                if table_changed or table_name in pg_fk_dropped_tables:
                     report.rebuilt_tables.append(table_name)
 
 

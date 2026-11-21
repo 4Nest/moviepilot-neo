@@ -85,7 +85,11 @@ class Subscribe(Base):
     version_progress = Column(JSON, nullable=True, default=dict)
     # 最近一次搜索判定摘要（只读运行事实）
     decision_summary = Column(JSON, nullable=True)
-    version_mode = Column(String, nullable=True, default='any')
+    version_mode = Column(
+        String,
+        nullable=True,
+        default=lambda context: "all" if context.get_current_parameters().get("version_rules") else "any",
+    )
     # 保存路径
     save_path = Column(String)
     # 是否使用 imdbid 搜索

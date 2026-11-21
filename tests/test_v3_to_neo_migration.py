@@ -624,10 +624,118 @@ def test_colliding_revision_id_still_detected_and_cli_works(
 
     with test_engine.connect() as conn:
         rev = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert rev == "a7383c1d9e20"
+        assert rev == "d1e2f3a4b5c6"
         cols = {c["name"] for c in sa.inspect(conn).get_columns("subscribe")}
         assert {"tmdbid", "doubanid", "bangumiid", "version_rules"} <= cols
     test_engine.dispose()
+
+
+def test_postgresql_schema_alignment_drops_cross_table_fks_before_indexes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PostgreSQL 对齐必须先移除跨表外键并使用 CASCADE，避免删除 ux_user_name 时报 DependentObjectsStillExist。"""
+    from types import SimpleNamespace
+    from sqlalchemy.dialects import postgresql
+    from app.db.v3_migration import V3MigrationReport, _align_schema_and_cleanup_v3_tables
+
+    executed_sql: list[str] = []
+    fks_by_table = {
+        "user": [],
+        "userconfig": [{"name": "fk_userconfig_username_user"}],
+    }
+    indexes_by_table = {
+        "user": [{"name": "user_pkey"}, {"name": "ux_user_name"}],
+        "userconfig": [{"name": "userconfig_pkey"}],
+    }
+    columns_by_table = {
+        "user": [
+            {"name": "id", "nullable": False},
+            {"name": "name", "nullable": True},
+            {"name": "legacy_v3_col", "nullable": True},
+        ],
+        "userconfig": [
+            {"name": "id", "nullable": False},
+            {"name": "username", "nullable": False},
+            {"name": "key", "nullable": False},
+            {"name": "value", "nullable": True},
+        ],
+    }
+
+    class _FakeInspector:
+        def get_table_names(self):
+            return ["user", "userconfig"]
+
+        def get_foreign_keys(self, table_name: str):
+            return list(fks_by_table.get(table_name, []))
+
+        def get_check_constraints(self, table_name: str):
+            return []
+
+        def get_unique_constraints(self, table_name: str):
+            return []
+
+        def get_pk_constraint(self, table_name: str):
+            return {"name": f"{table_name}_pkey"}
+
+        def get_indexes(self, table_name: str):
+            return list(indexes_by_table.get(table_name, []))
+
+        def get_columns(self, table_name: str):
+            return list(columns_by_table.get(table_name, []))
+
+    class _FakePgConnection:
+        def __init__(self):
+            self.dialect = postgresql.dialect()
+
+        def execute(self, statement, *args, **kwargs):
+            sql = str(statement)
+            executed_sql.append(sql)
+            # 模拟外键删除后 inspector 不再返回该外键
+            if "fk_userconfig_username_user" in sql:
+                fks_by_table["userconfig"] = []
+            # 模拟 PostgreSQL 依赖检查：若 userconfig 外键未先清理即删 ux_user_name 则失败
+            if "ux_user_name" in sql and fks_by_table["userconfig"]:
+                raise RuntimeError("DependentObjectsStillExist: fk_userconfig_username_user")
+            if "SELECT 1 FROM \"user\" WHERE name IS NULL" in sql or "SELECT 1 FROM user WHERE name IS NULL" in sql:
+                return SimpleNamespace(first=lambda: (1,))
+            return SimpleNamespace(first=lambda: None)
+
+    fake_meta = sa.MetaData()
+    sa.Table(
+        "user",
+        fake_meta,
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("name", sa.String, nullable=False),
+    )
+    sa.Table(
+        "userconfig",
+        fake_meta,
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("username", sa.String, nullable=True),
+        sa.Column("key", sa.String, nullable=True),
+        sa.Column("value", sa.JSON, nullable=True),
+    )
+
+    monkeypatch.setattr("app.db.v3_migration.Base", SimpleNamespace(metadata=fake_meta))
+    monkeypatch.setattr("app.db.v3_migration.sa.inspect", lambda _conn: _FakeInspector())
+
+    report = V3MigrationReport(dry_run=False)
+    _align_schema_and_cleanup_v3_tables(_FakePgConnection(), report, dry_run=False)
+
+    fk_drop_idx = next(
+        i for i, sql in enumerate(executed_sql)
+        if "DROP CONSTRAINT IF EXISTS fk_userconfig_username_user CASCADE" in sql
+    )
+    ux_drop_idx = next(
+        i for i, sql in enumerate(executed_sql)
+        if "DROP INDEX IF EXISTS ux_user_name CASCADE" in sql
+    )
+    assert fk_drop_idx < ux_drop_idx
+    assert not any("DROP INDEX IF EXISTS user_pkey" in sql for sql in executed_sql)
+    assert any("DROP COLUMN IF EXISTS legacy_v3_col CASCADE" in sql for sql in executed_sql)
+    assert not any("ALTER COLUMN name SET NOT NULL" in sql for sql in executed_sql)
+    assert any("ALTER COLUMN username DROP NOT NULL" in sql for sql in executed_sql)
+    assert set(report.rebuilt_tables) == {"user", "userconfig"}
 
 
 def test_native_neo_or_v2_database_is_not_treated_as_v3(tmp_path: Path) -> None:

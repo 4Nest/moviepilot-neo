@@ -69,7 +69,11 @@ class SubscribeHistory(Base):
     # 多版本订阅完整规则快照及独立运行事实
     version_rules = Column(JSON, nullable=True, default=list)
     version_progress = Column(JSON, nullable=True, default=dict)
-    version_mode = Column(String, nullable=True, default='any')
+    version_mode = Column(
+        String,
+        nullable=True,
+        default=lambda context: "all" if context.get_current_parameters().get("version_rules") else "any",
+    )
     # 保存路径
     save_path = Column(String)
     # 是否使用 imdbid 搜索

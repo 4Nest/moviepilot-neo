@@ -320,3 +320,106 @@ def test_legacy_inconsistent_version_mode_row_self_heals_on_read():
     assert validated.version_rules[0].settings.filter_groups == []
     assert validated.version_progress["main"].episode_priority == {}
     assert validated.version_progress["main"].completed is False
+
+
+def test_subscribe_models_default_version_mode_consistent_with_version_rules():
+    """直接经 ORM 写入 Subscribe / SubscribeHistory 时，version_mode 默认值与 version_rules 保持自洽。"""
+    import sqlalchemy as sa
+    from sqlalchemy.orm import Session
+    from app.db.models.subscribe import Subscribe
+    from app.db.models.subscribehistory import SubscribeHistory
+
+    engine = sa.create_engine("sqlite://")
+    Subscribe.__table__.create(bind=engine)
+    SubscribeHistory.__table__.create(bind=engine)
+
+    rule = [{"id": "v-1", "name": "默认版本", "enabled": True, "settings": {}}]
+    with Session(engine) as session:
+        s_with_rules = Subscribe(name="带规则订阅", type="电视剧", state="N", version_rules=rule)
+        s_without_rules = Subscribe(name="普通订阅", type="电视剧", state="N", version_rules=[])
+        h_with_rules = SubscribeHistory(name="带规则历史", type="电视剧", version_rules=rule)
+        h_without_rules = SubscribeHistory(name="普通历史", type="电视剧", version_rules=[])
+        session.add_all([s_with_rules, s_without_rules, h_with_rules, h_without_rules])
+        session.commit()
+
+        assert s_with_rules.version_mode == "all"
+        assert s_without_rules.version_mode == "any"
+        assert h_with_rules.version_mode == "all"
+        assert h_without_rules.version_mode == "any"
+    engine.dispose()
+
+
+def test_fix_subscribe_version_mode_migration_repairs_legacy_rows(monkeypatch):
+    """存量数据迁移应把 subscribe / subscribehistory 中 version_rules 非空但 version_mode!=all 的记录修正为 all。"""
+    import importlib
+    import sqlalchemy as sa
+    from app.db.models.subscribe import Subscribe
+    from app.db.models.subscribehistory import SubscribeHistory
+
+    migration = importlib.import_module("database.versions.d1e2f3a4b5c6_fix_subscribe_version_mode")
+    engine = sa.create_engine("sqlite://")
+    Subscribe.__table__.create(bind=engine)
+    SubscribeHistory.__table__.create(bind=engine)
+
+    rule = [{"id": "v-1", "name": "默认版本", "enabled": True, "settings": {}}]
+    with engine.begin() as conn:
+        conn.execute(
+            Subscribe.__table__.insert(),
+            [
+                {"id": 1, "name": "脏订阅", "type": "电视剧", "state": "R", "version_rules": rule, "version_mode": "any"},
+                {"id": 2, "name": "空规则订阅", "type": "电视剧", "state": "R", "version_rules": [], "version_mode": "any"},
+            ],
+        )
+        conn.execute(
+            SubscribeHistory.__table__.insert(),
+            [
+                {"id": 1, "name": "脏历史", "type": "电视剧", "version_rules": rule, "version_mode": "any"},
+                {"id": 2, "name": "空规则历史", "type": "电视剧", "version_rules": [], "version_mode": "any"},
+            ],
+        )
+        monkeypatch.setattr(migration.op, "get_bind", lambda: conn)
+        migration.upgrade()
+
+        sub_modes = dict(
+            conn.execute(sa.select(Subscribe.__table__.c.id, Subscribe.__table__.c.version_mode)).all()
+        )
+        hist_modes = dict(
+            conn.execute(sa.select(SubscribeHistory.__table__.c.id, SubscribeHistory.__table__.c.version_mode)).all()
+        )
+        assert sub_modes == {1: "all", 2: "any"}
+        assert hist_modes == {1: "all", 2: "any"}
+    engine.dispose()
+
+
+def test_serialize_subscribe_items_skips_corrupted_row_without_500():
+    """列表中存在极端异常记录时仅跳过该条并记录警告，不导致整页返回 500。"""
+    from app.api.endpoints.subscribe import _serialize_subscribe_items
+
+    good_row = SimpleNamespace(
+        id=1,
+        name="正常剧集",
+        type=MediaType.TV.value,
+        total_episode=12,
+        lack_episode=3,
+        version_mode="any",
+        version_rules=[],
+    )
+    corrupted_row = SimpleNamespace(
+        id=2,
+        name="损坏剧集",
+        type=MediaType.TV.value,
+        total_episode=12,
+        lack_episode=3,
+        version_mode="corrupted_mode",
+        version_rules=[],
+    )
+
+    serialized = _serialize_subscribe_items(
+        [good_row, corrupted_row],
+        scene="订阅历史",
+        reset_tv_history_episodes=True,
+    )
+    assert len(serialized) == 1
+    assert serialized[0].id == 1
+    assert serialized[0].total_episode == 0
+    assert serialized[0].lack_episode == 0

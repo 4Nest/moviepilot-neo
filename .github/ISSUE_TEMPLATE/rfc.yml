@@ -11,7 +11,7 @@ body:
         以便评估和讨论产生的影响 (遗漏的考虑、向后兼容性、与现有功能的冲突)，
         因此提案侧重在对解决问题的 **方案、设计、步骤** 的描述上。
 
-        如果仅希望讨论是否添加或改进某功能本身，请使用 -> [Issue: 功能改进](https://github.com/jxxghp/MoviePilot/issues/new?assignees=&labels=feature+request&projects=&template=feature_request.yml&title=%5BFeature+Request%5D%3A+)
+        如果仅希望讨论是否添加或改进某功能本身，请使用 -> [Issue: 功能改进](https://github.com/4Nest/moviepilot-neo/issues/new?assignees=&labels=feature+request&projects=&template=feature_request.yml&title=%5BFeature+Request%5D%3A+)
   - type: textarea
     id: background
     attributes:

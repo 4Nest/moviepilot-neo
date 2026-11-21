@@ -3,6 +3,7 @@ from typing import List, Any, Annotated, Optional
 import cn2an
 from fastapi import APIRouter, Request, BackgroundTasks, Depends, HTTPException, Header
 from fastapi.concurrency import run_in_threadpool
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -137,6 +138,29 @@ def select_accessible_subscribe(
             return subscribe
     return None
 
+def _serialize_subscribe_items(
+    items: List[Subscribe | SubscribeHistory],
+    *,
+    scene: str,
+    reset_tv_history_episodes: bool = False,
+) -> List[schemas.Subscribe]:
+    """逐条校验并序列化订阅/订阅历史列表，避免单条异常历史记录导致整页 500。"""
+    result: List[schemas.Subscribe] = []
+    for item in items or []:
+        try:
+            validated = schemas.Subscribe.model_validate(item, from_attributes=True)
+        except ValidationError as err:
+            logger.warning(
+                f"{scene} 记录 {getattr(item, 'id', '?')} 序列化校验失败，已跳过：{err}"
+            )
+            continue
+        if reset_tv_history_episodes and validated.type == MediaType.TV.value:
+            validated.total_episode = 0
+            validated.lack_episode = 0
+        result.append(validated)
+    return result
+
+
 @router.get("/", summary="查询所有订阅", response_model=List[schemas.Subscribe])
 async def read_subscribes(
     db: AsyncSession = Depends(get_async_db),
@@ -146,8 +170,10 @@ async def read_subscribes(
     查询所有订阅（管理员返回全部用户订阅，普通用户仅返回个人订阅）
     """
     if current_user.is_superuser:
-        return await Subscribe.async_list(db)
-    return await Subscribe.async_list_by_username(db, current_user.name)
+        subscribes = await Subscribe.async_list(db)
+    else:
+        subscribes = await Subscribe.async_list_by_username(db, current_user.name)
+    return _serialize_subscribe_items(subscribes, scene="订阅列表")
 
 
 @router.get(
@@ -157,7 +183,8 @@ async def list_subscribes(_: Annotated[str, Depends(verify_apitoken)]) -> Any:
     """
     查询所有订阅 API_TOKEN认证（?token=xxx）
     """
-    return await Subscribe.async_list()
+    subscribes = await Subscribe.async_list()
+    return _serialize_subscribe_items(subscribes, scene="订阅列表")
 
 
 @router.post("/", summary="新增订阅", response_model=schemas.Response)
@@ -586,14 +613,11 @@ async def subscribe_history(
         histories = await SubscribeHistory.async_list_by_type_and_username(
             db, mtype=mtype, username=current_user.name, page=page, count=count
         )
-    result = []
-    for history in histories:
-        history_item = schemas.Subscribe.model_validate(history, from_attributes=True)
-        if history_item.type == MediaType.TV.value:
-            history_item.total_episode = 0
-            history_item.lack_episode = 0
-        result.append(history_item)
-    return result
+    return _serialize_subscribe_items(
+        histories,
+        scene="订阅历史",
+        reset_tv_history_episodes=True,
+    )
 
 
 @router.delete(

@@ -187,12 +187,14 @@ def test_subscription_and_workflow_group_references_stay_intact(monkeypatch) -> 
 
 
 def test_data_migration_belongs_to_single_startup_lineage() -> None:
-    """新迁移应连接 NEO 当前 head，启动更新可自动发现且只有唯一 head。"""
+    """新迁移应连接 NEO 唯一主链，启动更新可自动发现且只有唯一 head。"""
     config = Config()
     config.set_main_option("script_location", "database")
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["a7383c1d9e20"]
+    heads = script.get_heads()
+    assert len(heads) == 1
     assert script.get_revision("a7383c1d9e20").down_revision == "c9d0e1f2a3b4"
+    assert any(rev.revision == "a7383c1d9e20" for rev in script.iterate_revisions(heads[0], "base"))
 
 
 def test_failure_between_config_writes_rolls_back_both_rows(monkeypatch) -> None:
