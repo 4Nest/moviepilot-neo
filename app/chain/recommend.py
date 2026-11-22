@@ -246,7 +246,8 @@ class RecommendChain(ChainBase, metaclass=Singleton):
         豆瓣最新电视剧
         """
         tvs = DoubanChain().douban_discover(mtype=MediaType.TV,
-                                            sort=sort, tags=tags, page=page, count=count)
+                                            sort=sort, tags=tags, page=page, count=count,
+                                            exclude_short_drama=True)
         return [media.to_dict() for media in tvs] if tvs else []
 
     @log_execution_time(logger=logger)
@@ -411,7 +412,8 @@ class RecommendChain(ChainBase, metaclass=Singleton):
         异步豆瓣最新电视剧
         """
         tvs = await DoubanChain().async_run_module("async_douban_discover", mtype=MediaType.TV,
-                                                   sort=sort, tags=tags, page=page, count=count)
+                                                   sort=sort, tags=tags, page=page, count=count,
+                                                   exclude_short_drama=True)
         return [media.to_dict() for media in tvs] if tvs else []
 
     @log_execution_time(logger=logger)

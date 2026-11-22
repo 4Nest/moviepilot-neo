@@ -487,7 +487,9 @@ class ConfigModel(BaseModel):
             "hdslb.com",
             "cmvideo.cn",
             "ykimg.com",
+            "puui.qpic.cn",
             "qpic.cn",
+            "hitv.com",
             "anilist.co",
         ]
     )

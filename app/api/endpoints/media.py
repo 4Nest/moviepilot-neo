@@ -15,6 +15,7 @@ from app.core.metainfo import MetaInfo, MetaInfoPath
 from app.core.security import verify_token, verify_apitoken
 from app.db.models import User
 from app.db.user_oper import get_current_admin
+from app.helper.discover_helper import async_resolve_external_media
 from app.modules.themoviedb.category import CategoryHelper
 from app.schemas import MediaType, MediaRecognizeConvertEventData
 from app.schemas.category import CategoryConfig, CategoryRawConfig
@@ -439,7 +440,7 @@ async def seasons(
                 if season is not None:
                     return [sea for sea in seasons_info if sea.season_number == season]
                 return seasons_info
-        elif media_source and source_media_id:
+        elif media_source and source_media_id and media_source in MEDIA_SOURCE_ID_FIELDS:
             mediainfo = await MediaChain().async_recognize_media(
                 source=media_source,
                 mediaid=source_media_id,
@@ -447,6 +448,24 @@ async def seasons(
                 cache=False,
             )
             if mediainfo:
+                return _build_media_seasons(mediainfo, season)
+        elif media_source and source_media_id:
+            mediainfo, _ = await async_resolve_external_media(
+                mediaid=mediaid,
+                mtype=MediaType.TV,
+                title=title,
+                year=year,
+                season=season,
+                mediachain=MediaChain(),
+                event_mgr=eventmanager,
+            )
+            if mediainfo:
+                if mediainfo.tmdb_id:
+                    seasons_info = await TmdbChain().async_tmdb_seasons(
+                        tmdbid=mediainfo.tmdb_id
+                    )
+                    if seasons_info:
+                        return seasons_info
                 return _build_media_seasons(mediainfo, season)
         # 明确来源的查询不能按标题切换到默认识别源，避免辅助 TMDB 信息替换主身份。
         if media_source and source_media_id:
@@ -481,6 +500,7 @@ async def detail(
     type_name: str,
     title: Optional[str] = None,
     year: str = None,
+    include_images: bool = True,
     _: schemas.TokenPayload = Depends(verify_token),
 ) -> Any:
     """
@@ -490,46 +510,25 @@ async def detail(
     mediainfo = None
     mediachain = MediaChain()
     media_source, source_media_id = parse_media_key(mediaid)
-    if media_source and source_media_id:
+    if media_source and source_media_id and media_source in MEDIA_SOURCE_ID_FIELDS:
         mediainfo = await mediachain.async_recognize_media(
             source=media_source,
             mediaid=source_media_id,
             mtype=mtype,
         )
-    if not mediainfo and (
-        not media_source or media_source not in MEDIA_SOURCE_ID_FIELDS
-    ):
-        # 旧探索插件可能只提供列表或转换事件，原生 ID 直识别失败后需保留原有兼容链路。
-        event_data = MediaRecognizeConvertEventData(
-            mediaid=mediaid, convert_type=settings.RECOGNIZE_SOURCE
+    elif not media_source or media_source not in MEDIA_SOURCE_ID_FIELDS:
+        mediainfo, _ = await async_resolve_external_media(
+            mediaid=mediaid,
+            mtype=mtype,
+            title=title,
+            year=year,
+            mediachain=mediachain,
+            event_mgr=eventmanager,
         )
-        event = await eventmanager.async_send_event(
-            ChainEventType.MediaRecognizeConvert, event_data
-        )
-        # 使用事件返回的上下文数据
-        if event and event.event_data and event.event_data.media_dict:
-            event_data: MediaRecognizeConvertEventData = event.event_data
-            new_id = event_data.media_dict.get("id")
-            if new_id is not None and event_data.convert_type:
-                mediainfo = await mediachain.async_recognize_media(
-                    source=event_data.convert_type,
-                    mediaid=str(new_id),
-                    mtype=mtype,
-                )
-        if not mediainfo and title:
-            # 使用名称识别兜底
-            meta = MetaInfo(title)
-            if year:
-                meta.year = year
-            if mtype:
-                meta.type = mtype
-            mediainfo = await mediachain.async_recognize_by_meta(
-                meta,
-                obtain_images=False,
-            )
     # 识别
     if mediainfo:
-        await mediachain.async_obtain_images(mediainfo)
+        if include_images:
+            await mediachain.async_obtain_images(mediainfo)
         return mediainfo.to_dict()
 
     return schemas.MediaInfo()

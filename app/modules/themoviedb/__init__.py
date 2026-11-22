@@ -7,6 +7,10 @@ from app import schemas
 from app.core.config import settings
 from app.core.context import MediaInfo
 from app.core.meta import MetaBase
+from app.helper.discover_helper import (
+    TMDB_SHORT_DRAMA_WITHOUT_KEYWORDS,
+    is_short_drama_tmdb_item,
+)
 from app.log import logger
 from app.modules import _ModuleBase
 from app.modules.themoviedb.category import CategoryHelper
@@ -959,6 +963,47 @@ class TheMovieDbModule(_ModuleBase):
             return None
         return self.scraper.get_metadata_img(mediainfo=mediainfo, season=season, episode=episode)
 
+    @staticmethod
+    def _build_discover_params(
+        mtype: MediaType,
+        sort_by: str,
+        with_genres: str,
+        with_original_language: str,
+        with_keywords: str,
+        with_watch_providers: str,
+        vote_average: float,
+        vote_count: int,
+        release_date: str,
+        page: Optional[int] = 1,
+        with_networks: Optional[str] = "",
+        release_date_lte: Optional[str] = "",
+        with_runtime_gte: Optional[int] = 0,
+        exclude_short_drama: Optional[bool] = False,
+    ) -> dict:
+        """构造 TMDB 电影/剧集发现请求参数，保持旧调用默认键集合不变。"""
+        date_key_prefix = "release_date" if mtype == MediaType.MOVIE else "first_air_date"
+        params = {
+            "sort_by": sort_by,
+            "with_genres": with_genres,
+            "with_original_language": with_original_language,
+            "with_keywords": with_keywords,
+            "with_watch_providers": with_watch_providers,
+            "vote_average.gte": vote_average,
+            "vote_count.gte": vote_count,
+            f"{date_key_prefix}.gte": release_date,
+            "page": page,
+        }
+        if release_date_lte:
+            params[f"{date_key_prefix}.lte"] = release_date_lte
+        if with_runtime_gte and int(with_runtime_gte) > 0:
+            params["with_runtime.gte"] = int(with_runtime_gte)
+        if mtype == MediaType.TV:
+            if with_networks:
+                params["with_networks"] = with_networks
+            if exclude_short_drama:
+                params["without_keywords"] = TMDB_SHORT_DRAMA_WITHOUT_KEYWORDS
+        return params
+
     def tmdb_discover(self, mtype: MediaType, sort_by: str,
                       with_genres: str,
                       with_original_language: str,
@@ -967,7 +1012,11 @@ class TheMovieDbModule(_ModuleBase):
                       vote_average: float,
                       vote_count: int,
                       release_date: str,
-                      page: Optional[int] = 1) -> Optional[List[MediaInfo]]:
+                      page: Optional[int] = 1,
+                      with_networks: Optional[str] = "",
+                      release_date_lte: Optional[str] = "",
+                      with_runtime_gte: Optional[int] = 0,
+                      exclude_short_drama: Optional[bool] = False) -> Optional[List[MediaInfo]]:
         """
         :param mtype:  媒体类型
         :param sort_by:  排序方式
@@ -977,37 +1026,39 @@ class TheMovieDbModule(_ModuleBase):
         :param with_watch_providers:  提供商
         :param vote_average:  评分
         :param vote_count:  评分人数
-        :param release_date:  发布日期
+        :param release_date:  发布日期下界
         :param page:  页码
+        :param with_networks:  电视网络平台 ID
+        :param release_date_lte:  发布日期上界
+        :param with_runtime_gte:  最小时长（分钟）
+        :param exclude_short_drama:  是否排除短剧
         :return: 媒体信息列表
         """
+        params = self._build_discover_params(
+            mtype=mtype,
+            sort_by=sort_by,
+            with_genres=with_genres,
+            with_original_language=with_original_language,
+            with_keywords=with_keywords,
+            with_watch_providers=with_watch_providers,
+            vote_average=vote_average,
+            vote_count=vote_count,
+            release_date=release_date,
+            page=page,
+            with_networks=with_networks,
+            release_date_lte=release_date_lte,
+            with_runtime_gte=with_runtime_gte,
+            exclude_short_drama=exclude_short_drama,
+        )
         if mtype == MediaType.MOVIE:
-            infos = self.tmdb.discover_movies({
-                "sort_by": sort_by,
-                "with_genres": with_genres,
-                "with_original_language": with_original_language,
-                "with_keywords": with_keywords,
-                "with_watch_providers": with_watch_providers,
-                "vote_average.gte": vote_average,
-                "vote_count.gte": vote_count,
-                "release_date.gte": release_date,
-                "page": page
-            })
+            infos = self.tmdb.discover_movies(params)
         elif mtype == MediaType.TV:
-            infos = self.tmdb.discover_tvs({
-                "sort_by": sort_by,
-                "with_genres": with_genres,
-                "with_original_language": with_original_language,
-                "with_keywords": with_keywords,
-                "with_watch_providers": with_watch_providers,
-                "vote_average.gte": vote_average,
-                "vote_count.gte": vote_count,
-                "first_air_date.gte": release_date,
-                "page": page
-            })
+            infos = self.tmdb.discover_tvs(params)
         else:
             return []
         if infos:
+            if mtype == MediaType.TV and exclude_short_drama:
+                infos = [info for info in infos if not is_short_drama_tmdb_item(info)]
             return [MediaInfo(tmdb_info=info) for info in infos]
         return []
 
@@ -1345,7 +1396,11 @@ class TheMovieDbModule(_ModuleBase):
                                   vote_count: int,
                                   release_date: str,
                                   page: Optional[int] = 1,
-                                  raise_exception: bool = False) -> Optional[List[MediaInfo]]:
+                                  raise_exception: bool = False,
+                                  with_networks: Optional[str] = "",
+                                  release_date_lte: Optional[str] = "",
+                                  with_runtime_gte: Optional[int] = 0,
+                                  exclude_short_drama: Optional[bool] = False) -> Optional[List[MediaInfo]]:
         """
         TMDB发现功能（异步版本）
         :param mtype:  媒体类型
@@ -1356,37 +1411,40 @@ class TheMovieDbModule(_ModuleBase):
         :param with_watch_providers:  提供商
         :param vote_average:  评分
         :param vote_count:  评分人数
-        :param release_date:  发布日期
+        :param release_date:  发布日期下界
         :param page:  页码
+        :param raise_exception:  异常时是否抛出
+        :param with_networks:  电视网络平台 ID
+        :param release_date_lte:  发布日期上界
+        :param with_runtime_gte:  最小时长（分钟）
+        :param exclude_short_drama:  是否排除短剧
         :return: 媒体信息列表
         """
+        params = self._build_discover_params(
+            mtype=mtype,
+            sort_by=sort_by,
+            with_genres=with_genres,
+            with_original_language=with_original_language,
+            with_keywords=with_keywords,
+            with_watch_providers=with_watch_providers,
+            vote_average=vote_average,
+            vote_count=vote_count,
+            release_date=release_date,
+            page=page,
+            with_networks=with_networks,
+            release_date_lte=release_date_lte,
+            with_runtime_gte=with_runtime_gte,
+            exclude_short_drama=exclude_short_drama,
+        )
         if mtype == MediaType.MOVIE:
-            infos = await self.tmdb.async_discover_movies({
-                "sort_by": sort_by,
-                "with_genres": with_genres,
-                "with_original_language": with_original_language,
-                "with_keywords": with_keywords,
-                "with_watch_providers": with_watch_providers,
-                "vote_average.gte": vote_average,
-                "vote_count.gte": vote_count,
-                "release_date.gte": release_date,
-                "page": page
-            }, raise_exception=raise_exception)
+            infos = await self.tmdb.async_discover_movies(params, raise_exception=raise_exception)
         elif mtype == MediaType.TV:
-            infos = await self.tmdb.async_discover_tvs({
-                "sort_by": sort_by,
-                "with_genres": with_genres,
-                "with_original_language": with_original_language,
-                "with_keywords": with_keywords,
-                "with_watch_providers": with_watch_providers,
-                "vote_average.gte": vote_average,
-                "vote_count.gte": vote_count,
-                "first_air_date.gte": release_date,
-                "page": page
-            }, raise_exception=raise_exception)
+            infos = await self.tmdb.async_discover_tvs(params, raise_exception=raise_exception)
         else:
             return []
         if infos:
+            if mtype == MediaType.TV and exclude_short_drama:
+                infos = [info for info in infos if not is_short_drama_tmdb_item(info)]
             return [MediaInfo(tmdb_info=info) for info in infos]
         return []
 

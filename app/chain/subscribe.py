@@ -37,6 +37,7 @@ from app.helper.interaction import (
     supports_markdown,
     update_or_post_message,
 )
+from app.helper.discover_helper import async_resolve_external_media, resolve_external_media
 from app.helper.mediaserver import MediaServerHelper
 from app.helper.server import MoviePilotServerHelper
 from app.helper.torrent import TorrentHelper
@@ -49,6 +50,7 @@ from app.schemas.subscribe import compute_subscribe_version_total_episode
 from app.schemas.types import MediaType, SystemConfigKey, MessageChannel, NotificationType, EventType, ChainEventType, \
     ContentType
 from app.utils.media import (
+    MEDIA_SOURCE_ID_FIELDS,
     build_media_key,
     normalize_media_source,
     parse_media_key,
@@ -1248,21 +1250,50 @@ class SubscribeChain(ChainBase):
         )
         if resolved_source and resolved_media_id:
             media_source, media_id = resolved_source, resolved_media_id
-        if any((media_id, tmdbid, doubanid, bangumiid, anilistid)):
-            mediainfo = self.recognize_media(
-                meta=metainfo,
+
+        if (
+            media_source
+            and media_source not in MEDIA_SOURCE_ID_FIELDS
+            and not any((tmdbid, doubanid, bangumiid, anilistid))
+        ):
+            external_mediaid = mediaid or build_media_key(media_source, media_id)
+            mediainfo, resolved_season = resolve_external_media(
+                mediaid=external_mediaid,
                 mtype=mtype,
-                source=media_source,
-                mediaid=media_id,
-                tmdbid=tmdbid,
-                doubanid=doubanid,
-                bangumiid=bangumiid,
-                anilistid=anilistid,
-                episode_group=episode_group,
-                cache=False,
+                title=title,
+                year=year,
+                season=season,
+                mediachain=MediaChain(),
+                recognize_media_fn=self.recognize_media,
+                event_mgr=eventmanager,
             )
-        elif mediaid:
-            mediainfo = self.__get_event_media(mediaid, metainfo)
+            if mediainfo:
+                if season is None and resolved_season is not None and mediainfo.type == MediaType.TV:
+                    season = resolved_season
+                    metainfo.type = MediaType.TV
+                    metainfo.begin_season = season
+                auth_source, auth_media_id = resolve_media_identity(media=mediainfo)
+                if auth_source and auth_media_id:
+                    media_source, media_id = auth_source, auth_media_id
+                if external_mediaid and not kwargs.get("mediaid"):
+                    kwargs["mediaid"] = external_mediaid
+
+        if not mediainfo:
+            if any((media_id, tmdbid, doubanid, bangumiid, anilistid)):
+                mediainfo = self.recognize_media(
+                    meta=metainfo,
+                    mtype=mtype,
+                    source=media_source,
+                    mediaid=media_id,
+                    tmdbid=tmdbid,
+                    doubanid=doubanid,
+                    bangumiid=bangumiid,
+                    anilistid=anilistid,
+                    episode_group=episode_group,
+                    cache=False,
+                )
+            elif mediaid:
+                mediainfo = self.__get_event_media(mediaid, metainfo)
 
         if mediainfo and mediainfo.source != "themoviedb":
             meta = MetaInfo(mediainfo.title)
@@ -1461,21 +1492,50 @@ class SubscribeChain(ChainBase):
         )
         if resolved_source and resolved_media_id:
             media_source, media_id = resolved_source, resolved_media_id
-        if any((media_id, tmdbid, doubanid, bangumiid, anilistid)):
-            mediainfo = await self.async_recognize_media(
-                meta=metainfo,
+
+        if (
+            media_source
+            and media_source not in MEDIA_SOURCE_ID_FIELDS
+            and not any((tmdbid, doubanid, bangumiid, anilistid))
+        ):
+            external_mediaid = mediaid or build_media_key(media_source, media_id)
+            mediainfo, resolved_season = await async_resolve_external_media(
+                mediaid=external_mediaid,
                 mtype=mtype,
-                source=media_source,
-                mediaid=media_id,
-                tmdbid=tmdbid,
-                doubanid=doubanid,
-                bangumiid=bangumiid,
-                anilistid=anilistid,
-                episode_group=episode_group,
-                cache=False,
+                title=title,
+                year=year,
+                season=season,
+                mediachain=MediaChain(),
+                recognize_media_fn=self.async_recognize_media,
+                event_mgr=eventmanager,
             )
-        elif mediaid:
-            mediainfo = await self.__async_get_event_meida(mediaid, metainfo)
+            if mediainfo:
+                if season is None and resolved_season is not None and mediainfo.type == MediaType.TV:
+                    season = resolved_season
+                    metainfo.type = MediaType.TV
+                    metainfo.begin_season = season
+                auth_source, auth_media_id = resolve_media_identity(media=mediainfo)
+                if auth_source and auth_media_id:
+                    media_source, media_id = auth_source, auth_media_id
+                if external_mediaid and not kwargs.get("mediaid"):
+                    kwargs["mediaid"] = external_mediaid
+
+        if not mediainfo:
+            if any((media_id, tmdbid, doubanid, bangumiid, anilistid)):
+                mediainfo = await self.async_recognize_media(
+                    meta=metainfo,
+                    mtype=mtype,
+                    source=media_source,
+                    mediaid=media_id,
+                    tmdbid=tmdbid,
+                    doubanid=doubanid,
+                    bangumiid=bangumiid,
+                    anilistid=anilistid,
+                    episode_group=episode_group,
+                    cache=False,
+                )
+            elif mediaid:
+                mediainfo = await self.__async_get_event_meida(mediaid, metainfo)
 
         if mediainfo and mediainfo.source != "themoviedb":
             meta = MetaInfo(mediainfo.title)

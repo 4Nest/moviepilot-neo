@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -207,59 +208,75 @@ class SystemHelper(ConfigReloadMixin):
         logger.info(f"已创建本地 CLI 重启任务，辅助进程 PID: {process.pid}")
 
     @staticmethod
-    def _get_container_id() -> str:
+    def _get_container_id() -> Optional[str]:
         """
-        获取当前容器ID
+        获取当前容器 ID，兼容 mountinfo、cgroup v1/v2 与标准容器 HOSTNAME。
         """
-        container_id = None
-        try:
-            with open("/proc/self/mountinfo", "r", encoding="utf-8", errors="replace") as f:
-                data = f.read()
-                index_resolv_conf = data.find("resolv.conf")
-                if index_resolv_conf != -1:
-                    index_second_slash = data.rfind("/", 0, index_resolv_conf)
-                    index_first_slash = data.rfind("/", 0, index_second_slash) + 1
-                    container_id = data[index_first_slash:index_second_slash]
-                    if len(container_id) < 20:
-                        index_resolv_conf = data.find("/sys/fs/cgroup/devices")
-                        if index_resolv_conf != -1:
-                            index_second_slash = data.rfind(" ", 0, index_resolv_conf)
-                            index_first_slash = (
-                                    data.rfind("/", 0, index_second_slash) + 1
-                            )
-                            container_id = data[index_first_slash:index_second_slash]
-        except Exception as e:
-            logger.debug(f"获取容器ID失败: {str(e)}")
-        return container_id.strip() if container_id else None
+        hex64_pattern = re.compile(r"(?:containers/|docker[-/]|cri-containerd[-:])([0-9a-f]{64})(?:[/.:\s]|$)")
+        generic_hex64 = re.compile(r"(?:^|/)([0-9a-f]{64})(?:[/.:\s]|$)")
+
+        for probe_path in ("/proc/self/mountinfo", "/proc/self/cgroup"):
+            try:
+                data = Path(probe_path).read_text(encoding="utf-8", errors="replace")
+            except OSError as e:
+                logger.debug(f"读取 {probe_path} 失败: {e}")
+                continue
+
+            match = hex64_pattern.search(data) or generic_hex64.search(data)
+            if match:
+                return match.group(1)
+
+        hostname = (os.environ.get("HOSTNAME") or "").strip()
+        if re.fullmatch(r"[0-9a-f]{12,64}", hostname):
+            return hostname
+        return None
 
     @staticmethod
-    def _check_restart_policy() -> bool:
+    def _check_restart_policy() -> Optional[bool]:
         """
-        检查当前容器是否配置了自动重启策略
+        检查当前容器是否配置了自动重启策略。
+
+        :return:
+            - ``True``: 已通过 Docker API 确认配置了自动重启策略
+            - ``False``: 已通过 Docker API 确认未配置自动重启策略（如 ``no``）
+            - ``None``: 未挂载 docker.sock 或 Docker API 不可达，无法探测策略
         """
         try:
-            # 获取当前容器ID
             container_id = SystemHelper._get_container_id()
             if not container_id:
-                return False
+                return None
 
             # 创建 Docker 客户端（仅重启时用到，按需导入以减少常驻内存）
             import docker
             client = docker.DockerClient(base_url=settings.DOCKER_CLIENT_API)
-            # 获取容器信息
             container = client.containers.get(container_id)
             restart_policy = container.attrs.get('HostConfig', {}).get('RestartPolicy', {})
             policy_name = restart_policy.get('Name', 'no')
-            # 检查是否有有效的重启策略
-            auto_restart_policies = ['always', 'unless-stopped', 'on-failure']
+            auto_restart_policies = ('always', 'unless-stopped', 'on-failure')
             has_restart_policy = policy_name in auto_restart_policies
 
             logger.info(f"容器重启策略: {policy_name}, 支持自动重启: {has_restart_policy}")
             return has_restart_policy
 
         except Exception as e:
-            logger.warning(f"检查重启策略失败: {str(e)}")
-            return False
+            logger.info(f"无法通过 Docker API 检查重启策略（将使用内置信号优雅重启）: {e}")
+            return None
+
+    @staticmethod
+    def _schedule_self_sigterm(delay: float = 0.3) -> None:
+        """
+        短延迟向当前主进程发送 SIGTERM，确保重启/升级接口的 HTTP 响应先完整返回客户端。
+        """
+        target_pid = os.getpid()
+
+        def _send_signal():
+            time.sleep(delay)
+            try:
+                os.kill(target_pid, signal.SIGTERM)
+            except OSError as err:
+                logger.warning(f"发送 SIGTERM 信号失败: {err}")
+
+        threading.Thread(target=_send_signal, daemon=True).start()
 
     @staticmethod
     def _mark_docker_intentional_restart() -> None:
@@ -283,40 +300,39 @@ class SystemHelper(ConfigReloadMixin):
     @staticmethod
     def restart() -> Tuple[bool, str]:
         """
-        执行Docker重启操作
+        执行重启操作
         """
         if not SystemUtils.is_docker():
             if not SystemHelper._is_local_cli_managed():
                 return False, "当前实例不是由 moviepilot CLI 启动，无法执行内建重启！"
             try:
                 SystemHelper._spawn_local_restart_helper()
-                # 复用与 Docker 相同的优雅退出路径，确保当前后端进程真正结束。
-                os.kill(os.getpid(), signal.SIGTERM)
+                # 延迟发送优雅退出信号，确保 HTTP 响应先返回给前端。
+                SystemHelper._schedule_self_sigterm()
                 return True, ""
             except Exception as err:
                 logger.error(f"本地 CLI 重启失败: {str(err)}")
                 return False, f"本地 CLI 重启失败：{str(err)}"
 
         try:
-            # 检查容器是否配置了自动重启策略
+            # 检查容器重启策略：
+            # - False：Docker API 可达且明确未配置自动重启策略 -> 调用 Docker API 重启容器
+            # - True / None：已配置自动重启策略，或未挂载 docker.sock 无法访问 Docker API ->
+            #   写入手动重启标记并优雅退出，交由宿主机重启策略拉起容器执行启动更新流程
             has_restart_policy = SystemHelper._check_restart_policy()
-            if has_restart_policy:
-                # 有重启策略，使用优雅退出方式
-                logger.info("检测到容器配置了自动重启策略，使用优雅重启方式...")
-                SystemHelper._mark_docker_intentional_restart()
-                # 启动优雅退出超时监控
-                SystemHelper._start_graceful_shutdown_monitor()
-                # 发送SIGTERM信号给当前进程，触发优雅停止
-                os.kill(os.getpid(), signal.SIGTERM)
-                return True, ""
-            else:
-                # 没有重启策略，使用Docker API强制重启
+            if has_restart_policy is False:
                 logger.info("容器未配置自动重启策略，使用Docker API重启...")
                 return SystemHelper._docker_api_restart()
+
+            logger.info("使用内置优雅退出重启容器（交由 Docker 重启策略拉起）...")
+            SystemHelper._mark_docker_intentional_restart()
+            if has_restart_policy is True:
+                SystemHelper._start_graceful_shutdown_monitor()
+            SystemHelper._schedule_self_sigterm()
+            return True, ""
         except Exception as err:
             logger.error(f"重启失败: {str(err)}")
             SystemHelper._clear_docker_intentional_restart()
-            # 降级为Docker API重启
             logger.warning("降级为Docker API重启...")
             return SystemHelper._docker_api_restart()
 

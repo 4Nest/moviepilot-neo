@@ -21,7 +21,11 @@ class TmdbChain(ChainBase):
                       vote_average: float,
                       vote_count: int,
                       release_date: str,
-                      page: Optional[int] = 1) -> Optional[List[MediaInfo]]:
+                      page: Optional[int] = 1,
+                      with_networks: Optional[str] = "",
+                      release_date_lte: Optional[str] = "",
+                      with_runtime_gte: Optional[int] = 0,
+                      exclude_short_drama: Optional[bool] = False) -> Optional[List[MediaInfo]]:
         """
         :param mtype:  媒体类型
         :param sort_by:  排序方式
@@ -31,10 +35,23 @@ class TmdbChain(ChainBase):
         :param with_watch_providers:  提供商
         :param vote_average:  评分
         :param vote_count:  评分人数
-        :param release_date:  上映日期
+        :param release_date:  上映日期下界
         :param page:  页码
+        :param with_networks:  电视网络平台 ID
+        :param release_date_lte:  上映日期上界
+        :param with_runtime_gte:  最小时长（分钟）
+        :param exclude_short_drama:  是否排除短剧
         :return: 媒体信息列表
         """
+        extra_kwargs = {}
+        if with_networks:
+            extra_kwargs["with_networks"] = with_networks
+        if release_date_lte:
+            extra_kwargs["release_date_lte"] = release_date_lte
+        if with_runtime_gte:
+            extra_kwargs["with_runtime_gte"] = with_runtime_gte
+        if exclude_short_drama:
+            extra_kwargs["exclude_short_drama"] = exclude_short_drama
         return self.run_module("tmdb_discover", mtype=mtype,
                                sort_by=sort_by,
                                with_genres=with_genres,
@@ -44,7 +61,8 @@ class TmdbChain(ChainBase):
                                vote_average=vote_average,
                                vote_count=vote_count,
                                release_date=release_date,
-                               page=page)
+                               page=page,
+                               **extra_kwargs)
 
     def tmdb_trending(self, page: Optional[int] = 1) -> Optional[List[MediaInfo]]:
         """
@@ -174,7 +192,11 @@ class TmdbChain(ChainBase):
                                   vote_average: float,
                                   vote_count: int,
                                   release_date: str,
-                                  page: Optional[int] = 1) -> Optional[List[MediaInfo]]:
+                                  page: Optional[int] = 1,
+                                  with_networks: Optional[str] = "",
+                                  release_date_lte: Optional[str] = "",
+                                  with_runtime_gte: Optional[int] = 0,
+                                  exclude_short_drama: Optional[bool] = False) -> Optional[List[MediaInfo]]:
         """
         发现TMDB电影、剧集（异步版本）
         :param mtype:  媒体类型
@@ -185,10 +207,23 @@ class TmdbChain(ChainBase):
         :param with_watch_providers:  提供商
         :param vote_average:  评分
         :param vote_count:  评分人数
-        :param release_date:  上映日期
+        :param release_date:  上映日期下界
         :param page:  页码
+        :param with_networks:  电视网络平台 ID
+        :param release_date_lte:  上映日期上界
+        :param with_runtime_gte:  最小时长（分钟）
+        :param exclude_short_drama:  是否排除短剧
         :return: 媒体信息列表
         """
+        extra_kwargs = {}
+        if with_networks:
+            extra_kwargs["with_networks"] = with_networks
+        if release_date_lte:
+            extra_kwargs["release_date_lte"] = release_date_lte
+        if with_runtime_gte:
+            extra_kwargs["with_runtime_gte"] = with_runtime_gte
+        if exclude_short_drama:
+            extra_kwargs["exclude_short_drama"] = exclude_short_drama
         return await self.async_run_module("async_tmdb_discover", mtype=mtype,
                                            sort_by=sort_by,
                                            with_genres=with_genres,
@@ -198,7 +233,8 @@ class TmdbChain(ChainBase):
                                            vote_average=vote_average,
                                            vote_count=vote_count,
                                            release_date=release_date,
-                                           page=page)
+                                           page=page,
+                                           **extra_kwargs)
 
     async def async_tmdb_trending(self, page: Optional[int] = 1) -> Optional[List[MediaInfo]]:
         """

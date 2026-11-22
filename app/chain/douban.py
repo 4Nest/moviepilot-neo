@@ -53,7 +53,8 @@ class DoubanChain(ChainBase):
         return self.run_module("tv_weekly_global", page=page, count=count)
 
     def douban_discover(self, mtype: MediaType, sort: str, tags: str,
-                        page: Optional[int] = 0, count: Optional[int] = 30) -> Optional[List[MediaInfo]]:
+                        page: Optional[int] = 0, count: Optional[int] = 30,
+                        exclude_short_drama: Optional[bool] = False) -> Optional[List[MediaInfo]]:
         """
         发现豆瓣电影、剧集
         :param mtype:  媒体类型
@@ -61,10 +62,14 @@ class DoubanChain(ChainBase):
         :param tags:  标签
         :param page:  页码
         :param count:  数量
+        :param exclude_short_drama:  是否排除真人短剧/短片
         :return: 媒体信息列表
         """
+        extra_kwargs = {}
+        if exclude_short_drama:
+            extra_kwargs["exclude_short_drama"] = exclude_short_drama
         return self.run_module("douban_discover", mtype=mtype, sort=sort, tags=tags,
-                               page=page, count=count)
+                               page=page, count=count, **extra_kwargs)
 
     def tv_animation(self, page: Optional[int] = 1, count: Optional[int] = 30) -> Optional[List[MediaInfo]]:
         """
@@ -158,7 +163,8 @@ class DoubanChain(ChainBase):
         return await self.async_run_module("async_tv_weekly_global", page=page, count=count)
 
     async def async_douban_discover(self, mtype: MediaType, sort: str, tags: str,
-                                    page: Optional[int] = 0, count: Optional[int] = 30) -> Optional[List[MediaInfo]]:
+                                    page: Optional[int] = 0, count: Optional[int] = 30,
+                                    exclude_short_drama: Optional[bool] = False) -> Optional[List[MediaInfo]]:
         """
         发现豆瓣电影、剧集（异步版本）
         :param mtype:  媒体类型
@@ -166,10 +172,14 @@ class DoubanChain(ChainBase):
         :param tags:  标签
         :param page:  页码
         :param count:  数量
+        :param exclude_short_drama:  是否排除真人短剧/短片
         :return: 媒体信息列表
         """
+        extra_kwargs = {}
+        if exclude_short_drama:
+            extra_kwargs["exclude_short_drama"] = exclude_short_drama
         return await self.async_run_module("async_douban_discover", mtype=mtype, sort=sort, tags=tags,
-                                           page=page, count=count)
+                                           page=page, count=count, **extra_kwargs)
 
     async def async_tv_animation(self, page: Optional[int] = 1,
                                  count: Optional[int] = 30) -> Optional[List[MediaInfo]]:

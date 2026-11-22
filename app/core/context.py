@@ -13,6 +13,35 @@ BANGUMI_MOVIE_PLATFORMS = frozenset({"movie", "电影", "剧场版"})
 ANILIST_MOVIE_FORMATS = frozenset({"MOVIE"})
 ANILIST_CHINESE_TITLE_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 ANILIST_JAPANESE_KANA_PATTERN = re.compile(r"[\u3040-\u30ff]")
+TMDB_GENRE_NAMES: Dict[int, str] = {
+    28: "动作",
+    12: "冒险",
+    16: "动画",
+    35: "喜剧",
+    80: "犯罪",
+    99: "纪录",
+    18: "剧情",
+    10751: "家庭",
+    14: "奇幻",
+    36: "历史",
+    27: "恐怖",
+    10402: "音乐",
+    9648: "悬疑",
+    10749: "爱情",
+    878: "科幻",
+    10770: "电视电影",
+    53: "惊悚",
+    10752: "战争",
+    37: "西部",
+    10759: "动作冒险",
+    10762: "儿童",
+    10763: "新闻",
+    10764: "真人秀",
+    10765: "科幻奇幻",
+    10766: "肥皂剧",
+    10767: "脱口秀",
+    10768: "战争政治",
+}
 
 
 @dataclass
@@ -602,6 +631,19 @@ class MediaInfo:
                 setattr(self, key, value)
             elif type(current_value) is type(value):
                 setattr(self, key, value)
+        # 列表接口仅返回 genre_ids 时自动补齐中文 genres，避免推荐/探索卡片悬停缺失风格且不污染原始 info
+        if not self.genres and self.genre_ids:
+            mapped_genres = []
+            for raw_gid in self.genre_ids:
+                try:
+                    gid = int(raw_gid)
+                except (TypeError, ValueError):
+                    continue
+                genre_name = TMDB_GENRE_NAMES.get(gid)
+                if genre_name:
+                    mapped_genres.append({"id": gid, "name": genre_name})
+            if mapped_genres:
+                self.genres = mapped_genres
 
     def set_douban_info(self, info: dict):
         """

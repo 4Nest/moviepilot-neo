@@ -24,12 +24,13 @@ from app.db.user_oper import (
     get_current_admin,
     get_current_admin_async,
 )
+from app.helper.discover_helper import parse_discover_title_and_season
 from app.helper.server import MoviePilotServerHelper
 from app.log import logger
 from app.scheduler import Scheduler
 from app.schemas.event import SubscribeModifiedEventData
 from app.schemas.types import MediaType, EventType, SystemConfigKey
-from app.utils.media import normalize_media_source, parse_media_key
+from app.utils.media import MEDIA_SOURCE_ID_FIELDS, normalize_media_source, parse_media_key
 
 router = APIRouter()
 
@@ -77,6 +78,8 @@ async def list_subscribes_by_media_key(
         subscribes.extend(await Subscribe.async_list_by_bangumiid(db, int(media_id)))
     elif source == "anilist" and media_id.isdigit():
         subscribes.extend(await Subscribe.async_list_by_anilistid(db, int(media_id)))
+    elif source not in MEDIA_SOURCE_ID_FIELDS:
+        subscribes.extend(await Subscribe.async_list_by_mediaid(db, media_key))
 
     unique_subscribes = {subscribe.id: subscribe for subscribe in subscribes}
     if season is not None:
@@ -85,6 +88,35 @@ async def list_subscribes_by_media_key(
             if subscribe.season == season
         ]
     return list(unique_subscribes.values())
+
+
+async def _find_subscribes_by_title_fallback(
+    db: AsyncSession,
+    title: str,
+    season: Optional[int] = None,
+) -> List[Subscribe]:
+    """按标题及季号回退查询候选订阅（兼容流媒体修饰词、季号后缀与篇章副标题）。"""
+    meta = MetaInfo(title)
+    target_season = season if season is not None else meta.begin_season
+    subscribes = list(
+        await Subscribe.async_list_by_title(db, title=meta.name, season=target_season)
+    )
+    if subscribes:
+        return subscribes
+
+    clean_title, parsed_season, main_title = parse_discover_title_and_season(title)
+    effective_season = season if season is not None else parsed_season
+    for candidate in dict.fromkeys([clean_title, main_title]):
+        if not candidate or candidate == meta.name and effective_season == target_season:
+            continue
+        subscribes = list(
+            await Subscribe.async_list_by_title(
+                db, title=candidate, season=effective_season
+            )
+        )
+        if subscribes:
+            return subscribes
+    return []
 
 
 
@@ -332,12 +364,7 @@ async def subscribe_mediaid(
     title_check = not result and bool(title) and source != "themoviedb"
     # 使用名称检查订阅
     if title_check and title:
-        meta = MetaInfo(title)
-        if season is not None:
-            meta.begin_season = season
-        subscribes = await Subscribe.async_list_by_title(
-            db, title=meta.name, season=meta.begin_season
-        )
+        subscribes = await _find_subscribes_by_title_fallback(db, title=title, season=season)
         result = select_accessible_subscribe(subscribes, current_user)
     return result if result else Subscribe()
 @router.get("/refresh", summary="刷新订阅", response_model=schemas.Response)
@@ -485,15 +512,20 @@ async def search_subscribe(
 async def delete_subscribe_by_mediaid(
     mediaid: str,
     season: Optional[int] = None,
+    title: Optional[str] = None,
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(get_current_active_user_async),
 ) -> Any:
     """
-    根据任意媒体数据源 ID 删除订阅。
+    根据任意媒体数据源 ID 删除订阅，非 TMDB 来源支持标题+季号对称回退查找。
     """
+    candidates = await list_subscribes_by_media_key(db, mediaid, season)
+    source, _ = parse_media_key(mediaid)
+    if not candidates and title and source != "themoviedb":
+        candidates = await _find_subscribes_by_title_fallback(db, title=title, season=season)
     delete_subscribes = [
         subscribe
-        for subscribe in await list_subscribes_by_media_key(db, mediaid, season)
+        for subscribe in candidates
         if can_access_subscribe(subscribe, current_user)
     ]
     delete_events = []

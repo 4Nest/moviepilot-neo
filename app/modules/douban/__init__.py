@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.core.context import MediaInfo
 from app.core.meta import MetaBase
 from app.core.metainfo import MetaInfo
+from app.helper.discover_helper import is_short_drama_douban_media
 from app.log import logger
 from app.modules import _ModuleBase
 from app.modules.douban.apiv2 import DoubanApi
@@ -660,7 +661,8 @@ class DoubanModule(_ModuleBase):
             return await __async_douban_tv()
 
     def douban_discover(self, mtype: MediaType, sort: str, tags: str,
-                        page: int = 1, count: int = 30) -> Optional[List[MediaInfo]]:
+                        page: int = 1, count: int = 30,
+                        exclude_short_drama: bool = False) -> Optional[List[MediaInfo]]:
         """
         发现豆瓣电影、剧集
         :param mtype:  媒体类型
@@ -668,6 +670,7 @@ class DoubanModule(_ModuleBase):
         :param tags:  标签
         :param page:  页码
         :param count:  数量
+        :param exclude_short_drama:  是否排除真人短剧/短片
         :return: 媒体信息列表
         """
         logger.info(f"开始发现豆瓣 {mtype.value} ...")
@@ -679,16 +682,24 @@ class DoubanModule(_ModuleBase):
                                                 sort=sort, tags=tags)
         if infos and infos.get("items"):
             medias = [MediaInfo(douban_info=info) for info in infos.get("items")]
-            return [media for media in medias if media.poster_path
-                    and "movie_large.jpg" not in media.poster_path
-                    and "tv_normal.png" not in media.poster_path
-                    and "movie_large.jpg" not in media.poster_path
-                    and "tv_normal.jpg" not in media.poster_path
-                    and "tv_large.jpg" not in media.poster_path]
+            filtered = [
+                media for media in medias if media.poster_path
+                and "movie_large.jpg" not in media.poster_path
+                and "tv_normal.png" not in media.poster_path
+                and "tv_normal.jpg" not in media.poster_path
+                and "tv_large.jpg" not in media.poster_path
+            ]
+            if exclude_short_drama and "短片" not in (tags or ""):
+                filtered = [
+                    media for media in filtered
+                    if not is_short_drama_douban_media(media)
+                ]
+            return filtered
         return []
 
     async def async_douban_discover(self, mtype: MediaType, sort: str, tags: str,
-                                    page: int = 1, count: int = 30) -> Optional[List[MediaInfo]]:
+                                    page: int = 1, count: int = 30,
+                                    exclude_short_drama: bool = False) -> Optional[List[MediaInfo]]:
         """
         发现豆瓣电影、剧集（异步版本）
         :param mtype:  媒体类型
@@ -696,6 +707,7 @@ class DoubanModule(_ModuleBase):
         :param tags:  标签
         :param page:  页码
         :param count:  数量
+        :param exclude_short_drama:  是否排除真人短剧/短片
         :return: 媒体信息列表
         """
         logger.info(f"开始发现豆瓣 {mtype.value} ...")
@@ -707,12 +719,19 @@ class DoubanModule(_ModuleBase):
                                                             sort=sort, tags=tags)
         if infos and infos.get("items"):
             medias = [MediaInfo(douban_info=info) for info in infos.get("items")]
-            return [media for media in medias if media.poster_path
-                    and "movie_large.jpg" not in media.poster_path
-                    and "tv_normal.png" not in media.poster_path
-                    and "movie_large.jpg" not in media.poster_path
-                    and "tv_normal.jpg" not in media.poster_path
-                    and "tv_large.jpg" not in media.poster_path]
+            filtered = [
+                media for media in medias if media.poster_path
+                and "movie_large.jpg" not in media.poster_path
+                and "tv_normal.png" not in media.poster_path
+                and "tv_normal.jpg" not in media.poster_path
+                and "tv_large.jpg" not in media.poster_path
+            ]
+            if exclude_short_drama and "短片" not in (tags or ""):
+                filtered = [
+                    media for media in filtered
+                    if not is_short_drama_douban_media(media)
+                ]
+            return filtered
         return []
 
     def movie_showing(self, page: int = 1, count: int = 30) -> List[MediaInfo]:
