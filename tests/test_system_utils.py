@@ -68,11 +68,18 @@ class SystemHelperRestartTest(TestCase):
                 settings.TEMP_PATH / "moviepilot.intentional_restart"
             )
             try:
+                import time as _time
+                real_sleep = _time.sleep
                 with patch("app.helper.system.SystemUtils.is_docker", return_value=True), \
                         patch.object(SystemHelper, "_check_restart_policy", return_value=True), \
                         patch.object(SystemHelper, "_start_graceful_shutdown_monitor"), \
+                        patch("app.helper.system.time.sleep"), \
                         patch("app.helper.system.os.kill") as kill_mock:
                     ret, msg = SystemHelper.restart()
+                    for _ in range(100):
+                        if kill_mock.called:
+                            break
+                        real_sleep(0.005)
 
                 self.assertTrue(ret)
                 self.assertEqual(msg, "")

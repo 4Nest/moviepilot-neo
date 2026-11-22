@@ -263,20 +263,24 @@ class SystemHelper(ConfigReloadMixin):
             return None
 
     @staticmethod
-    def _schedule_self_sigterm(delay: float = 0.3) -> None:
+    def _schedule_self_sigterm(delay: float = 0.3) -> threading.Thread:
         """
         短延迟向当前主进程发送 SIGTERM，确保重启/升级接口的 HTTP 响应先完整返回客户端。
         """
         target_pid = os.getpid()
+        kill_fn = os.kill
 
         def _send_signal():
-            time.sleep(delay)
+            if delay > 0:
+                time.sleep(delay)
             try:
-                os.kill(target_pid, signal.SIGTERM)
+                kill_fn(target_pid, signal.SIGTERM)
             except OSError as err:
                 logger.warning(f"发送 SIGTERM 信号失败: {err}")
 
-        threading.Thread(target=_send_signal, daemon=True).start()
+        worker = threading.Thread(target=_send_signal, daemon=True)
+        worker.start()
+        return worker
 
     @staticmethod
     def _mark_docker_intentional_restart() -> None:
