@@ -34,6 +34,16 @@ from app.utils.string import StringUtils
 
 router = APIRouter()
 _cookiecloud_blacklist_lock = Lock()
+# 复制粘贴站点配置时容易带入首尾空白，直接参与请求头或地址构造的字段在入库前统一裁剪。
+_SITE_TRIMMED_STRING_FIELDS = frozenset({"url", "ua", "cookie", "rss", "apikey", "token"})
+
+
+def _trim_site_fields(site_in: schemas.Site) -> None:
+    """裁剪站点配置中易受复制空白影响的请求头与地址字段。"""
+    for field in _SITE_TRIMMED_STRING_FIELDS:
+        value = getattr(site_in, field, None)
+        if isinstance(value, str):
+            setattr(site_in, field, value.strip())
 
 
 def _merge_site_health(statistic: Any, domain: str) -> schemas.SiteStatistic:
@@ -63,6 +73,7 @@ async def add_site(
     """
     新增站点
     """
+    _trim_site_fields(site_in)
     if not site_in.url:
         return schemas.Response(success=False, message="站点地址不能为空")
     if SitesHelper().auth_level < 2:
@@ -102,6 +113,7 @@ async def update_site(
     """
     更新站点信息
     """
+    _trim_site_fields(site_in)
     site = await Site.async_get(db, site_in.id)
     if not site:
         return schemas.Response(success=False, message="站点不存在")

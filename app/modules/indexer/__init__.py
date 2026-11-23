@@ -2,6 +2,7 @@ import inspect
 from datetime import datetime
 from typing import Any, List, Optional, Tuple, Union
 
+from app.core.config import settings
 from app.core.context import SubtitleInfo, TorrentInfo
 from app.db.site_oper import SiteOper
 from app.helper.module import ModuleHelper
@@ -172,11 +173,13 @@ class IndexerModule(_ModuleBase):
     @classmethod
     def _site_user_agent(cls, site: dict) -> Optional[str]:
         """使用索引适配器声明的规则规范化下载上下文中的 User-Agent。"""
+        raw_ua = (site or {}).get("ua")
+        normalized_ua = raw_ua.strip() if isinstance(raw_ua, str) else raw_ua
         spider_cls = cls._resolve_spider_class((site or {}).get("parser"))
         get_user_agent = getattr(spider_cls, "get_user_agent", None)
         if callable(get_user_agent):
-            return get_user_agent((site or {}).get("ua"))
-        return (site or {}).get("ua")
+            return get_user_agent(normalized_ua)
+        return normalized_ua
 
     @staticmethod
     def __parse_result(site: dict, result_array: list, seconds: int) -> TorrentInfo:
@@ -772,6 +775,8 @@ class IndexerModule(_ModuleBase):
             获取站点解析器
             """
             target_schema = site.get("schema")
+            raw_ua = site.get("ua")
+            site_ua = raw_ua.strip() if isinstance(raw_ua, str) else ""
             dynamic_parser = SiteResourceRegistry.get_parser_class(target_schema)
             if dynamic_parser is not None:
                 return dynamic_parser(
@@ -780,7 +785,7 @@ class IndexerModule(_ModuleBase):
                     site_cookie=site.get("cookie"),
                     apikey=site.get("apikey"),
                     token=site.get("token"),
-                    ua=site.get("ua"),
+                    ua=site_ua or settings.USER_AGENT,
                     proxy=site.get("proxy"),
                     api_url=site.get("api_url"),
                 )
@@ -794,7 +799,7 @@ class IndexerModule(_ModuleBase):
                         site_cookie=site.get("cookie"),
                         apikey=site.get("apikey"),
                         token=site.get("token"),
-                        ua=site.get("ua"),
+                        ua=site_ua or settings.USER_AGENT,
                         proxy=site.get("proxy"),
                         api_url=site.get("api_url"))
             return None

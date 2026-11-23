@@ -157,13 +157,24 @@ class FileManagerModule(_ModuleBase):
                 season=season_num,
                 episode_group=mediainfo.episode_group,
             )
+        # 仅保留受支持的媒体/音频/字幕扩展名，避免把种子名中的点分标签误作文件后缀。
+        raw_suffix = Path(meta.title or "").suffix
+        supported_exts = {
+            ext.lower()
+            for ext in (
+                *(settings.RMT_MEDIAEXT or ()),
+                *(settings.RMT_AUDIOEXT or ()),
+                *(settings.RMT_SUBEXT or ()),
+            )
+        }
+        file_ext = raw_suffix if raw_suffix and raw_suffix.lower() in supported_exts else ""
         # 获取重命名后的名称
         path = handler.get_rename_path(
             template_string=rename_format,
             rename_dict=handler.get_naming_dict(meta=meta,
                                                 mediainfo=mediainfo,
                                                 episodes_info=episodes_info,
-                                                file_ext=Path(meta.title).suffix)
+                                                file_ext=file_ext)
         )
         return path.as_posix() if path else ""
 

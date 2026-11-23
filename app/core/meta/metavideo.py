@@ -1,5 +1,5 @@
 import re
-from typing import Optional
+from typing import Optional, Sequence, Union
 
 from Pinyin2Hanzi import is_pinyin
 
@@ -26,6 +26,10 @@ BRACKET_RESOURCE_RE = re.compile(
 YEAR_RANGE_RE = re.compile(r'([\s.]+)(\d{4})-(\d{4})')
 FILE_SIZE_RE = re.compile(r'[0-9.]+\s*[MGT]i?B(?![A-Z]+)', re.IGNORECASE)
 DATE_RE = re.compile(r'\d{4}[\s._-]\d{1,2}[\s._-]\d{1,2}')
+CRC32_BRACKET_RE = re.compile(
+    r'\[([0-9A-Fa-f]{8})\]|\(([0-9A-Fa-f]{8})\)|【([0-9A-Fa-f]{8})】'
+)
+_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
 DIY_RE = re.compile(r'(?<![A-Za-z0-9])DIY(?![A-Za-z0-9])', re.IGNORECASE)
 DIY_NEGATION_RE = re.compile(
     r'(?:非|没有|沒有|无|無|未|无需|無需|不含|禁止|\bno|\bnot|\bnon[- ]?)\s*$', re.IGNORECASE,
@@ -88,6 +92,7 @@ class MetaVideo(MetaBase):
     _unknown_name_str = ""
     _source = ""
     _effect = []
+    _bare_digit_episode = False
     # 正则式区
     _season_re = r"S(\d{4})(?!\d)|^S(\d{1,4})$|S(\d{1,4})E"
     _episode_re = r"EP?(\d{2,4})$|^EP?(\d{1,4})$|^S\d{1,2}EP?(\d{1,4})$|S\d{2}EP?(\d{2,4})"
@@ -131,6 +136,9 @@ class MetaVideo(MetaBase):
     _video_encode_pattern = re.compile(r"(%s)" % _video_encode_re, re.IGNORECASE)
     _audio_encode_pattern = re.compile(r"(%s)" % _audio_encode_re, re.IGNORECASE)
     _fps_pattern = re.compile(r"(%s)" % _fps_re, re.IGNORECASE)
+    _explicit_episode_override_pattern = re.compile(
+        r"^(?:S\d{1,2})?EP?\d{1,4}(?:-?EP?\d{1,4})*$", re.IGNORECASE
+    )
 
     def __init__(self, title: str, subtitle: str = None, isfile: bool = False):
         """
@@ -146,6 +154,7 @@ class MetaVideo(MetaBase):
         self._source = ""
         self._effect = []
         self._index = 0
+        self._bare_digit_episode = False
         # 判断是否纯数字命名
         if isfile \
                 and title.isdigit() \
@@ -178,6 +187,8 @@ class MetaVideo(MetaBase):
         title = FILE_SIZE_RE.sub("", title)
         # 把年月日去掉
         title = DATE_RE.sub("", title)
+        # 剥离括号内的 8 位十六进制 CRC32 校验码
+        title = self._strip_crc32_checksum(title)
         # 把 #数字 集号换成 E数字，避免分词后被拼进标题
         title = normalize_hash_episode(title)
         media_exts = settings.RMT_MEDIAEXT + settings.RMT_SUBEXT + settings.RMT_AUDIOEXT
@@ -189,11 +200,16 @@ class MetaVideo(MetaBase):
         token = tokens.get_next()
         while token:
             self._index += 1  # 更新当前处理的token索引
+            if self._is_crc32_token(token):
+                self._stop_name_flag = True
+                token = tokens.get_next()
+                self._continue_flag = True
+                continue
             # Part
             self.__init_part(token, tokens)
             # 标题
             if self._continue_flag:
-                self.__init_name(token, media_exts)
+                self.__init_name(token, tokens, media_exts)
             # 年份
             if self._continue_flag:
                 self.__init_year(token)
@@ -316,7 +332,62 @@ class MetaVideo(MetaBase):
                 name = None
         return name
 
-    def __init_name(self, token: Optional[str], media_exts: list):
+    @staticmethod
+    def _is_crc32_token(token: str) -> bool:
+        """
+        判断词元是否为同时包含数字与十六进制字母的 8 位 CRC32 校验码。
+
+        :param token: 待检查的单个词元
+        :return: 是否为 8 位十六进制 CRC32 校验码
+        """
+        return (
+            len(token) == 8
+            and all(ch in _HEX_CHARS for ch in token)
+            and any(ch.isdigit() for ch in token)
+            and any(ch.isalpha() for ch in token)
+        )
+
+    @classmethod
+    def _strip_crc32_checksum(cls, title: str) -> str:
+        """
+        剥离括号内的 8 位十六进制 CRC32 校验码，保留纯数字日期与正常片名。
+
+        :param title: 待预处理的影视标题
+        :return: 清理 CRC32 校验码后的标题
+        """
+        def _replace(match: re.Match[str]) -> str:
+            """
+            仅移除同时含数字与十六进制字母的括号校验码。
+            """
+            checksum = match.group(1) or match.group(2) or match.group(3) or ""
+            return "" if cls._is_crc32_token(checksum) else match.group(0)
+
+        return CRC32_BRACKET_RE.sub(_replace, title)
+
+    def __is_zero_title_token(self, token: str, tokens: Tokens) -> bool:
+        """
+        判断以 0 开头的词元是否属于片名。
+
+        仅当词元恰为单个 0、前一个词元不是纯数字、且后继词元是季、集或四位
+        年份时成立，用于保留《Steins;Gate 0》《ID-0》这类编号续作；`2.0` 音轨
+        分数与 `01` 序号仍按干扰词丢弃。
+        """
+        if token != "0":
+            return False
+        prev_token = tokens.prev()
+        if not prev_token or prev_token.isdigit():
+            return False
+        next_token = tokens.cur()
+        if not next_token:
+            return False
+        if next_token.isdigit() and len(next_token) == 4:
+            return True
+        return bool(
+            self._season_pattern.search(next_token)
+            or self._episode_pattern.search(next_token)
+        )
+
+    def __init_name(self, token: Optional[str], tokens: Tokens, media_exts: list):
         """
         识别名称
         """
@@ -359,8 +430,8 @@ class MetaVideo(MetaBase):
                 if self._last_token_type == 'name_se_words':
                     return
                 if self.name:
-                    # 名字后面以 0 开头的不要，极有可能是集
-                    if token.startswith('0'):
+                    # 名字后面以 0 开头的通常是集数，但片名结尾的单个 0 是续作编号
+                    if token.startswith('0') and not self.__is_zero_title_token(token, tokens):
                         return
                     # 检查是否真正的数字
                     if token.isdigit():
@@ -557,6 +628,35 @@ class MetaVideo(MetaBase):
         elif self.type == MediaType.TV and self.begin_season is None:
             self.begin_season = 1
 
+    def _apply_explicit_episodes(
+        self, token: str, re_res: Sequence[Union[str, tuple[str, ...]]]
+    ) -> None:
+        """
+        写入显式季集正则匹配结果，并在匹配完整 SxxEyy/Exx 格式时覆盖此前裸数字启发式猜测。
+        """
+        if self._bare_digit_episode and self._explicit_episode_override_pattern.fullmatch(token):
+            self.begin_episode = None
+            self.end_episode = None
+            self.total_episode = 0
+            self._bare_digit_episode = False
+        for se in re_res:
+            if isinstance(se, tuple):
+                se_t = next((se_i for se_i in se if se_i and str(se_i).isdigit()), None)
+                if not se_t:
+                    break
+                se_val = int(se_t)
+            else:
+                se_val = int(se)
+            if self.begin_episode is None:
+                self.begin_episode = se_val
+                self.total_episode = 1
+            elif se_val > self.begin_episode:
+                self.end_episode = se_val
+                self.total_episode = (self.end_episode - self.begin_episode) + 1
+                if self.isfile and self.total_episode > 2:
+                    self.end_episode = None
+                    self.total_episode = 1
+
     def __init_episode(self, token: str):
         """
         识别集
@@ -567,29 +667,7 @@ class MetaVideo(MetaBase):
             self._continue_flag = False
             self._stop_name_flag = True
             self.type = MediaType.TV
-            for se in re_res:
-                if isinstance(se, tuple):
-                    se_t = None
-                    for se_i in se:
-                        if se_i and str(se_i).isdigit():
-                            se_t = se_i
-                            break
-                    if se_t:
-                        se = int(se_t)
-                    else:
-                        break
-                else:
-                    se = int(se)
-                if self.begin_episode is None:
-                    self.begin_episode = se
-                    self.total_episode = 1
-                else:
-                    if se > self.begin_episode:
-                        self.end_episode = se
-                        self.total_episode = (self.end_episode - self.begin_episode) + 1
-                        if self.isfile and self.total_episode > 2:
-                            self.end_episode = None
-                            self.total_episode = 1
+            self._apply_explicit_episodes(token, re_res)
         elif token.isdigit():
             try:
                 int(token)
@@ -614,6 +692,7 @@ class MetaVideo(MetaBase):
                     and token != self._unknown_name_str:
                 self.begin_episode = int(token)
                 self.total_episode = 1
+                self._bare_digit_episode = True
                 self._last_token_type = "episode"
                 self._continue_flag = False
                 self._stop_name_flag = True
@@ -623,6 +702,7 @@ class MetaVideo(MetaBase):
                     and len(token) < 5:
                 self.begin_episode = int(token)
                 self.total_episode = 1
+                self._bare_digit_episode = False
                 self._last_token_type = "episode"
                 self._continue_flag = False
                 self._stop_name_flag = True

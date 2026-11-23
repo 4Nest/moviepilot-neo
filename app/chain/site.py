@@ -34,7 +34,7 @@ from app.log import logger
 from app.schemas import MessageChannel, Notification, SiteUserData
 from app.schemas.types import EventType, NotificationType
 from app.utils.http import RequestUtils
-from app.utils.site import SiteUtils
+from app.utils.site import SiteUtils, is_valid_http_header_value
 from app.utils.string import StringUtils
 
 site_interaction_manager = SlashInteractionManager()
@@ -1198,7 +1198,12 @@ class SiteChain(ChainBase):
         """
         site_url = site_info.url
         site_cookie = site_info.cookie
-        ua = site_info.ua or settings.USER_AGENT
+        ua = (site_info.ua or "").strip() or settings.USER_AGENT
+        if ua and not is_valid_http_header_value(ua):
+            logger.warning(
+                f"站点【{site_info.name}】请求头 User-Agent 包含非法字符，无法发起连通性测试"
+            )
+            return False, "站点浏览器标识(UA)包含非法字符，请检查配置！"
         render = site_info.render
         public = site_info.public
         proxies = settings.PROXY if site_info.proxy else None

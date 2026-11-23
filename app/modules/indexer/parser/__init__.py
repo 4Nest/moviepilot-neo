@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.helper.cloudflare import under_challenge
 from app.log import logger
 from app.utils.http import RequestUtils
-from app.utils.site import SiteUtils
+from app.utils.site import SiteUtils, find_invalid_http_header_names
 from app.utils.string import StringUtils
 
 
@@ -92,7 +92,7 @@ class SiteParserBase(metaclass=ABCMeta):
         self._site_cookie = site_cookie
         self._api_url = api_url
         self._session = session if session else None
-        self._ua = ua
+        self._ua = ua.strip() if isinstance(ua, str) else ua
         self._emulate = emulate
         self._proxy = proxy
         self._index_html = ""
@@ -370,6 +370,17 @@ class SiteParserBase(metaclass=ABCMeta):
             if self._addition_headers:
                 req_headers.update(self._addition_headers)
 
+        invalid_headers = find_invalid_http_header_names(req_headers)
+        if invalid_headers:
+            fields = ", ".join(invalid_headers)
+            self.err_msg = f"请求头包含非法字符（{fields}），请检查站点 UA 或认证配置"
+            # 请求头构造阶段即非法，更换其他解析模型无法恢复，跳过无意义的回退探测。
+            self.allow_schema_fallback = False
+            logger.warning(
+                f"{self._site_name} 用户数据请求头无效（InvalidHeader），异常字段：{fields}"
+            )
+            return ""
+
         if self.request_mode == "apikey":
             # 使用apikey请求，通过请求头传递
             cookie = None
@@ -443,7 +454,8 @@ class SiteParserBase(metaclass=ABCMeta):
         """
         logged_in = SiteUtils.is_logged_in(html_text)
         if not logged_in:
-            self.err_msg = "未检测到已登陆，请检查cookies是否过期"
+            if not self.err_msg:
+                self.err_msg = "未检测到已登陆，请检查cookies是否过期"
             logger.warn(f"{self._site_name} 未登录，跳过后续操作")
 
         return logged_in

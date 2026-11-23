@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import weakref
+from collections.abc import Mapping
 from contextlib import AsyncExitStack, contextmanager, asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
@@ -15,12 +16,80 @@ import requests
 import urllib3
 from requests import Response, Session
 from urllib3.exceptions import InsecureRequestWarning
-from urllib.parse import unquote, quote
+from urllib.parse import unquote, quote, urlsplit
 
 from app.core.config import settings
 from app.log import logger
 
 urllib3.disable_warnings(InsecureRequestWarning)
+
+
+def _url_origin(url: str) -> str:
+    """
+    提取仅含协议与主机端口的目标来源，避免在请求异常日志中泄露路径或查询凭据。
+    """
+    try:
+        parts = urlsplit(url)
+        port = f":{parts.port}" if parts.port is not None else ""
+    except ValueError:
+        return "<invalid-url>"
+    if not parts.scheme or not parts.hostname:
+        return "<invalid-url>"
+    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    return f"{parts.scheme}://{host}{port}"
+
+
+def _is_valid_header_part(part: Any, *, is_name: bool) -> bool:
+    """
+    按 HTTP 请求头规范校验单个字段名或值，避免调用传输库内部工具改变 egress 指纹。
+    """
+    if isinstance(part, bytes):
+        text = part.decode("latin-1")
+    elif isinstance(part, str):
+        try:
+            part.encode("latin-1")
+        except UnicodeEncodeError:
+            return False
+        text = part
+    else:
+        return False
+    if is_name:
+        return bool(text) and not text[0].isspace() and ":" not in text and "\r" not in text and "\n" not in text
+    if not text:
+        return True
+    if text != text.strip():
+        return False
+    return not any((ord(ch) < 0x20 and ch != "\t") or ord(ch) == 0x7F for ch in text)
+
+
+def _find_invalid_header_names(headers: Any) -> list[str]:
+    """
+    识别触发请求头校验失败的字段名称，不输出可能包含凭据的字段值。
+    """
+    if not isinstance(headers, Mapping):
+        return []
+    invalid_names: list[str] = []
+    for key, value in headers.items():
+        if value is None:
+            continue
+        if not _is_valid_header_part(key, is_name=True) or not _is_valid_header_part(value, is_name=False):
+            invalid_names.append(str(key))
+    return invalid_names
+
+
+def _log_invalid_header_error(error: Exception, headers: Any, url: str) -> None:
+    """
+    记录请求头构造失败的异常类型与出错字段，避免静默返回 None 误导为网络故障。
+    """
+    invalid_names = _find_invalid_header_names(headers)
+    origin = _url_origin(url)
+    if invalid_names:
+        logger.warning(
+            f"HTTP 请求头无效（{type(error).__name__}），"
+            f"异常字段：{', '.join(invalid_names)}，目标：{origin}"
+        )
+        return
+    logger.warning(f"HTTP 请求头无效（{type(error).__name__}），目标：{origin}")
 
 
 class _NonClosingTransportProxy(httpx.AsyncBaseTransport):
@@ -357,6 +426,8 @@ class RequestUtils:
         if headers:
             self._headers = headers
         else:
+            if isinstance(ua, str):
+                ua = ua.strip()
             if ua and ua == settings.USER_AGENT:
                 caller_name = get_caller()
                 if caller_name:
@@ -450,6 +521,11 @@ class RequestUtils:
             logger.debug(f"同步请求失败(不重试): {error_msg}")
             if raise_exception:
                 raise
+            return None
+        except requests.exceptions.InvalidHeader as error:
+            if raise_exception:
+                raise
+            _log_invalid_header_error(error, kwargs.get("headers"), url)
             return None
         except requests.exceptions.RequestException as e:
             # 获取更详细的错误信息
@@ -1041,6 +1117,8 @@ class AsyncRequestUtils:
             # 过滤掉None值的headers
             self._headers = {k: v for k, v in headers.items() if v is not None}
         else:
+            if isinstance(ua, str):
+                ua = ua.strip()
             if ua and ua == settings.USER_AGENT:
                 caller_name = get_caller()
                 if caller_name:
@@ -1149,6 +1227,13 @@ class AsyncRequestUtils:
                 True, cookies_dict, method, url, True, **kwargs
             )
         except _H2_TUNNEL_BREAK_ERRORS as e:
+            if isinstance(e, httpx.LocalProtocolError):
+                request_headers = kwargs.get("headers", self._headers)
+                if _find_invalid_header_names(request_headers):
+                    if raise_exception:
+                        raise
+                    _log_invalid_header_error(e, request_headers, url)
+                    return None
             logger.debug(f"h2 代理连接层失败，熔断 {url} 所在 host 并降级 h1 重试: {e!r}")
             _trip_h2_proxy_breaker(self._proxies, url)
             return await self._dispatch_request(
@@ -1253,6 +1338,12 @@ class AsyncRequestUtils:
             logger.debug(f"异步请求失败(非幂等不重试): {error_msg}")
             if raise_exception:
                 raise
+            return None
+        except httpx.LocalProtocolError as error:
+            if raise_exception:
+                raise
+            if _find_invalid_header_names(kwargs.get("headers")):
+                _log_invalid_header_error(error, kwargs.get("headers"), url)
             return None
         except httpx.RequestError as e:
             # 获取更详细的错误信息

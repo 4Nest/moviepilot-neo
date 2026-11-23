@@ -1127,10 +1127,21 @@ class DownloadChain(ChainBase):
             custom_words=custom_words,
             episode_selection=episode_selection,
         )
+        missing_downloader = not result
         if result:
             _downloader, _hash, _layout, error_msg = result
         else:
-            _downloader, _hash, _layout, error_msg = None, None, None, "未找到下载器"
+            _downloader, _hash, _layout, error_msg = (
+                None,
+                None,
+                None,
+                self._missing_downloader_error(
+                    downloader=downloader,
+                    site_downloader=_site_downloader,
+                    bt_downloader=_bt_conf.name if _bt_conf else None,
+                    site_name=_torrent.site_name,
+                ),
+            )
 
         if _hash:
             # `不创建子文件夹` 或 `不存在子文件夹`
@@ -1252,13 +1263,14 @@ class DownloadChain(ChainBase):
             # 下载失败
             logger.error(f"{_media.title_year} 添加下载任务失败："
                          f"{_torrent.title} - {_torrent.enclosure}，{error_msg}")
-            self._record_download_failure(
-                context=context,
-                error_msg=error_msg,
-                downloader=_downloader or _effective_downloader,
-                source=source,
-                episodes=episodes,
-            )
+            if not missing_downloader:
+                self._record_download_failure(
+                    context=context,
+                    error_msg=error_msg,
+                    downloader=_downloader or _effective_downloader,
+                    source=source,
+                    episodes=episodes,
+                )
             # 只发送给对应渠道和用户
             self.post_message(Notification(
                 channel=channel,
@@ -1274,6 +1286,43 @@ class DownloadChain(ChainBase):
         if return_detail:
             return _hash, error_msg
         return _hash
+
+    @staticmethod
+    def _missing_downloader_error(
+        downloader: Optional[str],
+        site_downloader: Optional[str],
+        bt_downloader: Optional[str] = None,
+        site_name: Optional[str] = None,
+    ) -> str:
+        """
+        生成所有下载器模块均未匹配到可用实例时的诊断说明。
+
+        区分调用方指定、站点绑定、BT 默认和默认下载器来源，避免只提示“未找到下载器”掩盖配置线索；
+        不会静默回退到其他下载器，以免破坏用户的下载器隔离与路径映射。
+
+        :param downloader: 调用方或订阅显式传入的下载器名称
+        :param site_downloader: 站点绑定的下载器名称
+        :param bt_downloader: BT（公开）站点默认下载器名称
+        :param site_name: 站点名称
+        :return: 供日志与失败通知展示的具体错误说明
+        """
+        if downloader:
+            return (
+                f"未找到可用下载器实例：{downloader}，"
+                "请检查下载器是否已启用、改名或删除，以及订阅或下载配置中的下载器设置"
+            )
+        if site_downloader:
+            resolved_site = site_name or "当前站点"
+            return (
+                f"未找到站点 {resolved_site} 指定的下载器实例：{site_downloader}，"
+                "请检查下载器是否已启用、改名或删除，以及站点下载器配置"
+            )
+        if bt_downloader:
+            return (
+                f"未找到可用下载器实例：{bt_downloader}，"
+                "请检查下载器是否已启用、改名或删除，以及订阅或下载配置中的下载器设置"
+            )
+        return "未找到可用的默认下载器实例，请检查下载器配置中是否存在已启用的下载器"
     def batch_download(self,
                        contexts: List[Context],
                        no_exists: Dict[Union[int, str], Dict[int, NotExistMediaInfo]] = None,

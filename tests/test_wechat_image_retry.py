@@ -1,6 +1,9 @@
 """企业微信带图通知轻量重试与文本兜底的离线回归测试。"""
 
+from typing import Any
 from unittest.mock import Mock
+
+import pytest
 
 from app.modules.wechat.wechat import WeChat
 from app.modules.wechat.wechatbot import WeChatBot
@@ -60,3 +63,36 @@ def test_wechat_bot_image_failure_retries_then_removes_image(monkeypatch):
     assert "![](" in send_markdown.call_args_list[0].kwargs["content"]
     assert "![](" not in send_markdown.call_args.kwargs["content"]
     assert "正文" in send_markdown.call_args.kwargs["content"]
+
+
+@pytest.mark.parametrize(
+    ("title", "text", "expected"),
+    [
+        (None, "已添加订阅\n详情", "已添加订阅"),
+        ("", "\n第二行", "第二行"),
+        (None, None, "MoviePilot"),
+        ("奥德赛", "已添加订阅", "奥德赛"),
+    ],
+)
+def test_wechat_news_payload_title_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    title: Any,
+    text: Any,
+    expected: str,
+) -> None:
+    """图文消息没有标题时不应发送空标题，企业微信会拒收该消息。"""
+    captured: dict[str, Any] = {}
+    client = _wechat()
+    monkeypatch.setattr(
+        client,
+        "_WeChat__post_request",
+        lambda url, payload: captured.update(payload) or True,
+    )
+
+    assert client._WeChat__send_image_message(
+        title=title,
+        text=text,
+        image_url="https://image.tmdb.org/poster.jpg",
+    ) is True
+
+    assert captured["news"]["articles"][0]["title"] == expected

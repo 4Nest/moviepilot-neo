@@ -9,7 +9,7 @@ from app.core.context import MediaInfo
 from app.core.event import eventmanager
 from app.core.meta import MetaBase
 from app.core.metainfo import MetaInfoPath
-from app.helper.directory import DirectoryHelper
+from app.helper.directory import DirectoryHelper, build_media_library_path
 from app.helper.message import TemplateHelper
 from app.log import logger
 from app.modules.filemanager.storages import StorageBase
@@ -1118,36 +1118,18 @@ class TransHandler:
         need_category_folder: Optional[bool] = None,
     ) -> Path:
         """
-        根据设置并装媒体库目录
+        根据设置拼装媒体库目录
         :param mediainfo: 媒体信息
         :param target_dir: 媒体库根目录
         :param need_type_folder: 是否需要按媒体类型创建目录
         :param need_category_folder: 是否需要按媒体类别创建目录
         """
-        if need_type_folder is None:
-            need_type_folder = target_dir.library_type_folder
-        if need_category_folder is None:
-            need_category_folder = target_dir.library_category_folder
-        if not target_dir.media_type and need_type_folder and mediainfo.type:
-            # 一级自动分类
-            library_dir = Path(target_dir.library_path) / mediainfo.type.value
-        elif target_dir.media_type and need_type_folder:
-            # 一级手动分类
-            library_dir = Path(target_dir.library_path) / target_dir.media_type
-        else:
-            library_dir = Path(target_dir.library_path)
-        if (
-            not target_dir.media_category
-            and need_category_folder
-            and mediainfo.category
-        ):
-            # 二级自动分类
-            library_dir = library_dir / mediainfo.category
-        elif target_dir.media_category and need_category_folder:
-            # 二级手动分类
-            library_dir = library_dir / target_dir.media_category
-
-        return library_dir
+        return build_media_library_path(
+            target_dir,
+            mediainfo,
+            need_type_folder=need_type_folder,
+            need_category_folder=need_category_folder,
+        )
 
     @staticmethod
     def get_naming_dict(

@@ -154,3 +154,31 @@ def test_no_proxy_configured_skips_breaker_logic(monkeypatch):
 
     assert result == "ok"
     assert calls == [True]
+
+
+def test_async_invalid_header_logs_field_without_tripping_h2_breaker(monkeypatch):
+    """
+    异步请求因非法请求头触发 LocalProtocolError 时应记录出错字段，且不得触发代理 h2 熔断。
+    """
+    warnings: list[str] = []
+    monkeypatch.setattr(http_module.logger, "warning", warnings.append)
+
+    async def fail_invalid_header(_self, _http2, _cookies_dict, _method, _url, _raise_exception, **_kwargs):
+        raise httpx.LocalProtocolError("Illegal header value")
+
+    monkeypatch.setattr(AsyncRequestUtils, "_dispatch_request", fail_invalid_header)
+
+    utils = AsyncRequestUtils(
+        proxies={"https": PROXY},
+        headers={"User-Agent": " Mozilla/5.0", "x-api-key": " secret-api-key\n"},
+    )
+    result = asyncio.run(utils.request("get", "https://site.example/api?token=secret-token"))
+
+    assert result is None
+    assert http_module._h2_proxy_allowed(PROXY, "https://site.example/api?token=secret-token") is True
+    assert len(warnings) == 1
+    assert "LocalProtocolError" in warnings[0]
+    assert "User-Agent" in warnings[0]
+    assert "x-api-key" in warnings[0]
+    assert "secret-api-key" not in warnings[0]
+    assert "secret-token" not in warnings[0]

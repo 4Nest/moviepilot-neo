@@ -14,6 +14,52 @@ WINDOWS_DRIVE_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
 WINDOWS_DRIVE_PREFIX_PATTERN = re.compile(r"^[A-Za-z]:")
 
 
+def build_media_library_path(
+    directory: schemas.TransferDirectoryConf,
+    media: MediaInfo,
+    *,
+    need_type_folder: Optional[bool] = None,
+    need_category_folder: Optional[bool] = None,
+) -> Path:
+    """
+    按媒体库目录开关、媒体类型和分类配置构造最终媒体库目标父目录。
+
+    仅拼接目录路径，不访问文件系统也不创建目录。
+
+    :param directory: 包含媒体库根路径和类型/分类开关的目录配置
+    :param media: 用于确定类型目录和自动分类的媒体信息
+    :param need_type_folder: 是否添加类型目录；None 时沿用目录配置
+    :param need_category_folder: 是否添加分类目录；None 时沿用目录配置
+    :return: 拼接后的媒体库目标父目录路径
+    :raises ValueError: 目录未配置媒体库根路径
+    """
+    if not directory.library_path:
+        raise ValueError("媒体库目录路径为空")
+    if need_type_folder is None:
+        need_type_folder = directory.library_type_folder
+    if need_category_folder is None:
+        need_category_folder = directory.library_category_folder
+    if not directory.media_type and need_type_folder and media.type:
+        # 一级自动分类
+        library_dir = Path(directory.library_path) / media.type.value
+    elif directory.media_type and need_type_folder:
+        # 一级手动分类
+        library_dir = Path(directory.library_path) / directory.media_type
+    else:
+        library_dir = Path(directory.library_path)
+    if (
+        not directory.media_category
+        and need_category_folder
+        and media.category
+    ):
+        # 二级自动分类
+        library_dir = library_dir / media.category
+    elif directory.media_category and need_category_folder:
+        # 二级手动分类
+        library_dir = library_dir / directory.media_category
+    return library_dir
+
+
 class DirectoryHelper:
     """
     下载目录/媒体库目录帮助类

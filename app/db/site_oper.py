@@ -158,7 +158,7 @@ class SiteOper(DbOper):
         if not site:
             return False, "站点不存在"
         site.update(self._db, {
-            "cookie": cookies
+            "cookie": cookies.strip() if isinstance(cookies, str) else cookies
         })
         return True, "更新站点Cookie成功"
 

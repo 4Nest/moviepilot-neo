@@ -1,6 +1,10 @@
 import asyncio
+import hashlib
+import threading
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
+
+from cachetools import TTLCache
 
 from app.core.cache import cached
 from app.core.context import MediaInfo, settings
@@ -304,15 +308,12 @@ class FanartModule(_ModuleBase):
     }
     """
 
-    # 代理
-    _proxies: dict = settings.PROXY
-
-    # Fanart Api
-    _movie_url: str = (
-        f"https://webservice.fanart.tv/v3/movies/%s?api_key={settings.FANART_API_KEY}"
-    )
-    _tv_url: str = (
-        f"https://webservice.fanart.tv/v3/tv/%s?api_key={settings.FANART_API_KEY}"
+    # 保护缺图告警去重缓存的并发读写：`cachetools.TTLCache` 非线程安全，
+    # 容量与过期时间对齐 Fanart 请求缓存，避免长驻进程内存无限增长。
+    _missing_warning_lock = threading.Lock()
+    _missing_warning_cache: TTLCache[Tuple[str, str, str, str, str], bool] = TTLCache(
+        maxsize=max(settings.CONF.fanart, 1),
+        ttl=max(settings.CONF.meta, 1),
     )
 
     def init_module(self) -> None:
@@ -423,8 +424,15 @@ class FanartModule(_ModuleBase):
         query = self.__fanart_query(mediainfo=mediainfo)
         if not query:
             return None
-        result = self.__request_fanart(*query)
-        return self.__extract_images(mediainfo=mediainfo, result=result, season=season)
+        key_token = self.__key_token()
+        result = self.__request_fanart(*query, _key_token=key_token)
+        return self.__extract_images(
+            mediainfo=mediainfo,
+            result=result,
+            season=season,
+            query=query,
+            key_token=key_token,
+        )
 
     async def __async_obtain_fanart_images(
         self,
@@ -437,39 +445,140 @@ class FanartModule(_ModuleBase):
         query = self.__fanart_query(mediainfo=mediainfo)
         if not query:
             return None
-        result = await self.__async_request_fanart(*query)
-        return self.__extract_images(mediainfo=mediainfo, result=result, season=season)
+        key_token = self.__key_token()
+        result = await self.__async_request_fanart(*query, _key_token=key_token)
+        return self.__extract_images(
+            mediainfo=mediainfo,
+            result=result,
+            season=season,
+            query=query,
+            key_token=key_token,
+        )
 
     @staticmethod
     def __fanart_query(
         mediainfo: MediaInfo,
-    ) -> Optional[Tuple[MediaType, Union[str, int]]]:
+    ) -> Optional[Tuple[MediaType, Union[str, int], str]]:
         """
-        获取 Fanart 查询参数
+        获取 Fanart 查询参数。
+
+        电影使用 TMDB 标识；电视剧优先使用 TVDB 标识，缺失 TVDB 标识时回退使用
+        TMDB 标识并标记 ``tmdb`` 来源，避免服务端按默认 TVDB 命名空间返回错误剧集。
+
+        :param mediainfo: 包含媒体类型与外部标识的媒体对象
+        :return: ``(media_type, queryid, source)`` 三元组；模块关闭或缺少可用标识时返回 None
         """
         if not settings.FANART_ENABLE:
             return None
         if not mediainfo.tmdb_id and not mediainfo.tvdb_id:
             return None
-        if mediainfo.type == MediaType.MOVIE:
-            return mediainfo.type, mediainfo.tmdb_id
+        if mediainfo.type == MediaType.MOVIE and mediainfo.tmdb_id is not None:
+            return MediaType.MOVIE, mediainfo.tmdb_id, "tmdb"
         if mediainfo.tvdb_id:
-            return mediainfo.type, mediainfo.tvdb_id
+            return MediaType.TV, mediainfo.tvdb_id, "tvdb"
+        if mediainfo.type == MediaType.TV and mediainfo.tmdb_id:
+            return MediaType.TV, mediainfo.tmdb_id, "tmdb"
         logger.info(f"{mediainfo.title_year} 没有tvdbid，无法获取fanart图片")
         return None
+
+    @classmethod
+    def __missing_warning_key(
+        cls,
+        mediainfo: MediaInfo,
+        query: Optional[Tuple[MediaType, Union[str, int], str]] = None,
+        key_token: Optional[str] = None,
+    ) -> Tuple[str, str, str, str, str]:
+        """
+        构造 Fanart 缺图告警的去重键。
+
+        结合媒体类型、标识来源、查询标识、标题年份与当前 API Key 指纹去重；
+        区分 TVDB 与 TMDB 来源避免同号碰撞，更换 API Key 后指纹随之变化。
+
+        :param mediainfo: 待提取图片的媒体对象
+        :param query: 已解析的 ``(media_type, queryid, source)`` 查询参数；直接调用提取方法时可缺省
+        :param key_token: API Key 指纹；缺省时按当前运行时配置计算
+        :return: 用于缺图告警去重的稳定五元组键
+        """
+        if query is not None:
+            media_type, queryid, source_key = query
+            media_type_key = media_type.value
+            query_key = str(queryid)
+        elif mediainfo.type == MediaType.MOVIE and mediainfo.tmdb_id is not None:
+            media_type_key = MediaType.MOVIE.value
+            source_key = "tmdb"
+            query_key = str(mediainfo.tmdb_id)
+        elif mediainfo.tvdb_id:
+            media_type_key = MediaType.TV.value
+            source_key = "tvdb"
+            query_key = str(mediainfo.tvdb_id)
+        elif mediainfo.type == MediaType.TV and mediainfo.tmdb_id:
+            media_type_key = MediaType.TV.value
+            source_key = "tmdb"
+            query_key = str(mediainfo.tmdb_id)
+        else:
+            media_type_key = mediainfo.type.value if mediainfo.type else ""
+            source_key = ""
+            query_key = str(mediainfo.tmdb_id or mediainfo.tvdb_id or "")
+        title_year = mediainfo.title_year or ""
+        token = cls.__key_token() if key_token is None else key_token
+        return media_type_key, source_key, query_key, title_year, token
+
+    @classmethod
+    def __should_warn_missing(cls, warning_key: Tuple[str, str, str, str, str]) -> bool:
+        """
+        判断是否应为指定媒体输出 Fanart 缺图告警，并原子登记已告警状态。
+
+        :param warning_key: 由 ``__missing_warning_key`` 生成的去重键
+        :return: 缓存有效期内首次命中返回 True，重复命中返回 False
+        """
+        with cls._missing_warning_lock:
+            if warning_key in cls._missing_warning_cache:
+                return False
+            cls._missing_warning_cache[warning_key] = True
+            return True
+
+    @classmethod
+    def __clear_missing_warning(cls, warning_key: Tuple[str, str, str, str, str]) -> None:
+        """
+        在获取到有效 Fanart 响应后移除对应媒体的缺图告警记录。
+
+        :param warning_key: 由 ``__missing_warning_key`` 生成的去重键
+        """
+        with cls._missing_warning_lock:
+            cls._missing_warning_cache.pop(warning_key, None)
+
+    @classmethod
+    def __clear_missing_warnings(cls) -> None:
+        """
+        清空全部 Fanart 缺图告警去重记录。
+        """
+        with cls._missing_warning_lock:
+            cls._missing_warning_cache.clear()
 
     def __extract_images(
         self,
         mediainfo: MediaInfo,
-        result: Optional[dict],
+        result: Optional[dict[str, Any]],
         season: Optional[int] = None,
-    ) -> Optional[dict]:
+        *,
+        query: Optional[Tuple[MediaType, Union[str, int], str]] = None,
+        key_token: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
         """
-        从 Fanart 响应中提取图片名称和地址
+        从 Fanart 响应中提取图片名称和地址。
+
+        同一媒体在缺图缓存有效期内仅输出一次告警，避免逐集整理或刮削时重复刷屏。
         """
+        warning_key = self.__missing_warning_key(
+            mediainfo=mediainfo,
+            query=query,
+            key_token=key_token,
+        )
         if not result or result.get("status") == "error":
-            logger.warn(f"没有获取到 {mediainfo.title_year} 的fanart图片数据")
+            if self.__should_warn_missing(warning_key):
+                logger.warning(f"没有获取到 {mediainfo.title_year} 的fanart图片数据")
             return None
+        self.__clear_missing_warning(warning_key)
 
         ret = {}
         # 获取所有图片
@@ -580,18 +689,26 @@ class FanartModule(_ModuleBase):
     @classmethod
     @cached(maxsize=settings.CONF.fanart, ttl=settings.CONF.meta, shared_key="get")
     def __request_fanart(
-        cls, media_type: MediaType, queryid: Union[str, int]
-    ) -> Optional[dict]:
-        image_url = cls.__fanart_url(media_type=media_type, queryid=queryid)
+        cls,
+        media_type: MediaType,
+        queryid: Union[str, int],
+        source: str = "",
+        _key_token: str = "",
+    ) -> Optional[dict[str, Any]]:
+        """
+        查询 Fanart 图集并使用标识来源与密钥指纹隔离缓存。
+        """
+        image_url = cls.__fanart_url(
+            media_type=media_type, queryid=queryid, source=source
+        )
         try:
-            ret = RequestUtils(proxies=cls._proxies, timeout=10).get_res(
+            ret = RequestUtils(proxies=settings.PROXY, timeout=10).get_res(
                 image_url, raise_exception=True
             )
             if ret:
                 return ret.json()
-            else:
-                logger.debug(f"未能获取到 {queryid} 的Fanart图片")
-                return {}
+            logger.debug(f"未能获取到 {queryid} 的Fanart图片")
+            return {}
         except Exception as err:
             logger.error(f"获取{queryid}的Fanart图片失败：{str(err)}")
             return None
@@ -599,11 +716,20 @@ class FanartModule(_ModuleBase):
     @classmethod
     @cached(maxsize=settings.CONF.fanart, ttl=settings.CONF.meta, shared_key="get")
     async def __async_request_fanart(
-        cls, media_type: MediaType, queryid: Union[str, int]
-    ) -> Optional[dict]:
-        image_url = cls.__fanart_url(media_type=media_type, queryid=queryid)
+        cls,
+        media_type: MediaType,
+        queryid: Union[str, int],
+        source: str = "",
+        _key_token: str = "",
+    ) -> Optional[dict[str, Any]]:
+        """
+        异步查询 Fanart 图集并使用标识来源与密钥指纹隔离缓存。
+        """
+        image_url = cls.__fanart_url(
+            media_type=media_type, queryid=queryid, source=source
+        )
         try:
-            ret = await AsyncRequestUtils(proxies=cls._proxies, timeout=10).get_json(
+            ret = await AsyncRequestUtils(proxies=settings.PROXY, timeout=10).get_json(
                 image_url
             )
             if ret:
@@ -614,20 +740,40 @@ class FanartModule(_ModuleBase):
             logger.error(f"获取{queryid}的Fanart图片失败：{str(err)}")
             return None
 
+    @staticmethod
+    def __key_token() -> str:
+        """
+        计算当前 Fanart API Key 的稳定摘要指纹，避免在缓存键中明文存储密钥。
+        """
+        api_key = str(settings.FANART_API_KEY or "")
+        return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
+
     @classmethod
-    def __fanart_url(cls, media_type: MediaType, queryid: Union[str, int]) -> str:
+    def __fanart_url(
+        cls,
+        media_type: MediaType,
+        queryid: Union[str, int],
+        source: str = "",
+    ) -> str:
         """
-        生成 Fanart 请求地址
+        生成 Fanart 请求地址。
+
+        电视剧回退使用 TMDB 标识时附带 ``source=tmdb``，避免与同号 TVDB 剧集冲突。
         """
+        api_key = settings.FANART_API_KEY
         if media_type == MediaType.MOVIE:
-            return cls._movie_url % queryid
-        return cls._tv_url % queryid
+            return f"https://webservice.fanart.tv/v3/movies/{queryid}?api_key={api_key}"
+        url = f"https://webservice.fanart.tv/v3/tv/{queryid}?api_key={api_key}"
+        if source == "tmdb":
+            return f"{url}&source=tmdb"
+        return url
 
     def clear_cache(self):
         """
-        清除缓存
+        清除缓存与缺图告警去重记录
         """
         logger.info(f"开始清除{self.get_name()}缓存 ...")
+        self.__clear_missing_warnings()
         self.__request_fanart.cache_clear()
         async_cache_clear = self.__async_request_fanart.cache_clear()
         try:

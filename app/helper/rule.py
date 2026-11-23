@@ -60,12 +60,19 @@ class RuleHelper:
 
     def get_rule_group_by_media(self, media: MediaInfo = None, group_names: list = None) -> List[FilterRuleGroup]:
         """
-        根据媒体信息获取规则组
+        根据媒体信息获取规则组。
+
+        按传入 group_names 顺序（未传时按配置顺序）返回适用规则组。
         """
         ret_groups = []
         rule_groups = self.get_rule_groups()
         if group_names:
-            rule_groups = [group for group in rule_groups if group.name in group_names]
+            groups_by_name = {group.name: group for group in rule_groups}
+            rule_groups = [
+                groups_by_name[name]
+                for name in dict.fromkeys(group_names)
+                if name in groups_by_name
+            ]
         for group in rule_groups:
             if not group.media_type:
                 if not group.category or (media and group.category == media.category):
