@@ -293,6 +293,48 @@ def test_douban_tvs_exclude_short_drama_respects_explicit_short_tag(monkeypatch)
                     "episodes_info": "更新至8集",
                     "honor_infos": [],
                 },
+                {
+                    "id": "3006",
+                    "title": "谁让这个文盲修仙的 第七季",
+                    "subtype": "tv",
+                    "card_subtitle": "2026 / 中国大陆 / 剧情 喜剧 动画 奇幻",
+                    "pic": {"large": "https://img9.doubanio.com/view/photo/l/public/p6.jpg"},
+                    "has_linewatch": False,
+                    "vendor_count": 0,
+                    "rating": {"count": 0, "value": 0},
+                    "comment": {"comment": "刷到切片"},
+                    "photos": [],
+                    "episodes_info": "",
+                    "honor_infos": [],
+                },
+                {
+                    "id": "3007",
+                    "title": "金陵夜归人",
+                    "subtype": "tv",
+                    "card_subtitle": "2026 / 中国大陆 / 刘爱东 / 刘润铭 林君怡",
+                    "pic": {"large": "https://img9.doubanio.com/view/photo/l/public/p7.jpg"},
+                    "has_linewatch": False,
+                    "vendor_count": 0,
+                    "rating": {"count": 0, "value": 0},
+                    "comment": {"comment": "好看"},
+                    "photos": ["https://img9.doubanio.com/view/photo/m/public/only_poster.jpg"],
+                    "episodes_info": "",
+                    "honor_infos": [],
+                },
+                {
+                    "id": "3008",
+                    "title": "守护解放西7",
+                    "subtype": "tv",
+                    "card_subtitle": "2026 / 中国大陆 / 纪录片",
+                    "pic": {"large": "https://img9.doubanio.com/view/photo/l/public/p8.jpg"},
+                    "has_linewatch": False,
+                    "vendor_count": 0,
+                    "rating": {"count": 0, "value": 0},
+                    "comment": {"comment": "回归"},
+                    "photos": [],
+                    "episodes_info": "",
+                    "honor_infos": [],
+                },
             ]
         }
     )
@@ -314,7 +356,7 @@ def test_douban_tvs_exclude_short_drama_respects_explicit_short_tag(monkeypatch)
             _=None,
         )
     )
-    assert [item["douban_id"] for item in filtered] == ["3001", "3003", "3005"]
+    assert [item["douban_id"] for item in filtered] == ["3001", "3003", "3005", "3008"]
 
     # 用户主动选择“短片”标签时不过滤
     unfiltered_explicit = asyncio.run(
@@ -325,7 +367,16 @@ def test_douban_tvs_exclude_short_drama_respects_explicit_short_tag(monkeypatch)
             _=None,
         )
     )
-    assert [item["douban_id"] for item in unfiltered_explicit] == ["3001", "3002", "3003", "3004", "3005"]
+    assert [item["douban_id"] for item in unfiltered_explicit] == [
+        "3001",
+        "3002",
+        "3003",
+        "3004",
+        "3005",
+        "3006",
+        "3007",
+        "3008",
+    ]
 
 
 def test_bangumi_calendar_filters_weekday_and_preserves_bangumi_identity(monkeypatch) -> None:

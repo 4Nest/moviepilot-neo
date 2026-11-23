@@ -49,6 +49,30 @@ _GENERIC_SHORT_DRAMA_TEXT_MARKERS = (
     "竖屏剧",
     "十分剧场",
 )
+_AI_COMIC_SHORT_MARKERS = (
+    "动态漫",
+    "漫剧",
+    "沙雕动画",
+    "ai漫",
+)
+_NON_FICTION_EXEMPT_MARKERS = (
+    "纪录片",
+    "真人秀",
+    "脱口秀",
+    "歌舞",
+    "音乐",
+    "新闻",
+    "晚会",
+)
+_SHORT_DRAMA_PLOT_RE = re.compile(
+    r"(?:"
+    r"霸总|霸道总裁|娇妻|甜妻|萌宝|奶爸|闪婚|替嫁|退婚|休夫|弃妃|毒妃|医妃|狂妃|世子妃|王妃又|"
+    r"战神|龙王|神豪|赘婿|绑错系统|系统奖励|狂飙系统|签到系统|开局.{0,6}(?:奖励|无敌|觉醒|签到)|"
+    r"炮灰|恶役女配|穿书|穿成.{0,6}(?:庶女|恶毒|炮灰|反派|后妈)|重生之|逆袭打脸|虐渣|团宠|真千金|假千金|"
+    r"诱哄|偷吻|契约婚|年代当后妈|杀疯全|修仙归来|老祖归来|全族成帝|千古一帝|千古第[一二三]阳谋|"
+    r"文盲修仙|突破炼气期|闯仙界|小孩哥.{0,6}拿捏|749局太子爷"
+    r")"
+)
 _ANIMATION_TAG_MARKERS = (
     "动画",
     "番剧",
@@ -65,6 +89,8 @@ _SHORT_DRAMA_TAG_MARKERS = (
     "竖屏",
     "短片",
     "十分剧场",
+    "动态漫",
+    "漫剧",
     "short drama",
 )
 _SHORT_FILM_TOKEN_RE = re.compile(r"(?:^|[\s/、，,|·])短片(?:$|[\s/、，,|·])")
@@ -173,16 +199,22 @@ def is_short_drama_text(
     is_animation: bool = False,
 ) -> bool:
     """
-    根据标题、副标题/简介及类型标签判断是否为微短剧（供豆瓣及国内流媒体探索源复用）。
+    根据标题、副标题/简介及类型标签判断是否为微短剧或动态漫/AI漫剧（供豆瓣及国内流媒体探索源复用）。
+
+    正经动画/番剧豁免常规“短片”判断，但显式标注“动态漫/漫剧/沙雕动画”的条目仍予拦截。
 
     :param title: 媒体标题
     :param subtitle: 副标题、推荐语或豆瓣分栏简介
     :param tags: 类型或风格标签集合
     :param is_animation: 是否已知为动画/番剧/国创/少儿分类
-    :return: 属于真人短剧/短片时返回 True，否则返回 False
+    :return: 属于短剧/漫剧时返回 True，否则返回 False
     """
-    if is_animation:
-        return False
+    subtitle_text = str(subtitle or "")
+    combined = f"{title or ''} {subtitle_text}".casefold()
+
+    # 即使是动画频道，显式动态漫 / AI 漫剧 / 沙雕动画短剧一律拦截
+    if any(marker in combined for marker in _AI_COMIC_SHORT_MARKERS):
+        return True
 
     normalized_tags = [
         str(tag).strip().casefold()
@@ -190,19 +222,26 @@ def is_short_drama_text(
         if tag is not None and str(tag).strip()
     ]
     if any(
+        comic_kw in tag
+        for tag in normalized_tags
+        for comic_kw in _AI_COMIC_SHORT_MARKERS
+    ):
+        return True
+
+    has_anim_tag = is_animation or any(
         anim_kw in tag
         for tag in normalized_tags
         for anim_kw in _ANIMATION_TAG_MARKERS
-    ):
-        return False
-
-    subtitle_text = str(subtitle or "")
-    # 豆瓣 card_subtitle 形如 "2024 / 中国大陆 / 喜剧 动画 短片 / ..."
-    if "/" in subtitle_text:
+    )
+    if not has_anim_tag and "/" in subtitle_text:
         segments = [seg.strip() for seg in subtitle_text.split("/")]
         for seg in segments[:4]:
             if any(anim_kw in seg.casefold() for anim_kw in _ANIMATION_TAG_MARKERS):
-                return False
+                has_anim_tag = True
+                break
+
+    if has_anim_tag:
+        return False
 
     if any(
         short_kw == tag or (short_kw != "短片" and short_kw in tag)
@@ -211,11 +250,13 @@ def is_short_drama_text(
     ):
         return True
 
-    combined = f"{title or ''} {subtitle_text}".casefold()
     if any(marker in combined for marker in _GENERIC_SHORT_DRAMA_TEXT_MARKERS):
         return True
 
     if _SHORT_FILM_TOKEN_RE.search(subtitle_text):
+        return True
+
+    if _SHORT_DRAMA_PLOT_RE.search(f"{title or ''} {subtitle_text}"):
         return True
 
     return False
@@ -223,13 +264,15 @@ def is_short_drama_text(
 
 def is_short_drama_douban_media(media: MediaInfo) -> bool:
     """
-    判断豆瓣电影/剧集 MediaInfo 条目是否为微短剧或真人短片。
+    判断豆瓣电影/剧集 MediaInfo 条目是否为竖屏微短剧、AI 漫剧或真人短片。
 
-    除匹配显式“短片/短剧”标签外，对豆瓣推荐流中尚未标注“短片”标签的中国大陆新入库竖屏微短剧，
-    结合七无空白壳特征（无播放源、无平台、无评分、无短评、无剧照、无集数、无荣誉）精准拦截。
+    1. 纪录片、真人秀、脱口秀、音乐歌舞晚会等非虚构节目一律豁免；
+    2. 非动画显式“短片/短剧”及全品类“动态漫/漫剧”直接拦截；
+    3. 豆瓣剧集推荐流中的中国大陆条目，若同时无正规播放源、无平台、无有效评分人数、
+       无集数更新、无榜单荣誉且剧照不超过 1 张（含挂靠“动画”标签的 AI 修仙漫剧及带单条水军短评的微短剧），精准拦截。
 
     :param media: 豆瓣转换后的统一媒体信息对象
-    :return: 命中短剧特征时返回 True，否则返回 False
+    :return: 命中短剧/AI漫剧特征时返回 True，否则返回 False
     """
     if not media:
         return False
@@ -248,6 +291,10 @@ def is_short_drama_douban_media(media: MediaInfo) -> bool:
                 collected_tags.append(str(val))
 
     subtitle_text = str(raw_info.get("card_subtitle") or media.overview or "")
+    tag_and_sub_text = " ".join([*collected_tags, subtitle_text])
+    if any(exempt_kw in tag_and_sub_text for exempt_kw in _NON_FICTION_EXEMPT_MARKERS):
+        return False
+
     if is_short_drama_text(
         title=media.title or "",
         subtitle=subtitle_text,
@@ -255,28 +302,33 @@ def is_short_drama_douban_media(media: MediaInfo) -> bool:
     ):
         return True
 
-    # 针对豆瓣剧集推荐流中漏标“短片”标签的中国大陆竖屏微短剧指纹拦截（动画豁免）
     if media.type == MediaType.TV and isinstance(raw_info, dict) and "has_linewatch" in raw_info:
-        is_anim = any(
-            anim_kw in str(tag).casefold()
-            for tag in [*collected_tags, subtitle_text]
-            for anim_kw in _ANIMATION_TAG_MARKERS
-        )
         head_segments = [seg.strip() for seg in subtitle_text.split("/")[:3]]
         is_mainland = any("中国大陆" in seg for seg in head_segments)
+        if not is_mainland:
+            return False
+
+        has_linewatch = bool(raw_info.get("has_linewatch"))
+        vendor_count = int(raw_info.get("vendor_count") or 0)
         rating_info = raw_info.get("rating")
-        rating_count = rating_info.get("count", 0) if isinstance(rating_info, dict) else 0
+        rating_count = int(rating_info.get("count") or 0) if isinstance(rating_info, dict) else 0
+        episodes_info = str(raw_info.get("episodes_info") or "").strip()
+        honor_infos = raw_info.get("honor_infos") or []
+        photo_count = len(raw_info.get("photos") or [])
+
+        # 中国大陆无长视频源 + 无豆瓣开分人数 + 无集数 + 无荣誉 + 剧照<=1（覆盖未标“短片”的竖屏短剧及挂“动画”标签的 AI 漫剧）
         if (
-            not is_anim
-            and is_mainland
-            and not raw_info.get("has_linewatch")
-            and not raw_info.get("vendor_count")
-            and not rating_count
-            and not raw_info.get("comment")
-            and not raw_info.get("photos")
-            and not raw_info.get("episodes_info")
-            and not raw_info.get("honor_infos")
+            not has_linewatch
+            and vendor_count == 0
+            and rating_count == 0
+            and not episodes_info
+            and not honor_infos
+            and photo_count <= 1
         ):
+            return True
+
+        # 中国大陆无长视频源 + 无开分人数 + 标题强命中微短剧/AI漫剧爽文套路词
+        if not has_linewatch and vendor_count == 0 and rating_count == 0 and _SHORT_DRAMA_PLOT_RE.search(media.title or ""):
             return True
 
     return False

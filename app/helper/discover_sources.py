@@ -686,8 +686,8 @@ async def async_discover_bilibili(
         overview_parts = [part for part in (sub_title, index_show) if part]
         overview = " · ".join(overview_parts)
 
-        if exclude_short_drama and not is_anim:
-            if is_short_drama_text(title=raw_title, subtitle=overview, is_animation=False):
+        if exclude_short_drama:
+            if is_short_drama_text(title=raw_title, subtitle=overview, is_animation=is_anim):
                 continue
 
         item_year = (
@@ -876,12 +876,12 @@ async def async_discover_tencentvideo(
                         item_params.get("sub_genre") or "",
                     ]
                 )
-                if exclude_short_drama and not is_anim:
+                if exclude_short_drama:
                     if is_short_drama_text(
                         title=raw_title,
                         subtitle=overview,
                         tags=genre_tags,
-                        is_animation=False,
+                        is_animation=is_anim,
                     ):
                         continue
 
@@ -1009,12 +1009,21 @@ async def async_discover_mangguo(
 
         kind_tags = _clean_token_list(doc.get("kind"))
 
-        if exclude_short_drama and not is_anim:
+        if exclude_short_drama:
             if is_short_drama_text(
                 title=raw_title,
                 subtitle=f"{story} {subtitle}",
                 tags=kind_tags,
-                is_animation=False,
+                is_animation=is_anim,
+            ):
+                continue
+            # 芒果TV 电视剧频道（channelId=2）买量微短剧通常缺失主演 subtitle 与 leader 字段，正剧与芒果自制保留
+            if (
+                channel_id == "2"
+                and "subtitle" in doc
+                and not subtitle
+                and not doc.get("leader")
+                and "芒果出品" not in kind_tags
             ):
                 continue
 

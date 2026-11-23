@@ -660,6 +660,32 @@ class DoubanModule(_ModuleBase):
                 return movie_result
             return await __async_douban_tv()
 
+    @staticmethod
+    def _filter_douban_discover_items(items: List[dict], tags: str, exclude_short_drama: bool) -> List[MediaInfo]:
+        """过滤无有效海报、重复草稿条目及命中的短剧/AI漫剧条目。"""
+        medias = [MediaInfo(douban_info=info) for info in (items or [])]
+        filtered = [
+            media for media in medias if media.poster_path
+            and "movie_large.jpg" not in media.poster_path
+            and "tv_normal.png" not in media.poster_path
+            and "tv_normal.jpg" not in media.poster_path
+            and "tv_large.jpg" not in media.poster_path
+        ]
+        if exclude_short_drama and "短片" not in (tags or ""):
+            deduped: List[MediaInfo] = []
+            seen_keys = set()
+            for media in filtered:
+                if is_short_drama_douban_media(media):
+                    continue
+                title_key = (str(media.title or "").strip(), str(media.year or "").strip())
+                if title_key[0] and title_key in seen_keys:
+                    continue
+                if title_key[0]:
+                    seen_keys.add(title_key)
+                deduped.append(media)
+            return deduped
+        return filtered
+
     def douban_discover(self, mtype: MediaType, sort: str, tags: str,
                         page: int = 1, count: int = 30,
                         exclude_short_drama: bool = False) -> Optional[List[MediaInfo]]:
@@ -670,32 +696,44 @@ class DoubanModule(_ModuleBase):
         :param tags:  标签
         :param page:  页码
         :param count:  数量
-        :param exclude_short_drama:  是否排除真人短剧/短片
+        :param exclude_short_drama:  是否排除真人短剧/AI漫剧/短片
         :return: 媒体信息列表
         """
         logger.info(f"开始发现豆瓣 {mtype.value} ...")
+        page_num = max(int(page or 1), 1)
+        target_count = max(int(count or 30), 1)
+        active_short_filter = bool(mtype == MediaType.TV and exclude_short_drama and "短片" not in (tags or ""))
+
         if mtype == MediaType.MOVIE:
-            infos = self.doubanapi.movie_recommend(start=(page - 1) * count, count=count,
-                                                   sort=sort, tags=tags)
-        else:
-            infos = self.doubanapi.tv_recommend(start=(page - 1) * count, count=count,
-                                                sort=sort, tags=tags)
-        if infos and infos.get("items"):
-            medias = [MediaInfo(douban_info=info) for info in infos.get("items")]
-            filtered = [
-                media for media in medias if media.poster_path
-                and "movie_large.jpg" not in media.poster_path
-                and "tv_normal.png" not in media.poster_path
-                and "tv_normal.jpg" not in media.poster_path
-                and "tv_large.jpg" not in media.poster_path
-            ]
-            if exclude_short_drama and "短片" not in (tags or ""):
-                filtered = [
-                    media for media in filtered
-                    if not is_short_drama_douban_media(media)
-                ]
-            return filtered
-        return []
+            infos = self.doubanapi.movie_recommend(
+                start=(page_num - 1) * target_count, count=target_count, sort=sort, tags=tags
+            )
+            raw_items = (infos or {}).get("items") or []
+            return self._filter_douban_discover_items(raw_items, tags, exclude_short_drama) if raw_items else []
+
+        if not active_short_filter:
+            infos = self.doubanapi.tv_recommend(
+                start=(page_num - 1) * target_count, count=target_count, sort=sort, tags=tags
+            )
+            raw_items = (infos or {}).get("items") or []
+            return self._filter_douban_discover_items(raw_items, tags, False) if raw_items else []
+
+        # 开启剧集短剧过滤时使用确定性双分片窗口（每页最多扫描 2x50 条），避免高密度短剧页过滤后卡片寥寥无几或空页断流
+        chunk_size = max(min(target_count, 50), 50)
+        base_start = (page_num - 1) * (chunk_size * 2)
+        first_infos = self.doubanapi.tv_recommend(start=base_start, count=chunk_size, sort=sort, tags=tags)
+        first_items = (first_infos or {}).get("items") or []
+        if not first_items:
+            return []
+        merged = self._filter_douban_discover_items(first_items, tags, True)
+        if len(merged) < target_count and len(first_items) >= 30:
+            second_infos = self.doubanapi.tv_recommend(
+                start=base_start + chunk_size, count=chunk_size, sort=sort, tags=tags
+            )
+            second_items = (second_infos or {}).get("items") or []
+            if second_items:
+                merged = self._filter_douban_discover_items(first_items + second_items, tags, True)
+        return merged
 
     async def async_douban_discover(self, mtype: MediaType, sort: str, tags: str,
                                     page: int = 1, count: int = 30,
@@ -707,32 +745,45 @@ class DoubanModule(_ModuleBase):
         :param tags:  标签
         :param page:  页码
         :param count:  数量
-        :param exclude_short_drama:  是否排除真人短剧/短片
+        :param exclude_short_drama:  是否排除真人短剧/AI漫剧/短片
         :return: 媒体信息列表
         """
         logger.info(f"开始发现豆瓣 {mtype.value} ...")
+        page_num = max(int(page or 1), 1)
+        target_count = max(int(count or 30), 1)
+        active_short_filter = bool(mtype == MediaType.TV and exclude_short_drama and "短片" not in (tags or ""))
+
         if mtype == MediaType.MOVIE:
-            infos = await self.doubanapi.async_movie_recommend(start=(page - 1) * count, count=count,
-                                                               sort=sort, tags=tags)
-        else:
-            infos = await self.doubanapi.async_tv_recommend(start=(page - 1) * count, count=count,
-                                                            sort=sort, tags=tags)
-        if infos and infos.get("items"):
-            medias = [MediaInfo(douban_info=info) for info in infos.get("items")]
-            filtered = [
-                media for media in medias if media.poster_path
-                and "movie_large.jpg" not in media.poster_path
-                and "tv_normal.png" not in media.poster_path
-                and "tv_normal.jpg" not in media.poster_path
-                and "tv_large.jpg" not in media.poster_path
-            ]
-            if exclude_short_drama and "短片" not in (tags or ""):
-                filtered = [
-                    media for media in filtered
-                    if not is_short_drama_douban_media(media)
-                ]
-            return filtered
-        return []
+            infos = await self.doubanapi.async_movie_recommend(
+                start=(page_num - 1) * target_count, count=target_count, sort=sort, tags=tags
+            )
+            raw_items = (infos or {}).get("items") or []
+            return self._filter_douban_discover_items(raw_items, tags, exclude_short_drama) if raw_items else []
+
+        if not active_short_filter:
+            infos = await self.doubanapi.async_tv_recommend(
+                start=(page_num - 1) * target_count, count=target_count, sort=sort, tags=tags
+            )
+            raw_items = (infos or {}).get("items") or []
+            return self._filter_douban_discover_items(raw_items, tags, False) if raw_items else []
+
+        chunk_size = max(min(target_count, 50), 50)
+        base_start = (page_num - 1) * (chunk_size * 2)
+        first_infos = await self.doubanapi.async_tv_recommend(
+            start=base_start, count=chunk_size, sort=sort, tags=tags
+        )
+        first_items = (first_infos or {}).get("items") or []
+        if not first_items:
+            return []
+        merged = self._filter_douban_discover_items(first_items, tags, True)
+        if len(merged) < target_count and len(first_items) >= 30:
+            second_infos = await self.doubanapi.async_tv_recommend(
+                start=base_start + chunk_size, count=chunk_size, sort=sort, tags=tags
+            )
+            second_items = (second_infos or {}).get("items") or []
+            if second_items:
+                merged = self._filter_douban_discover_items(first_items + second_items, tags, True)
+        return merged
 
     def movie_showing(self, page: int = 1, count: int = 30) -> List[MediaInfo]:
         """
