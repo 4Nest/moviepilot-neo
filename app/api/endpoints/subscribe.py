@@ -256,13 +256,25 @@ async def create_subscribe(
     if subscribe_dict.get("version_rules") is not None:
         subscribe_dict["version_mode"] = "all" if subscribe_dict["version_rules"] else "any"
     subscribe_dict["username"] = current_user.name
+    result_meta: dict = {}
     sid, message = await SubscribeChain().async_add(
         mtype=mtype,
         title=title,
         exist_ok=True,
         owner_scope=not current_user.is_superuser,
+        _result_meta=result_meta,
         **subscribe_dict,
     )
+    if result_meta.get("pending_approval"):
+        return schemas.Response(
+            success=True,
+            message=message,
+            data={
+                "id": None,
+                "pending_approval": True,
+                "request_id": result_meta.get("request_id"),
+            },
+        )
     return schemas.Response(success=bool(sid), message=message, data={"id": sid})
 
 @router.put("/", summary="更新订阅", response_model=schemas.Response)

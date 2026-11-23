@@ -614,6 +614,43 @@ class SubscribeEndpointTest(TestCase):
         self.assertTrue(response.success)
         self.assertFalse(async_add.await_args.kwargs["owner_scope"])
 
+    def test_create_subscribe_returns_pending_approval_when_intercepted(self):
+        """
+        订阅被审批插件拦截进入待审队列时，接口应返回 success=True 与 pending_approval 标识而非失败态。
+        """
+        subscribe_in = Subscribe(
+            name="心理测量者",
+            year="2012",
+            type=MediaType.TV.value,
+            season=1,
+            tmdbid=43865,
+        )
+
+        async def _fake_intercepted_add(**kwargs):
+            meta = kwargs.get("_result_meta")
+            if isinstance(meta, dict):
+                meta["pending_approval"] = True
+                meta["request_id"] = "a1b2c3d4e5f6"
+            return None, "已提交订阅审批，等待管理员审核"
+
+        with patch(
+            "app.api.endpoints.subscribe.SubscribeChain.async_add",
+            side_effect=_fake_intercepted_add,
+        ):
+            response = asyncio.run(
+                create_subscribe(
+                    subscribe_in=subscribe_in,
+                    current_user=_EndpointUser(name="ml", is_superuser=False),
+                )
+            )
+
+        self.assertTrue(response.success)
+        self.assertEqual(response.message, "已提交订阅审批，等待管理员审核")
+        self.assertEqual(
+            response.data,
+            {"id": None, "pending_approval": True, "request_id": "a1b2c3d4e5f6"},
+        )
+
     def test_update_status_sends_modified_event_payload_with_scene_and_fields(self):
         """
         状态更新只负责发出订阅修改事件，并携带场景和真实变更字段。

@@ -45,7 +45,7 @@ from app.log import logger
 from app.schemas import (MediaRecognizeConvertEventData, MediaServerQueryError,
                          SubscribeEpisodesRefreshEventData,
                          SubscribeCompletionCheckEventData)
-from app.schemas.event import SubscribeModifiedEventData
+from app.schemas.event import SubscribeModifiedEventData, SubscribeInterceptEventData
 from app.schemas.subscribe import compute_subscribe_version_total_episode
 from app.schemas.types import MediaType, SystemConfigKey, MessageChannel, NotificationType, EventType, ChainEventType, \
     ContentType
@@ -1226,6 +1226,8 @@ class SubscribeChain(ChainBase):
         """
         识别媒体信息并添加订阅
         """
+        skip_intercept = bool(kwargs.pop("_skip_subscribe_intercept", False))
+        result_meta = kwargs.pop("_result_meta", None)
 
         logger.info(f'开始添加订阅，标题：{title} ...')
 
@@ -1378,6 +1380,49 @@ class SubscribeChain(ChainBase):
             mediainfo.type, category_rule=self.__get_category_rule(mediainfo, **kwargs),
             media_name=mediainfo.title_year, **kwargs))
 
+        if not skip_intercept:
+            intercept_payload = SubscribeInterceptEventData(
+                username=username,
+                mediainfo=mediainfo.to_dict(),
+                season=season,
+                episode_group=episode_group,
+                payload={k: v for k, v in kwargs.items() if k != "owner_scope"},
+                channel=channel,
+                source=source,
+                userid=str(userid) if userid is not None else None,
+            )
+            intercept_event = eventmanager.send_event(
+                ChainEventType.SubscribeIntercept, intercept_payload
+            )
+            intercept_data = getattr(intercept_event, "event_data", None) or intercept_payload
+            if getattr(intercept_data, "cancel", False):
+                pending = bool(getattr(intercept_data, "pending_approval", False))
+                reason = (
+                    getattr(intercept_data, "reason", None)
+                    or ("已提交订阅审批，等待管理员审核" if pending else "订阅请求已被拦截")
+                )
+                if isinstance(result_meta, dict):
+                    result_meta["pending_approval"] = pending
+                    result_meta["request_id"] = getattr(intercept_data, "request_id", None)
+                if message and channel:
+                    notice_title = (
+                        f"{mediainfo.title_year} {metainfo.season} 已提交订阅审批".strip()
+                        if pending
+                        else f"{mediainfo.title_year} {metainfo.season} 添加订阅失败！".strip()
+                    )
+                    self.post_message(
+                        schemas.Notification(
+                            channel=channel,
+                            source=source,
+                            mtype=NotificationType.Subscribe,
+                            title=notice_title,
+                            text=reason,
+                            image=mediainfo.get_poster_image(),
+                            userid=userid,
+                        )
+                    )
+                return None, reason
+
         # 使用订阅记录最终落库的海报，确保通知与订阅卡片使用同一张图片。
         subscribeoper = SubscribeOper()
         sid, err_msg = subscribeoper.add(mediainfo=mediainfo, season=season, username=username, **kwargs)
@@ -1468,6 +1513,8 @@ class SubscribeChain(ChainBase):
         """
         异步识别媒体信息并添加订阅
         """
+        skip_intercept = bool(kwargs.pop("_skip_subscribe_intercept", False))
+        result_meta = kwargs.pop("_result_meta", None)
 
         logger.info(f'开始添加订阅，标题：{title} ...')
 
@@ -1618,6 +1665,48 @@ class SubscribeChain(ChainBase):
         kwargs.update(self.__get_default_kwargs(
             mediainfo.type, category_rule=self.__get_category_rule(mediainfo, **kwargs),
             media_name=mediainfo.title_year, **kwargs))
+        if not skip_intercept:
+            intercept_payload = SubscribeInterceptEventData(
+                username=username,
+                mediainfo=mediainfo.to_dict(),
+                season=season,
+                episode_group=episode_group,
+                payload={k: v for k, v in kwargs.items() if k != "owner_scope"},
+                channel=channel,
+                source=source,
+                userid=str(userid) if userid is not None else None,
+            )
+            intercept_event = await eventmanager.async_send_event(
+                ChainEventType.SubscribeIntercept, intercept_payload
+            )
+            intercept_data = getattr(intercept_event, "event_data", None) or intercept_payload
+            if getattr(intercept_data, "cancel", False):
+                pending = bool(getattr(intercept_data, "pending_approval", False))
+                reason = (
+                    getattr(intercept_data, "reason", None)
+                    or ("已提交订阅审批，等待管理员审核" if pending else "订阅请求已被拦截")
+                )
+                if isinstance(result_meta, dict):
+                    result_meta["pending_approval"] = pending
+                    result_meta["request_id"] = getattr(intercept_data, "request_id", None)
+                if message and channel:
+                    notice_title = (
+                        f"{mediainfo.title_year} {metainfo.season} 已提交订阅审批".strip()
+                        if pending
+                        else f"{mediainfo.title_year} {metainfo.season} 添加订阅失败！".strip()
+                    )
+                    await self.async_post_message(
+                        schemas.Notification(
+                            channel=channel,
+                            source=source,
+                            mtype=NotificationType.Subscribe,
+                            title=notice_title,
+                            text=reason,
+                            image=mediainfo.get_poster_image(),
+                            userid=userid,
+                        )
+                    )
+                return None, reason
         subscribeoper = SubscribeOper()
         sid, err_msg = await subscribeoper.async_add(mediainfo=mediainfo, season=season, username=username, **kwargs)
         subscribe_poster = mediainfo.get_poster_image()

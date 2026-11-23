@@ -231,6 +231,7 @@ def _load_subscribe_chain_class():
     schemas_module.MediaServerQueryError = type("MediaServerQueryError", (RuntimeError,), {})
     schemas_module.SubscribeEpisodesRefreshEventData = _SubscribeEpisodesRefreshEventData
     schemas_module.SubscribeCompletionCheckEventData = _SubscribeCompletionCheckEventData
+    schemas_module.SubscribeInterceptEventData = _SubscribeCompletionCheckEventData
 
     logger_module = ensure_module("app.log", types.ModuleType("app.log"))
 

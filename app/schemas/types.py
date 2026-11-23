@@ -202,6 +202,8 @@ class ChainEventType(Enum):
     SubscribeEpisodesRefresh = "subscribe.episodes.refresh"
     # 订阅完成检查
     SubscribeCompletionCheck = "subscribe.completion.check"
+    # 订阅创建前准入与审批拦截
+    SubscribeIntercept = "subscribe.intercept"
     # 辅助认证准入拦截
     AuthIntercept = "auth.intercept"
 

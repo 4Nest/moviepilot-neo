@@ -582,6 +582,7 @@ class MessageChain(ChainBase):
                     "plugin_id": plugin_id.replace("[PLUGIN]", ""),
                     "text": content,
                     "userid": userid,
+                    "username": username,
                     "channel": channel,
                     "source": source,
                     "original_message_id": original_message_id,

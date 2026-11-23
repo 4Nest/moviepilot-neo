@@ -605,3 +605,24 @@ class SubscribeCompletionCheckEventData(ChainEventData):
     cancel: bool = Field(default=False, description="是否否决本次完成")
     source: str = Field(default="未知来源", description="否决来源")
     reason: str = Field(default="", description="否决原因")
+
+
+class SubscribeInterceptEventData(ChainEventData):
+    """订阅创建前准入或审批拦截事件数据模型。"""
+
+    # 输入参数
+    username: Optional[str] = Field(default=None, description="发起订阅的用户名")
+    mediainfo: Optional[Dict[str, Any]] = Field(default=None, description="已识别的媒体信息字典")
+    season: Optional[int] = Field(default=None, description="剧集季号（电影为 None）")
+    episode_group: Optional[str] = Field(default=None, description="剧集组 ID")
+    payload: Dict[str, Any] = Field(default_factory=dict, description="订阅创建附加参数")
+    channel: Optional[MessageChannel] = Field(default=None, description="来源消息渠道")
+    source: Optional[str] = Field(default=None, description="来源实例名称")
+    userid: Optional[str] = Field(default=None, description="来源消息用户 ID")
+
+    # 输出参数
+    cancel: bool = Field(default=False, description="是否拦截直接写入订阅表")
+    pending_approval: bool = Field(default=False, description="是否已转入待审批队列")
+    source_plugin: Optional[str] = Field(default=None, description="拦截来源插件名")
+    reason: Optional[str] = Field(default=None, description="拦截说明或待审提示文案")
+    request_id: Optional[str] = Field(default=None, description="关联的审批单 ID")
