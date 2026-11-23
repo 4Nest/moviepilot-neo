@@ -1395,8 +1395,8 @@ class SubscribeChain(ChainBase):
                 ChainEventType.SubscribeIntercept, intercept_payload
             )
             intercept_data = getattr(intercept_event, "event_data", None) or intercept_payload
-            if getattr(intercept_data, "cancel", False):
-                pending = bool(getattr(intercept_data, "pending_approval", False))
+            if getattr(intercept_data, "cancel", False) is True:
+                pending = getattr(intercept_data, "pending_approval", False) is True
                 reason = (
                     getattr(intercept_data, "reason", None)
                     or ("已提交订阅审批，等待管理员审核" if pending else "订阅请求已被拦截")
@@ -1680,8 +1680,8 @@ class SubscribeChain(ChainBase):
                 ChainEventType.SubscribeIntercept, intercept_payload
             )
             intercept_data = getattr(intercept_event, "event_data", None) or intercept_payload
-            if getattr(intercept_data, "cancel", False):
-                pending = bool(getattr(intercept_data, "pending_approval", False))
+            if getattr(intercept_data, "cancel", False) is True:
+                pending = getattr(intercept_data, "pending_approval", False) is True
                 reason = (
                     getattr(intercept_data, "reason", None)
                     or ("已提交订阅审批，等待管理员审核" if pending else "订阅请求已被拦截")

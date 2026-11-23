@@ -767,7 +767,6 @@ class TelegramModule(_ModuleBase, _MessageBase["Telegram"]):
                         image=message.image,
                         userid=userid,
                         link=message.link,
-                        buttons=message.buttons,
                         force_reply=message.force_reply,
                         original_message_id=original_message_id,
                         original_chat_id=original_chat_id,
