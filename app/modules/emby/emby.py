@@ -912,11 +912,13 @@ class Emby:
         # 开始刷新媒体库
         if "/" in library_ids:
             return self.refresh_root_library()
-        for library_id in library_ids:
-            if library_id != "/":
-                return self.__refresh_emby_library_by_id(library_id)
-        logger.info(f"Emby媒体库刷新完成")
-        return True
+        results = [
+            self.__refresh_emby_library_by_id(library_id)
+            for library_id in library_ids
+            if library_id != "/"
+        ]
+        logger.info("Emby媒体库刷新完成")
+        return all(results) if results else True
 
     def __get_emby_library_id_by_item(self, item: schemas.RefreshMediaItem) -> Optional[str]:
         """

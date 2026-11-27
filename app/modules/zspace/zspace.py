@@ -726,11 +726,13 @@ class ZSpace:
                 library_ids.append(library_id)
         if "/" in library_ids:
             return self.refresh_root_library()
-        for library_id in library_ids:
-            if library_id != "/":
-                return self.__refresh_library_by_id(library_id)
+        results = [
+            self.__refresh_library_by_id(library_id)
+            for library_id in library_ids
+            if library_id != "/"
+        ]
         logger.info("极影视媒体库刷新完成")
-        return True
+        return all(results) if results else True
 
     def __get_library_id_by_item(self, item: schemas.RefreshMediaItem) -> Optional[str]:
         """
