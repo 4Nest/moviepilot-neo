@@ -469,9 +469,10 @@ class NexusAudiencesSiteUserInfo(NexusPhpSiteUserInfo):
         if username and username.strip():
             self.username = username.strip()
 
-        user_level = user_node.get("data-uploader-badge")
-        if user_level and user_level.strip():
-            self.user_level = user_level.strip()
+        self._set_detail_user_level(
+            user_node.get("data-uploader-badge") or "",
+            keep_existing_without_level=True,
+        )
 
     def __parse_uploader_stats(self, stats_text: str):
         """

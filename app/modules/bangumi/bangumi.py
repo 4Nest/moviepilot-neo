@@ -1,14 +1,49 @@
+"""
+Bangumi 同步与异步客户端，统一代理地址、缓存身份与响应提取。
+"""
+
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional, cast
+from urllib.parse import quote, urlsplit
 
 import requests
 
 from app.core.cache import cached
 from app.core.config import settings
-from app.utils.http import RequestUtils, AsyncRequestUtils
+from app.log import logger
+from app.utils.http import AsyncRequestUtils, RequestUtils
 
 
-class BangumiApi(object):
+@dataclass(frozen=True, slots=True)
+class _BangumiRequestPlan:
+    """
+    Bangumi 同步与异步请求共用的地址、查询参数和响应字段选择。
+
+    :param url: 包含代理路径的完整请求地址
+    :param params: 发送到服务端的查询参数
+    :param key: 从响应映射提取的字段，None 表示保留完整响应
+    """
+
+    url: str
+    params: dict[str, Any]
+    key: Optional[str] = None
+
+
+@dataclass(frozen=True, slots=True)
+class _BangumiImageProxy:
+    """
+    图片代理地址与拼接方式。
+
+    :param mode: host 替换主机、query 按查询参数拼接、path 按路径拼接
+    :param prefix: 已归一化的代理地址前缀
+    """
+
+    mode: str
+    prefix: str
+
+
+class BangumiApi:
     """
     Bangumi API客户端。
 
@@ -27,8 +62,50 @@ class BangumiApi(object):
         "person_credits": "v0/persons/%s/subjects",
     }
     _base_url = "https://api.bgm.tv/"
+    # 官方图片 CDN 主机：仅该主机的地址参与替换，仿冒域名保持原样。
+    _image_host = "lain.bgm.tv"
 
-    def __init__(self):
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        image_domain: Optional[str] = None,
+    ) -> None:
+        """
+        初始化同步会话、异步请求客户端和数据、图片地址快照。
+
+        数据与图片地址纳入缓存键，切换代理或域名不会复用旧来源的缓存。
+
+        :param base_url: 显式数据地址；None 读取代理设置，空值或无效地址回退官方接口
+        :param image_domain: 显式图片地址；None 读取图片代理设置，空值或无效地址保留官方图片域名
+        """
+        configured_base_url = (
+            base_url
+            if base_url is not None
+            else (
+                settings.BANGUMI_API_DOMAIN
+                if settings.BANGUMI_PROXY_ENABLE
+                else ""
+            )
+        )
+        self._base_url = self._normalize_base_url(
+            configured_base_url,
+            default=self.__class__._base_url,
+        )
+        configured_image_domain = (
+            image_domain
+            if image_domain is not None
+            else (
+                settings.BANGUMI_IMAGE_DOMAIN
+                if settings.BANGUMI_PROXY_ENABLE
+                else ""
+            )
+        )
+        self._image_proxy = self._normalize_image_proxy(configured_image_domain)
+        self._cache_token = (
+            f"{self._base_url}|{self._image_proxy.mode}:{self._image_proxy.prefix}"
+            if self._image_proxy
+            else self._base_url
+        )
         self._session = requests.Session()
         self._req = RequestUtils(
             ua=settings.NORMAL_USER_AGENT,
@@ -40,190 +117,375 @@ class BangumiApi(object):
             proxies=settings.PROXY,
         )
 
-    @cached(maxsize=settings.CONF.bangumi, ttl=settings.CONF.meta, shared_key="get")
-    def __invoke(self, url, key: Optional[str] = None, **kwargs):
-        req_url = self._base_url + url
-        params = {}
-        if kwargs:
-            params.update(kwargs)
-        resp = self._req.get_res(url=req_url, params=params)
+    @property
+    def base_url(self) -> str:
+        """
+        读取当前客户端固定使用的数据请求根地址。
+
+        :return: 规范化且带末尾斜杠的 HTTP 或 HTTPS 地址
+        """
+        return self._base_url
+
+    @property
+    def image_proxy(self) -> Optional[_BangumiImageProxy]:
+        """
+        读取当前客户端改写图片地址使用的代理地址与拼接方式。
+
+        :return: 代理地址与拼接方式；未配置或无效图片地址时为 None
+        """
+        return self._image_proxy
+
+    @staticmethod
+    def _normalize_base_url(value: Any, default: str) -> str:
+        """
+        归一化 Bangumi 数据地址，兼容域名、完整 URL 和代理路径。
+        """
+        raw_value = str(value or "").strip()
+        if not raw_value:
+            return default
+        candidate = (
+            raw_value
+            if "://" in raw_value
+            else f"https://{raw_value}"
+        )
         try:
-            if resp is None or resp.status_code != 200:
-                return None
-            result = resp.json()
-            return result.get(key) if key else result
-        except Exception as e:
-            print(e)
+            parsed = urlsplit(candidate)
+        except ValueError:
+            return default
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.query
+            or parsed.fragment
+        ):
+            return default
+        return f"{candidate.rstrip('/')}/"
+
+    @staticmethod
+    def _normalize_image_proxy(value: Any) -> Optional[_BangumiImageProxy]:
+        """
+        归一化图片代理地址，按配置形态区分三种拼接方式。
+
+        尾部斜杠视为替换主机，含查询串视为按查询参数拼接，其余按路径拼接。
+
+        :param value: 配置的域名或完整 URL；空值、含凭据或无法解析时视为无效
+        :return: 代理地址与拼接方式，无效地址返回 None
+        """
+        raw_value = str(value or "").strip()
+        if not raw_value:
             return None
+        candidate = raw_value if "://" in raw_value else f"https://{raw_value}"
+        try:
+            parsed = urlsplit(candidate)
+        except ValueError:
+            return None
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+        ):
+            return None
+        if parsed.query:
+            return _BangumiImageProxy(mode="query", prefix=candidate)
+        return _BangumiImageProxy(
+            mode="host" if raw_value.endswith("/") else "path",
+            prefix=candidate.rstrip("/"),
+        )
+
+    def _request_plan(
+        self,
+        path: str,
+        key: Optional[str] = None,
+        **params: Any,
+    ) -> _BangumiRequestPlan:
+        """
+        构造同步与异步请求共同使用的不可变调用计划。
+        """
+        return _BangumiRequestPlan(
+            url=f"{self._base_url}{path}",
+            params=dict(params),
+            key=key,
+        )
+
+    @staticmethod
+    def _project_response(
+        status_code: Optional[int],
+        payload: Any,
+        key: Optional[str],
+    ) -> Any:
+        """
+        按统一状态码与字段规则投影 Bangumi 响应。
+        """
+        if status_code != 200:
+            return None
+        if key:
+            return payload.get(key) if isinstance(payload, dict) else None
+        return payload
+
+    def _decode_response(self, response: Any, key: Optional[str]) -> Any:
+        """
+        解析 HTTP 响应，并把格式错误统一映射为空结果。
+        """
+        if response is None:
+            return None
+        try:
+            payload = response.json() if response.status_code == 200 else None
+        except (TypeError, ValueError) as err:
+            logger.warning(f"Bangumi 响应解析失败：{str(err)}")
+            return None
+        return self._normalize_images(
+            self._project_response(response.status_code, payload, key)
+        )
+
+    def _normalize_images(self, payload: Any) -> Any:
+        """
+        按图片代理地址替换响应中的 Bangumi 图片域名。
+
+        :param payload: 解码并投影后的响应数据
+        :return: 替换后的响应数据；不修改入参，未配置图片代理时原样返回
+        """
+        if self._image_proxy is None:
+            return payload
+        return self._normalize_image_node(payload, self._image_proxy)
+
+    @classmethod
+    def _normalize_image_node(cls, node: Any, image_proxy: _BangumiImageProxy) -> Any:
+        """
+        递归复制响应节点，只改写 images 映射和 image 地址。
+
+        :param node: 当前响应节点
+        :param image_proxy: 图片代理地址与拼接方式
+        :return: 改写后的节点；报文结构和非图片字段保持原样
+        """
+        if isinstance(node, dict):
+            normalized: dict[str, Any] = {}
+            for field, value in node.items():
+                if field == "images" and isinstance(value, dict):
+                    normalized[field] = {
+                        size: cls._normalize_image_url(url, image_proxy)
+                        for size, url in value.items()
+                    }
+                elif field == "image" and isinstance(value, str):
+                    normalized[field] = cls._normalize_image_url(value, image_proxy)
+                elif isinstance(value, (dict, list)):
+                    normalized[field] = cls._normalize_image_node(value, image_proxy)
+                else:
+                    normalized[field] = value
+            return normalized
+        if isinstance(node, list):
+            return [cls._normalize_image_node(item, image_proxy) for item in node]
+        return node
 
     @cached(maxsize=settings.CONF.bangumi, ttl=settings.CONF.meta, shared_key="get")
-    async def __async_invoke(self, url, key: Optional[str] = None, **kwargs):
-        req_url = self._base_url + url
-        params = {}
-        if kwargs:
-            params.update(kwargs)
-        resp = await self._async_req.get_res(url=req_url, params=params)
-        try:
-            if resp is None or resp.status_code != 200:
-                return None
-            result = resp.json()
-            return result.get(key) if key else result
-        except Exception as e:
-            print(e)
-            return None
+    def _cached_invoke(
+        self,
+        url: str,
+        key: Optional[str] = None,
+        _cache_token: str = "",
+        **kwargs: Any,
+    ) -> Any:
+        """
+        执行带配置身份的同步 HTTP 请求，并复用统一响应解码。
+        """
+        plan = self._request_plan(url, key=key, **kwargs)
+        response = self._req.get_res(url=plan.url, params=plan.params)
+        return self._decode_response(response, plan.key)
 
-    def search(self, name):
+    def __invoke(
+        self,
+        url: str,
+        key: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Any:
+        """
+        执行同步 Bangumi 请求，并把当前代理配置纳入缓存键。
+        """
+        return self._cached_invoke(
+            url,
+            key=key,
+            _cache_token=self._cache_token,
+            **kwargs,
+        )
+
+    @cached(maxsize=settings.CONF.bangumi, ttl=settings.CONF.meta, shared_key="get")
+    async def _cached_async_invoke(
+        self,
+        url: str,
+        key: Optional[str] = None,
+        _cache_token: str = "",
+        **kwargs: Any,
+    ) -> Any:
+        """
+        执行带配置身份的异步 HTTP 请求，并复用统一响应解码。
+        """
+        plan = self._request_plan(url, key=key, **kwargs)
+        response = await self._async_req.get_res(url=plan.url, params=plan.params)
+        return self._decode_response(response, plan.key)
+
+    async def __async_invoke(
+        self,
+        url: str,
+        key: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Any:
+        """
+        执行异步 Bangumi 请求，并把当前代理配置纳入缓存键。
+        """
+        return await self._cached_async_invoke(
+            url,
+            key=key,
+            _cache_token=self._cache_token,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _dated_params(**params: Any) -> dict[str, Any]:
+        """
+        为缓存键稳定附加当天日期，并保留调用方筛选参数。
+        """
+        return {
+            "_ts": datetime.strftime(datetime.now(), "%Y%m%d"),
+            **params,
+        }
+
+    @staticmethod
+    def _calendar_items(result: Any) -> list[dict[str, Any]]:
+        """
+        按星期顺序展开每日放送条目，并规范化其封面地址。
+        """
+        items = [
+            item
+            for weekday in result or []
+            if isinstance(weekday, dict)
+            for item in weekday.get("items") or []
+        ]
+        normalized_items = []
+        for item in items:
+            if not isinstance(item, dict):
+                normalized_items.append(item)
+                continue
+            normalized_item = dict(item)
+            images = item.get("images")
+            if isinstance(images, dict):
+                normalized_item["images"] = {
+                    size: BangumiApi._normalize_image_url(url)
+                    for size, url in images.items()
+                }
+            if "image" in item:
+                normalized_item["image"] = BangumiApi._normalize_image_url(
+                    item["image"]
+                )
+            normalized_items.append(normalized_item)
+        return normalized_items
+
+    @staticmethod
+    def _normalize_image_url(
+        url: Any,
+        image_proxy: Optional[_BangumiImageProxy] = None,
+    ) -> Any:
+        """
+        升级官方图片域名的 HTTP 地址为 HTTPS，并按代理配置改写图片地址。
+
+        :param url: 响应中的图片地址
+        :param image_proxy: 图片代理地址与拼接方式；None 时只做官方域名的 HTTPS 升级
+        :return: 规范化后的地址；非官方图片主机和非字符串值保持原样
+        """
+        if not isinstance(url, str):
+            return url
+        try:
+            parsed = urlsplit(url)
+        except ValueError:
+            return url
+        if parsed.hostname != BangumiApi._image_host:
+            return url
+        if image_proxy is None:
+            if parsed.scheme != "http":
+                return url
+            return parsed._replace(scheme="https").geturl()
+        if image_proxy.mode == "query":
+            encoded = quote(url, safe="!'()*-._~")
+            return f"{image_proxy.prefix}{encoded}"
+        if image_proxy.mode == "path":
+            return f"{image_proxy.prefix}/{url}"
+        proxy_host = urlsplit(image_proxy.prefix).hostname or ""
+        if (parsed.hostname or "").lower() == proxy_host.lower():
+            return url
+        query = f"?{parsed.query}" if parsed.query else ""
+        return f"{image_proxy.prefix}{parsed.path}{query}"
+
+    def search(self, name: str):
         """
         搜索媒体信息
         """
-        result = self.__invoke("search/subject/%s" % name)
-        if result:
-            return result.get("list")
+        result = self.__invoke(f"search/subject/{name}")
+        if isinstance(result, dict):
+            return result.get("list") or []
         return []
 
-    async def async_search(self, name):
+    async def async_search(self, name: str):
         """
         搜索媒体信息（异步版本）
         """
-        result = await self.__async_invoke("search/subject/%s" % name)
-        if result:
-            return result.get("list")
+        result = await self.__async_invoke(f"search/subject/{name}")
+        if isinstance(result, dict):
+            return result.get("list") or []
         return []
 
-    def calendar(self):
+    def calendar(self) -> list[dict[str, Any]]:
         """
-        获取每日放送，返回items
-        """
-        """
-        [
-          {
-            "weekday": {
-              "en": "Mon",
-              "cn": "星期一",
-              "ja": "月耀日",
-              "id": 1
-            },
-            "items": [
-              {
-                "id": 350235,
-                "url": "http://bgm.tv/subject/350235",
-                "type": 2,
-                "name": "月が導く異世界道中 第二幕",
-                "name_cn": "月光下的异世界之旅 第二幕",
-                "summary": "",
-                "air_date": "2024-01-08",
-                "air_weekday": 1,
-                "rating": {
-                  "total": 257,
-                  "count": {
-                    "1": 1,
-                    "2": 1,
-                    "3": 4,
-                    "4": 15,
-                    "5": 51,
-                    "6": 111,
-                    "7": 49,
-                    "8": 13,
-                    "9": 5,
-                    "10": 7
-                  },
-                  "score": 6.1
-                },
-                "rank": 6125,
-                "images": {
-                  "large": "http://lain.bgm.tv/pic/cover/l/3c/a5/350235_A0USf.jpg",
-                  "common": "http://lain.bgm.tv/pic/cover/c/3c/a5/350235_A0USf.jpg",
-                  "medium": "http://lain.bgm.tv/pic/cover/m/3c/a5/350235_A0USf.jpg",
-                  "small": "http://lain.bgm.tv/pic/cover/s/3c/a5/350235_A0USf.jpg",
-                  "grid": "http://lain.bgm.tv/pic/cover/g/3c/a5/350235_A0USf.jpg"
-                },
-                "collection": {
-                  "doing": 920
-                }
-              },
-              {
-                "id": 358561,
-                "url": "http://bgm.tv/subject/358561",
-                "type": 2,
-                "name": "大宇宙时代",
-                "name_cn": "大宇宙时代",
-                "summary": "",
-                "air_date": "2024-01-22",
-                "air_weekday": 1,
-                "rating": {
-                  "total": 2,
-                  "count": {
-                    "1": 0,
-                    "2": 0,
-                    "3": 0,
-                    "4": 0,
-                    "5": 1,
-                    "6": 1,
-                    "7": 0,
-                    "8": 0,
-                    "9": 0,
-                    "10": 0
-                  },
-                  "score": 5.5
-                },
-                "images": {
-                  "large": "http://lain.bgm.tv/pic/cover/l/71/66/358561_UzsLu.jpg",
-                  "common": "http://lain.bgm.tv/pic/cover/c/71/66/358561_UzsLu.jpg",
-                  "medium": "http://lain.bgm.tv/pic/cover/m/71/66/358561_UzsLu.jpg",
-                  "small": "http://lain.bgm.tv/pic/cover/s/71/66/358561_UzsLu.jpg",
-                  "grid": "http://lain.bgm.tv/pic/cover/g/71/66/358561_UzsLu.jpg"
-                },
-                "collection": {
-                  "doing": 9
-                }
-              }
-            ]
-          }
-        ]
-        """
-        ret_list = []
-        result = self.__invoke(self._urls["calendar"], _ts=datetime.strftime(datetime.now(), '%Y%m%d'))
-        if result:
-            for item in result:
-                ret_list.extend(item.get("items") or [])
-        return ret_list
+        读取每日放送，并按响应顺序展开各星期的条目。
 
-    async def async_calendar(self):
+        :return: 原始媒体条目列表，图片地址已完成 HTTPS 升级与图片代理域名替换；无结果时为空
         """
-        获取每日放送，返回items（异步版本）
-        """
-        ret_list = []
-        result = await self.__async_invoke(self._urls["calendar"], _ts=datetime.strftime(datetime.now(), '%Y%m%d'))
-        if result:
-            for item in result:
-                ret_list.extend(item.get("items") or [])
-        return ret_list
+        result = self.__invoke(self._urls["calendar"], **self._dated_params())
+        return self._calendar_items(result)
 
-    def detail(self, bid: int):
+    async def async_calendar(self) -> list[dict[str, Any]]:
+        """
+        异步读取每日放送，并按响应顺序展开各星期的条目。
+
+        :return: 原始媒体条目列表，图片地址已完成 HTTPS 升级与图片代理域名替换；无结果时为空
+        """
+        result = await self.__async_invoke(
+            self._urls["calendar"], **self._dated_params()
+        )
+        return self._calendar_items(result)
+
+    def detail(self, bid: int) -> Optional[dict[str, Any]]:
         """
         获取番剧详情
         """
-        return self.__invoke(self._urls["detail"] % bid, _ts=datetime.strftime(datetime.now(), '%Y%m%d'))
+        return cast(
+            Optional[dict[str, Any]],
+            self.__invoke(self._urls["detail"] % bid, **self._dated_params()),
+        )
 
-    async def async_detail(self, bid: int):
+    async def async_detail(self, bid: int) -> Optional[dict[str, Any]]:
         """
         获取番剧详情（异步版本）
         """
-        return await self.__async_invoke(self._urls["detail"] % bid, _ts=datetime.strftime(datetime.now(), '%Y%m%d'))
+        return cast(
+            Optional[dict[str, Any]],
+            await self.__async_invoke(
+                self._urls["detail"] % bid, **self._dated_params()
+            ),
+        )
 
     def credits(self, bid: int):
         """
         获取番剧人物
         """
         ret_list = []
-        result = self.__invoke(self._urls["characters"] % bid, _ts=datetime.strftime(datetime.now(), '%Y%m%d'))
+        result = self.__invoke(self._urls["characters"] % bid, **self._dated_params())
         if result:
             for item in result:
                 character_id = item.get("id")
                 actors = item.get("actors")
                 if character_id and actors and actors[0]:
                     actor_info = actors[0]
-                    actor_info.update({'career': [item.get('name')]})
+                    actor_info.update({"career": [item.get("name")]})
                     ret_list.append(actor_info)
         return ret_list
 
@@ -232,15 +494,16 @@ class BangumiApi(object):
         获取番剧人物（异步版本）
         """
         ret_list = []
-        result = await self.__async_invoke(self._urls["characters"] % bid,
-                                           _ts=datetime.strftime(datetime.now(), '%Y%m%d'))
+        result = await self.__async_invoke(
+            self._urls["characters"] % bid, **self._dated_params()
+        )
         if result:
             for item in result:
                 character_id = item.get("id")
                 actors = item.get("actors")
                 if character_id and actors and actors[0]:
                     actor_info = actors[0]
-                    actor_info.update({'career': [item.get('name')]})
+                    actor_info.update({"career": [item.get("name")]})
                     ret_list.append(actor_info)
         return ret_list
 
@@ -248,34 +511,40 @@ class BangumiApi(object):
         """
         获取关联条目信息
         """
-        return self.__invoke(self._urls["subjects"] % bid, _ts=datetime.strftime(datetime.now(), '%Y%m%d'))
+        return self.__invoke(self._urls["subjects"] % bid, **self._dated_params())
 
     async def async_subjects(self, bid: int):
         """
         获取关联条目信息（异步版本）
         """
-        return await self.__async_invoke(self._urls["subjects"] % bid, _ts=datetime.strftime(datetime.now(), '%Y%m%d'))
+        return await self.__async_invoke(
+            self._urls["subjects"] % bid, **self._dated_params()
+        )
 
     def person_detail(self, person_id: int):
         """
         获取人物详细信息
         """
-        return self.__invoke(self._urls["person_detail"] % person_id, _ts=datetime.strftime(datetime.now(), '%Y%m%d'))
+        return self.__invoke(
+            self._urls["person_detail"] % person_id, **self._dated_params()
+        )
 
     async def async_person_detail(self, person_id: int):
         """
         获取人物详细信息（异步版本）
         """
-        return await self.__async_invoke(self._urls["person_detail"] % person_id,
-                                         _ts=datetime.strftime(datetime.now(), '%Y%m%d'))
+        return await self.__async_invoke(
+            self._urls["person_detail"] % person_id, **self._dated_params()
+        )
 
     def person_credits(self, person_id: int):
         """
         获取人物参演作品
         """
         ret_list = []
-        result = self.__invoke(self._urls["person_credits"] % person_id,
-                               _ts=datetime.strftime(datetime.now(), '%Y%m%d'))
+        result = self.__invoke(
+            self._urls["person_credits"] % person_id, **self._dated_params()
+        )
         if result:
             for item in result:
                 ret_list.append(item)
@@ -286,8 +555,9 @@ class BangumiApi(object):
         获取人物参演作品（异步版本）
         """
         ret_list = []
-        result = await self.__async_invoke(self._urls["person_credits"] % person_id,
-                                           _ts=datetime.strftime(datetime.now(), '%Y%m%d'))
+        result = await self.__async_invoke(
+            self._urls["person_credits"] % person_id, **self._dated_params()
+        )
         if result:
             for item in result:
                 ret_list.append(item)
@@ -297,23 +567,27 @@ class BangumiApi(object):
         """
         发现
         """
-        return self.__invoke(self._urls["discover"],
-                             key="data",
-                             _ts=datetime.strftime(datetime.now(), '%Y%m%d'), **kwargs)
+        return self.__invoke(
+            self._urls["discover"],
+            key="data",
+            **self._dated_params(**kwargs),
+        )
 
     async def async_discover(self, **kwargs):
         """
         发现（异步版本）
         """
-        return await self.__async_invoke(self._urls["discover"],
-                                         key="data",
-                                         _ts=datetime.strftime(datetime.now(), '%Y%m%d'), **kwargs)
+        return await self.__async_invoke(
+            self._urls["discover"],
+            key="data",
+            **self._dated_params(**kwargs),
+        )
 
     def clear_cache(self):
         """
         清除缓存
         """
-        self.__invoke.cache_clear()
+        self._cached_invoke.cache_clear()
 
     def close(self) -> None:
         """

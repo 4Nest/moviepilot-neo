@@ -1158,17 +1158,21 @@ class Jellyfin:
             user = self.user
         if not user:
             return None
-        url = f"{self._host}Users/{user}/Items/Latest"
+        # Items/Latest 会让剧集季/集挤占电影，改为按入库时间查询电影与剧集顶层条目
+        url = f"{self._host}Users/{user}/Items"
         params = {
-            "Limit": 100,
-            "MediaTypes": "Video",
+            "Recursive": "true",
+            "IncludeItemTypes": "Movie,Series",
+            "SortBy": "DateCreated",
+            "SortOrder": "Descending",
+            "Limit": max(200, (num or 20) * 10),
             "Fields": "ProductionYear,Path,BackdropImageTags",
             "api_key": self._apikey,
         }
         try:
             res = self._request().get_res(url, params)
             if res:
-                result = res.json() or []
+                result = (res.json() or {}).get("Items") or []
                 ret_latest = []
                 # 用户媒体库文件夹列表（排除黑名单）
                 library_folders = self.get_user_library_folders()
@@ -1196,9 +1200,9 @@ class Jellyfin:
                     ))
                 return ret_latest
             else:
-                logger.error(f"Users/Items/Latest 未获取到返回数据")
+                logger.error("Users/Items 未获取到最新入库数据")
         except Exception as e:
-            logger.error(f"连接Users/Items/Latest出错：" + str(e))
+            logger.error("连接Users/Items出错：" + str(e))
         return None
 
     def get_user_library_folders(self):

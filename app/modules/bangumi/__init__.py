@@ -16,7 +16,12 @@ class BangumiModule(_ModuleBase):
     """
     Bangumi媒体信息匹配
     """
-    CONFIG_WATCH = {"PROXY_HOST"}
+    CONFIG_WATCH = {
+        "PROXY_HOST",
+        "BANGUMI_PROXY_ENABLE",
+        "BANGUMI_API_DOMAIN",
+        "BANGUMI_IMAGE_DOMAIN",
+    }
 
     bangumiapi: BangumiApi = None
     scraper: MediaScraperHelper = None
@@ -25,7 +30,13 @@ class BangumiModule(_ModuleBase):
         """
         初始化Bangumi客户端
         """
-        self.bangumiapi = BangumiApi()
+        proxy_enabled = bool(settings.BANGUMI_PROXY_ENABLE)
+        api_domain = str(settings.BANGUMI_API_DOMAIN or "")
+        image_domain = str(settings.BANGUMI_IMAGE_DOMAIN or "")
+        self.bangumiapi = BangumiApi(
+            base_url=api_domain if proxy_enabled else "",
+            image_domain=image_domain if proxy_enabled else "",
+        )
         self.scraper = MediaScraperHelper()
 
     def stop(self) -> None:

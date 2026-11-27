@@ -123,6 +123,21 @@ class DownloadFailure(Base):
 
     @classmethod
     @db_update
+    def delete_by_fingerprints(
+            cls,
+            db: Session,
+            fingerprints: List[str],
+    ) -> int:
+        """
+        删除明确指定的资源失败记录，不影响其他资源或重复提交保护。
+        """
+        normalized = list(dict.fromkeys(fingerprint for fingerprint in fingerprints if fingerprint))
+        if not normalized:
+            return 0
+        return db.query(cls).filter(cls.fingerprint.in_(normalized)).delete(synchronize_session=False)
+
+    @classmethod
+    @db_update
     def delete_expired(
             cls,
             db: Session,

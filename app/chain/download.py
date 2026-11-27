@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import copy
 import hashlib
@@ -678,6 +679,44 @@ class DownloadChain(ChainBase):
         except Exception as err:
             logger.error(f"查询下载失败冷却失败：{str(err)}")
             return set()
+
+    def clear_download_failure(self, contexts: List[Context]) -> None:
+        """
+        清除人工确认资源的失败台账和无效地址缓存，不清除重复提交的保护记录。
+
+        失败台账提交成功后才清除地址缓存；任何一步失败均向调用方报告。
+        """
+        fingerprints = list(
+            dict.fromkeys(
+                fingerprint
+                for context in contexts
+                if (fingerprint := self._build_download_failure_fingerprint(context))
+            )
+        )
+        if fingerprints:
+            DownloadFailureOper().delete_by_fingerprints(fingerprints)
+        helper = TorrentHelper()
+        for context in contexts:
+            if context.torrent_info is not None:
+                helper.remove_invalid(context.torrent_info.enclosure)
+
+    async def async_clear_download_failure(self, contexts: List[Context]) -> None:
+        """
+        异步清除人工确认资源的失败台账和无效地址缓存。
+        """
+        fingerprints = list(
+            dict.fromkeys(
+                fingerprint
+                for context in contexts
+                if (fingerprint := self._build_download_failure_fingerprint(context))
+            )
+        )
+        if fingerprints:
+            await asyncio.to_thread(DownloadFailureOper().delete_by_fingerprints, fingerprints)
+        helper = TorrentHelper()
+        for context in contexts:
+            if context.torrent_info is not None:
+                await helper.async_remove_invalid(context.torrent_info.enclosure)
 
     @staticmethod
     def _redact_indirect_download_error(

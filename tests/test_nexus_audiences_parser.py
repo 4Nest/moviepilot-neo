@@ -39,7 +39,7 @@ def test_audiences_userbar_metrics_override_generic_nexus_regex():
 
     assert parser.userid == "18978"
     assert parser.username == "jxxghp"
-    assert parser.user_level == "(江湖儿女)Elite User"
+    assert parser.user_level == "Elite User"
     assert parser.upload == StringUtils.num_filesize("10.150 TB")
     assert parser.download == StringUtils.num_filesize("3.624 TB")
     assert parser.ratio == 2.801
@@ -770,3 +770,33 @@ def test_audiences_comment_without_body_keeps_exact_link(monkeypatch):
         '<div class="pm-view__body"><a href="/details.php?id=729762">种子</a></div>',
         "新评论", "2026-10-09 08:58:44", content,
     ) == (content, "https://audiences.me/details.php?id=729762#22431")
+
+
+
+def test_audiences_badge_without_common_level_keeps_existing_level():
+    """
+    Audiences 用户栏徽章只有站点组名或为空时，应保留已解析出的等级。
+    """
+    parser = NexusAudiencesSiteUserInfo(
+        site_name="Audiences",
+        url="https://audiences.me/",
+        site_cookie="",
+        apikey=None,
+        token=None,
+    )
+    parser.user_level = "Power User"
+    html_text = """
+    <html>
+      <body>
+        <div
+          data-uploader-label="jxxghp"
+          data-uploader-url="userdetails.php?id=18978"
+          data-uploader-badge="(江湖儿女)">
+        </div>
+      </body>
+    </html>
+    """
+
+    parser._parse_user_traffic_info(html_text)
+
+    assert parser.user_level == "Power User"

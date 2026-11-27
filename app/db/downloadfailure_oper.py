@@ -46,6 +46,15 @@ class DownloadFailureOper(DbOper):
             **kwargs,
         )
 
+    def delete_by_fingerprints(self, fingerprints: List[str]) -> int:
+        """
+        清除明确指定的资源失败冷却记录；空列表不执行删除。
+        """
+        return DownloadFailure.delete_by_fingerprints(
+            self._db,
+            fingerprints=fingerprints,
+        )
+
     def delete_expired(
             self,
             before_time: str,

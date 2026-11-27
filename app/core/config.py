@@ -220,6 +220,14 @@ class ConfigModel(BaseModel):
     # TMDB API Key
     TMDB_API_KEY: str = "db55323b8d3e4154498498a75642b381"
 
+    # ==================== Bangumi配置 ====================
+    # 是否启用 Bangumi 数据与图片代理
+    BANGUMI_PROXY_ENABLE: bool = False
+    # Bangumi API代理地址，留空使用官方地址
+    BANGUMI_API_DOMAIN: str = ""
+    # Bangumi图片代理地址，非空时把响应里的官方图片域名替换为该地址，留空则由后端代理端点直接拉取原始图片
+    BANGUMI_IMAGE_DOMAIN: str = ""
+
     # ==================== TVDB配置 ====================
     # TVDB API Key
     TVDB_V4_API_KEY: str = "ed2aa66b-7899-4677-92a7-67bc9ce3d93a"

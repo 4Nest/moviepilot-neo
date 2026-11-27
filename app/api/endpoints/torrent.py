@@ -1,8 +1,10 @@
+import copy
 from typing import Optional
 
 from fastapi import APIRouter, Depends
 
 from app import schemas
+from app.chain.download import DownloadChain
 from app.chain.media import MediaChain
 from app.chain.torrents import TorrentsChain
 from app.core.config import settings
@@ -13,7 +15,9 @@ from app.db.user_oper import (
     get_current_admin,
     get_current_admin_async,
 )
+from app.log import logger
 from app.utils.crypto import HashUtils
+from app.utils.media import resolve_media_identity
 
 router = APIRouter()
 
@@ -245,11 +249,38 @@ async def reidentify_cache(
             # 清理多余数据
             mediainfo.clear()
 
-        # 更新上下文中的媒体信息
+        media_source_value, recognized_id = resolve_media_identity(media=mediainfo)
+        recognized = bool(media_source_value and recognized_id)
+
+        # 保存修改前上下文快照，以便同步清除前后身份对应的普通下载失败冷却
+        original_context = copy.copy(target_context)
+
+        # 更新上下文中的媒体信息及识别状态
+        target_context.meta_info = meta
         target_context.media_info = mediainfo
+        target_context.match_source = str(media_source_value) if recognized else "unknown"
+        target_context.candidate_recognized = recognized
+        target_context.media_info_is_target = False
+        target_context.media_recognize_fail_count = 0 if recognized else 1
 
         # 保存更新后的缓存
-        await torrents_chain.async_save_cache(cache_data, TorrentsChain().cache_file)
+        try:
+            await torrents_chain.async_save_cache(cache_data, torrents_chain.cache_file)
+        except Exception as save_err:
+            logger.error(f"重新识别后保存种子缓存失败：{save_err}")
+            return schemas.Response(success=False, message="种子缓存保存失败，请稍后重试")
+
+        if recognized:
+            try:
+                await DownloadChain().async_clear_download_failure(
+                    [original_context, target_context]
+                )
+            except Exception as reset_err:
+                logger.error(f"重新识别后清除资源下载失败记录失败：{reset_err}")
+                return schemas.Response(
+                    success=False,
+                    message="重新识别已保存，但清除下载失败记录失败，请重试",
+                )
 
         return schemas.Response(
             success=True,

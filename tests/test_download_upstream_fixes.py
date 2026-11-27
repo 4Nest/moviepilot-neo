@@ -1,23 +1,31 @@
+import asyncio
 import base64
+import copy
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import requests
 
+import app.api.endpoints.torrent as torrent_api
 import app.chain.download as download_module
+import app.chain.subscribe as subscribe_module
 import app.helper.torrent as torrent_module
 import app.modules.transmission.transmission as transmission_client_module
 from app.chain.download import DownloadChain
 from app.core.context import Context, MediaInfo, TorrentInfo
 from app.core.metainfo import MetaInfo
+from app.db.downloadfailure_oper import DownloadFailureOper
+from app.db.models.downloadfailure import DownloadFailure
 from app.helper.torrent import TorrentHelper
 from app.modules.qbittorrent import QbittorrentModule
 from app.modules.transmission import TransmissionModule
 from app.modules.transmission.transmission import Transmission
 from app.schemas import NotExistMediaInfo
 from app.schemas.types import MediaType
+from app.utils.crypto import HashUtils
 
 
 class _Response:
@@ -471,3 +479,252 @@ def test_download_history_records_single_video_fallback(monkeypatch):
     assert result == "hash"
     files = history.add_files.call_args.args[0]
     assert [item["filepath"] for item in files] == ["Show.S03E54.mp4"]
+
+
+@pytest.mark.parametrize(
+    "exc,expected",
+    [
+        (requests.exceptions.ProxyError("http://user:secret@proxy:8080"), "无法打开链接：代理连接失败，请检查站点代理配置"),
+        (requests.exceptions.Timeout("timed out https://tracker.example/dl?passkey=secret"), "无法打开链接：请求超时"),
+        (requests.exceptions.SSLError("tls failed https://tracker.example/dl?passkey=secret"), "无法打开链接：TLS 连接失败"),
+        (requests.exceptions.ConnectionError("refused https://tracker.example/dl?passkey=secret"), "无法打开链接：网络连接失败"),
+    ],
+)
+def test_torrent_download_classifies_network_errors_without_leaking_credentials(monkeypatch, exc, expected):
+    """种子请求异常转换为不含 URL 凭据的安全网络故障类别。"""
+    client = MagicMock()
+    client.get_res.side_effect = exc
+    monkeypatch.setattr(torrent_module, "RequestUtils", lambda **_kwargs: client)
+    cache = MagicMock()
+    cache.get.return_value = None
+    monkeypatch.setattr(torrent_module, "FileCache", lambda: cache)
+    helper = TorrentHelper()
+
+    result = helper.download_torrent("https://tracker.example/dl?passkey=secret")
+
+    assert result[1] is None
+    assert result[4] == expected
+    assert "secret" not in result[4]
+
+
+def test_invalid_marker_clear_uses_same_sync_and_async_cache_region():
+    """同步写入的无效地址标记能够被异步重识别路径清除且幂等。"""
+    helper = TorrentHelper()
+    url = "https://tracker.example/download.php?id=manual-retry-cache-parity"
+    try:
+        helper.add_invalid(url)
+        assert helper.is_invalid(url)
+        asyncio.run(helper.async_remove_invalid(url))
+        assert not helper.is_invalid(url)
+        asyncio.run(helper.async_remove_invalid(url))
+        assert not helper.is_invalid(url)
+    finally:
+        helper.remove_invalid(url)
+
+
+def test_download_failure_delete_by_fingerprints_and_empty_noop():
+    """按指纹删除仅移除目标记录，空列表不执行任何删除。"""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    engine = create_engine("sqlite:///:memory:")
+    DownloadFailure.__table__.create(bind=engine)
+    session_factory = sessionmaker(bind=engine)
+
+    with session_factory() as db:
+        oper = DownloadFailureOper(db=db)
+        oper.record_failure(
+            fingerprint="fp-target",
+            now_time="2026-11-27 10:00:00",
+            next_retry_at="2026-11-28 10:00:00",
+            error_message="无法打开链接",
+        )
+        oper.record_failure(
+            fingerprint="fp-other",
+            now_time="2026-11-27 10:00:00",
+            next_retry_at="2026-11-28 10:00:00",
+            error_message="无法打开链接",
+        )
+        assert oper.delete_by_fingerprints([]) == 0
+        assert set(oper.get_active_by_fingerprints(["fp-target", "fp-other"], "2026-11-27 11:00:00")) == {
+            "fp-target",
+            "fp-other",
+        }
+        deleted = oper.delete_by_fingerprints(["fp-target"])
+        assert deleted == 1
+        assert set(oper.get_active_by_fingerprints(["fp-target", "fp-other"], "2026-11-27 11:00:00")) == {
+            "fp-other",
+        }
+
+
+@pytest.mark.parametrize("identity_changed", [False, True])
+def test_reidentify_cache_clears_only_target_resource_failure_and_invalid_marker(monkeypatch, identity_changed):
+    """手动重识别同一身份或修正身份后，清除前后失败指纹与原地址无效标记，不影响其他资源。"""
+    target_url = "https://tracker.example/dl?id=target-reidentify"
+    other_url = "https://tracker.example/dl?id=other-reidentify"
+    target_ctx = Context(
+        meta_info=MetaInfo("Show.S01E01.1080p"),
+        media_info=MediaInfo(source="themoviedb", media_id="1", type=MediaType.TV, title="Show", year="2026", tmdb_id=1),
+        torrent_info=TorrentInfo(site=1, site_name="Tracker", title="Show.S01E01.1080p", description="desc", enclosure=target_url),
+    )
+    target_ctx.media_recognize_fail_count = 2
+    other_ctx = Context(
+        meta_info=MetaInfo("Other.S01E01.1080p"),
+        media_info=MediaInfo(source="themoviedb", media_id="99", type=MediaType.TV, title="Other", year="2026", tmdb_id=99),
+        torrent_info=TorrentInfo(site=1, site_name="Tracker", title="Other.S01E01.1080p", description="other", enclosure=other_url),
+    )
+
+    corrected_media = MediaInfo(
+        source="themoviedb",
+        media_id="2" if identity_changed else "1",
+        type=MediaType.TV,
+        title="Show",
+        year="2026",
+        tmdb_id=2 if identity_changed else 1,
+    )
+    original_fp = DownloadChain._build_download_failure_fingerprint(target_ctx)
+    corrected_ctx = copy.copy(target_ctx)
+    corrected_ctx.media_info = corrected_media
+    corrected_fp = DownloadChain._build_download_failure_fingerprint(corrected_ctx)
+    other_fp = DownloadChain._build_download_failure_fingerprint(other_ctx)
+
+    deleted_fingerprints = []
+
+    class _FakeFailureOper:
+        def delete_by_fingerprints(self, fingerprints):
+            deleted_fingerprints.extend(fingerprints)
+            return len(fingerprints)
+
+    torrents_chain = MagicMock()
+    torrents_chain.cache_file = "__torrents_cache__"
+    torrents_chain.async_get_torrents = AsyncMock(return_value={"tracker.example": [target_ctx, other_ctx]})
+    torrents_chain.async_save_cache = AsyncMock()
+    media_chain = MagicMock()
+    media_chain.async_recognize_media = AsyncMock(return_value=corrected_media)
+
+    monkeypatch.setattr(torrent_api, "TorrentsChain", lambda: torrents_chain)
+    monkeypatch.setattr(torrent_api, "MediaChain", lambda: media_chain)
+    monkeypatch.setattr(download_module, "DownloadFailureOper", _FakeFailureOper)
+
+    helper = TorrentHelper()
+    try:
+        helper.add_invalid(target_url)
+        helper.add_invalid(other_url)
+        torrent_hash = HashUtils.md5(f"{target_ctx.torrent_info.title}{target_ctx.torrent_info.description}")
+
+        response = asyncio.run(
+            torrent_api.reidentify_cache(
+                domain="tracker.example",
+                torrent_hash=torrent_hash,
+                tmdbid=2 if identity_changed else 1,
+                _=MagicMock(),
+            )
+        )
+
+        assert response.success is True
+        assert original_fp in deleted_fingerprints
+        assert corrected_fp in deleted_fingerprints
+        assert other_fp not in deleted_fingerprints
+        assert not helper.is_invalid(target_url)
+        assert helper.is_invalid(other_url)
+        assert target_ctx.candidate_recognized is True
+        assert target_ctx.media_info_is_target is False
+        assert target_ctx.media_recognize_fail_count == 0
+        torrents_chain.async_save_cache.assert_awaited_once()
+    finally:
+        helper.remove_invalid(target_url)
+        helper.remove_invalid(other_url)
+
+
+@pytest.mark.parametrize("failure_mode", ["recognition", "save", "reset"])
+def test_reidentify_cache_does_not_clear_backoff_before_success(monkeypatch, failure_mode):
+    """识别无结果、缓存保存失败或清理失败时，不错误放行资源，清理失败需返回失败。"""
+    target_url = f"https://tracker.example/dl?id=fail-{failure_mode}"
+    target_ctx = Context(
+        meta_info=MetaInfo("Show.S01E01.1080p"),
+        media_info=MediaInfo(source="themoviedb", media_id="1", type=MediaType.TV, title="Show", year="2026", tmdb_id=1),
+        torrent_info=TorrentInfo(site=1, site_name="Tracker", title="Show.S01E01.1080p", description="desc", enclosure=target_url),
+    )
+    torrents_chain = MagicMock()
+    torrents_chain.cache_file = "__torrents_cache__"
+    torrents_chain.async_get_torrents = AsyncMock(return_value={"tracker.example": [target_ctx]})
+    torrents_chain.async_save_cache = AsyncMock(
+        side_effect=OSError("cache write failed") if failure_mode == "save" else None
+    )
+    media_chain = MagicMock()
+    media_chain.async_recognize_media = AsyncMock(
+        return_value=None
+        if failure_mode == "recognition"
+        else MediaInfo(source="themoviedb", media_id="1", type=MediaType.TV, title="Show", year="2026", tmdb_id=1)
+    )
+
+    class _FailingOper:
+        def delete_by_fingerprints(self, _fingerprints):
+            raise OSError("db delete failed")
+
+    monkeypatch.setattr(torrent_api, "TorrentsChain", lambda: torrents_chain)
+    monkeypatch.setattr(torrent_api, "MediaChain", lambda: media_chain)
+    monkeypatch.setattr(download_module, "DownloadFailureOper", _FailingOper)
+
+    helper = TorrentHelper()
+    try:
+        helper.add_invalid(target_url)
+        torrent_hash = HashUtils.md5(f"{target_ctx.torrent_info.title}{target_ctx.torrent_info.description}")
+
+        response = asyncio.run(
+            torrent_api.reidentify_cache(
+                domain="tracker.example",
+                torrent_hash=torrent_hash,
+                tmdbid=1,
+                _=MagicMock(),
+            )
+        )
+
+        assert response.success is (failure_mode == "recognition")
+        assert helper.is_invalid(target_url)
+        if failure_mode == "reset":
+            assert "清除下载失败记录失败" in response.message
+    finally:
+        helper.remove_invalid(target_url)
+
+
+def test_subscribe_recognition_candidates_prunes_unrelated_unknowns():
+    """未知身份候选在预识别前按活动订阅类型和季号裁剪；有自定义识别词时保留全部候选。"""
+    tv_s1 = Context(
+        meta_info=MetaInfo("Unknown.Show.S01E01.1080p"),
+        media_info=None,
+        torrent_info=TorrentInfo(title="Unknown.Show.S01E01.1080p"),
+    )
+    tv_s2 = Context(
+        meta_info=MetaInfo("Unknown.Show.S02E01.1080p"),
+        media_info=None,
+        torrent_info=TorrentInfo(title="Unknown.Show.S02E01.1080p"),
+    )
+    movie_meta = MetaInfo("Unknown.Movie.2026.1080p")
+    movie_meta.type = MediaType.MOVIE
+    movie_ctx = Context(
+        meta_info=movie_meta,
+        media_info=None,
+        torrent_info=TorrentInfo(title="Unknown.Movie.2026.1080p"),
+    )
+    unknown_type_ctx = Context(
+        meta_info=MetaInfo("Ambiguous.Title.2026.1080p"),
+        media_info=None,
+        torrent_info=TorrentInfo(title="Ambiguous.Title.2026.1080p"),
+    )
+    recognized_movie = Context(
+        meta_info=MetaInfo("Known.Movie.2026.1080p"),
+        media_info=MediaInfo(source="themoviedb", media_id="55", type=MediaType.MOVIE, title="Known", tmdb_id=55),
+        torrent_info=TorrentInfo(title="Known.Movie.2026.1080p"),
+    )
+    torrents = {"site.example": [tv_s1, tv_s2, movie_ctx, unknown_type_ctx, recognized_movie]}
+
+    sub_s1 = SimpleNamespace(type=MediaType.TV.value, season=1, custom_words=None)
+    pruned = subscribe_module._recognition_candidates(torrents, [sub_s1])
+    assert pruned["site.example"] == [tv_s1, unknown_type_ctx, recognized_movie]
+
+    sub_custom = SimpleNamespace(type=MediaType.TV.value, season=1, custom_words="custom => rule")
+    kept = subscribe_module._recognition_candidates(torrents, [sub_custom])
+    assert kept == torrents
+
+    assert subscribe_module._recognition_candidates(torrents, []) == {}

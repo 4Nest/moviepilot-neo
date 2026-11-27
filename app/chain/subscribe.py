@@ -47,8 +47,16 @@ from app.schemas import (MediaRecognizeConvertEventData, MediaServerQueryError,
                          SubscribeCompletionCheckEventData)
 from app.schemas.event import SubscribeModifiedEventData, SubscribeInterceptEventData
 from app.schemas.subscribe import compute_subscribe_version_total_episode
-from app.schemas.types import MediaType, SystemConfigKey, MessageChannel, NotificationType, EventType, ChainEventType, \
-    ContentType
+from app.schemas.types import (
+    MediaType,
+    SystemConfigKey,
+    MessageChannel,
+    NotificationType,
+    EventType,
+    ChainEventType,
+    ContentType,
+    media_type_from_agent,
+)
 from app.utils.media import (
     MEDIA_SOURCE_ID_FIELDS,
     build_media_key,
@@ -60,6 +68,23 @@ from app.utils.media import (
 subscribe_interaction_manager = SlashInteractionManager()
 
 
+def _resolve_subscribe_media_type(value: Optional[object]) -> Optional[MediaType]:
+    """
+    将订阅中的中文或英文媒体类型统一解析为 MediaType 枚举。
+    """
+    if isinstance(value, MediaType):
+        return value
+    resolved = media_type_from_agent(value)
+    if resolved is not None:
+        return resolved
+    if isinstance(value, str):
+        try:
+            return MediaType(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def build_subscribe_meta(subscribe: Subscribe) -> MetaBase:
     """
     按订阅对象构造主程序链路共用的 MetaInfo。
@@ -67,7 +92,10 @@ def build_subscribe_meta(subscribe: Subscribe) -> MetaBase:
     meta = MetaInfo(subscribe.name)
     meta.year = subscribe.year
     meta.begin_season = subscribe.season
-    meta.type = MediaType(subscribe.type)
+    resolved_type = _resolve_subscribe_media_type(subscribe.type)
+    if resolved_type is None:
+        raise ValueError(f"无效的订阅媒体类型：{subscribe.type}")
+    meta.type = resolved_type
     meta.tmdbid = subscribe.tmdbid
     meta.doubanid = subscribe.doubanid
     meta.bangumiid = subscribe.bangumiid
@@ -75,6 +103,124 @@ def build_subscribe_meta(subscribe: Subscribe) -> MetaBase:
     meta.media_source = subscribe.media_source
     meta.media_id = subscribe.media_id
     return meta
+
+
+def _build_valid_subscribe_meta(subscribe: Subscribe) -> Optional[MetaBase]:
+    """
+    校验订阅名称和类型并构造基础元数据；名称为空白或类型非法时返回 None。
+    """
+    if not subscribe or not str(getattr(subscribe, "name", "") or "").strip():
+        return None
+    try:
+        return build_subscribe_meta(subscribe)
+    except ValueError:
+        logger.error(f"订阅 {subscribe.name} 类型错误：{subscribe.type}")
+        return None
+
+
+def _build_fallback_subscribe_mediainfo(
+    subscribe: Subscribe,
+    meta: MetaBase,
+) -> MediaInfo:
+    """
+    在远端媒体识别不可用时，依据订阅记录构造最小媒体信息供本地库与媒体服务器匹配。
+    """
+    media_source, media_id = resolve_media_identity(media=subscribe)
+    extra_ids: Dict[str, Any] = {}
+    if subscribe.tmdbid:
+        extra_ids["tmdb_id"] = subscribe.tmdbid
+    elif media_source == "themoviedb" and media_id and str(media_id).isdigit():
+        extra_ids["tmdb_id"] = int(media_id)
+    if subscribe.doubanid:
+        extra_ids["douban_id"] = str(subscribe.doubanid)
+    elif media_source == "douban" and media_id:
+        extra_ids["douban_id"] = str(media_id)
+    if subscribe.bangumiid:
+        extra_ids["bangumi_id"] = subscribe.bangumiid
+    elif media_source == "bangumi" and media_id and str(media_id).isdigit():
+        extra_ids["bangumi_id"] = int(media_id)
+    if subscribe.anilistid:
+        extra_ids["anilist_id"] = subscribe.anilistid
+    elif media_source == "anilist" and media_id and str(media_id).isdigit():
+        extra_ids["anilist_id"] = int(media_id)
+    if getattr(subscribe, "imdbid", None):
+        extra_ids["imdb_id"] = str(subscribe.imdbid)
+    elif media_source == "imdb" and media_id:
+        extra_ids["imdb_id"] = str(media_id)
+    return MediaInfo(
+        source=media_source,
+        media_id=media_id,
+        type=meta.type,
+        title=subscribe.name,
+        year=subscribe.year,
+        season=subscribe.season,
+        **extra_ids,
+    )
+
+
+def _normalize_optional_int(value: Optional[object]) -> Optional[int]:
+    """将季号等可选值规范为整数，无法解析时返回 None。"""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    return int(text) if text.isdigit() else None
+
+
+def _meta_seasons(meta: Optional[MetaBase]) -> set[int]:
+    """提取元数据中明确声明的季号集合。"""
+    if meta is None:
+        return set()
+    seasons: set[int] = set()
+    for season in getattr(meta, "season_list", None) or []:
+        normalized = _normalize_optional_int(season)
+        if normalized is not None:
+            seasons.add(normalized)
+    begin_season = _normalize_optional_int(getattr(meta, "begin_season", None))
+    if begin_season is not None:
+        seasons.add(begin_season)
+    return seasons
+
+
+def _recognition_candidates(
+    torrents: Dict[str, List[Context]],
+    subscribes: List[Subscribe],
+) -> Dict[str, List[Context]]:
+    """
+    外部重识别前按当前活动订阅的明确类型和标题季号裁剪未知身份候选。
+
+    自定义识别词可能改变类型和季号，因此保留完整候选；未知类型、未标季和已识别身份
+    的候选同样保留，不以预筛替代严格身份匹配。
+    """
+    if not subscribes:
+        return {}
+    if any(getattr(subscribe, "custom_words", None) for subscribe in subscribes):
+        return torrents
+    scopes = {
+        (_resolve_subscribe_media_type(subscribe.type), _normalize_optional_int(subscribe.season))
+        for subscribe in subscribes
+    }
+    selected: Dict[str, List[Context]] = {}
+    for domain, contexts in torrents.items():
+        selected[domain] = []
+        for context in contexts:
+            meta = getattr(context, "meta_info", None)
+            media = getattr(context, "media_info", None)
+            if meta is None or (media and resolve_media_identity(media=media)[1]):
+                selected[domain].append(context)
+                continue
+            media_type = _resolve_subscribe_media_type(getattr(meta, "type", None))
+            if media_type == MediaType.UNKNOWN:
+                media_type = None
+            seasons = _meta_seasons(meta)
+            if any(
+                (not media_type or not target_type or media_type == target_type)
+                and (not seasons or season is None or season in seasons)
+                for target_type, season in scopes
+            ):
+                selected[domain].append(context)
+    return selected
 
 
 def _media_recognize_kwargs(mediainfo: MediaInfo) -> dict:
@@ -2438,9 +2584,14 @@ class SubscribeChain(ChainBase):
                     progress_callback(value=100, text="订阅处理繁忙，跳过本次订阅匹配")
                 return
 
+            # 先查询活动订阅，再按订阅范围裁剪未知候选后执行预识别，避免无关种子空转识别
+            subscribes = SubscribeOper().list(self.get_states_for_search('R'))
+            subscribes = expand_subscribe_runtime_views(subscribes)
+            candidate_torrents = _recognition_candidates(torrents, subscribes)
+
             # 预识别所有未识别的种子
             processed_torrents: Dict[str, List[Context]] = {}
-            for domain, contexts in torrents.items():
+            for domain, contexts in candidate_torrents.items():
                 if global_vars.is_system_stopped:
                     break
                 processed_torrents[domain] = []
@@ -2481,9 +2632,6 @@ class SubscribeChain(ChainBase):
                     # 添加已预处理
                     processed_torrents[domain].append(context)
 
-            # 所有订阅
-            subscribes = SubscribeOper().list(self.get_states_for_search('R'))
-            subscribes = expand_subscribe_runtime_views(subscribes)
             archived_subscribe_ids = set()
             total_num = len(subscribes)
             if progress_callback:
@@ -4791,43 +4939,93 @@ class SubscribeChain(ChainBase):
 
     def subscribe_files_info(self, subscribe: Subscribe) -> Optional[schemas.SubscrbieInfo]:
         """
-        订阅相关的下载和文件信息
+        查询订阅相关的下载与媒体库文件统计详情。
+
+        详情页属于只读展示入口，优先复用媒体识别缓存；当远端元数据源暂时不可用导致
+        分集查询或媒体识别失败时，退化为订阅记录自身的集数与身份信息，继续展示订阅概览、
+        下载记录及可匹配的媒体库条目，避免整页误显示为空数据。
         """
         if not subscribe:
             return None
 
-        # 返回订阅数据
         subscribe_info = schemas.SubscrbieInfo()
+        meta = _build_valid_subscribe_meta(subscribe)
+        if meta is None:
+            return subscribe_info
 
-        # 所有集的数据
+        is_tv = meta.type == MediaType.TV
+        episodes = self._build_subscribe_episodes(subscribe, is_tv=is_tv)
+        self._append_subscribe_download_files(subscribe, episodes, is_tv=is_tv)
+
+        mediainfo = self._resolve_subscribe_files_mediainfo(subscribe, meta)
+        self._append_subscribe_library_files(subscribe, mediainfo, episodes, is_tv=is_tv)
+        self._append_subscribe_media_servers(subscribe, mediainfo, episodes, is_tv=is_tv)
+
+        subscribe_info.subscribe = Subscribe(**subscribe.to_dict())
+        subscribe_info.episodes = episodes
+        return subscribe_info
+
+    @staticmethod
+    def _build_subscribe_episodes(
+        subscribe: Subscribe,
+        *,
+        is_tv: bool,
+    ) -> Dict[int, schemas.SubscribeEpisodeInfo]:
+        """
+        构造订阅文件统计的分集骨架；TMDB 分集拉取失败或为空时回退到订阅集数范围。
+        """
         episodes: Dict[int, schemas.SubscribeEpisodeInfo] = {}
-        if subscribe.tmdbid and subscribe.type == MediaType.TV.value:
-            # 查询TMDB中的集信息
-            tmdb_episodes = TmdbChain().tmdb_episodes(
-                tmdbid=subscribe.tmdbid,
-                season=subscribe.season,
-                episode_group=subscribe.episode_group
-            )
-            if tmdb_episodes:
-                for episode in tmdb_episodes:
-                    info = schemas.SubscribeEpisodeInfo()
-                    info.title = episode.name
-                    info.description = episode.overview
-                    info.backdrop = settings.TMDB_IMAGE_URL(episode.still_path, "w500")
-                    episodes[episode.episode_number] = info
-        elif subscribe.type == MediaType.TV.value:
-            # 根据开始结束集计算集信息
-            for i in range(subscribe.start_episode or 1, subscribe.total_episode + 1):
-                info = schemas.SubscribeEpisodeInfo()
-                info.title = f'第 {i} 集'
-                episodes[i] = info
-        else:
-            # 电影
+        if not is_tv:
             info = schemas.SubscribeEpisodeInfo()
             info.title = subscribe.name
             episodes[0] = info
+            return episodes
 
-        # 所有下载记录
+        tmdb_id = subscribe.tmdbid
+        if (
+            not tmdb_id
+            and normalize_media_source(subscribe.media_source) == "themoviedb"
+            and subscribe.media_id
+            and str(subscribe.media_id).isdigit()
+        ):
+            tmdb_id = int(subscribe.media_id)
+
+        if tmdb_id:
+            season = subscribe.season if subscribe.season is not None else 1
+            tmdb_episodes = TmdbChain().tmdb_episodes(
+                tmdbid=tmdb_id,
+                season=season,
+                episode_group=subscribe.episode_group,
+            )
+            for episode in tmdb_episodes or []:
+                if episode.episode_number is None:
+                    continue
+                info = schemas.SubscribeEpisodeInfo()
+                info.title = episode.name
+                info.description = episode.overview
+                info.backdrop = settings.TMDB_IMAGE_URL(episode.still_path, "w500")
+                episodes[int(episode.episode_number)] = info
+
+        if not episodes:
+            # 非 TMDB 来源或 TMDB 分集接口暂时不可用时，按订阅起止集补齐分集槽位。
+            total_episode = subscribe.total_episode or 0
+            for i in range(subscribe.start_episode or 1, total_episode + 1):
+                info = schemas.SubscribeEpisodeInfo()
+                info.title = f"第 {i} 集"
+                episodes[i] = info
+
+        return episodes
+
+    def _append_subscribe_download_files(
+        self,
+        subscribe: Subscribe,
+        episodes: Dict[int, schemas.SubscribeEpisodeInfo],
+        *,
+        is_tv: bool,
+    ) -> None:
+        """
+        将下载历史中尚未删除的文件记录归并到对应集号。
+        """
         downloadhis = DownloadHistoryOper()
         download_his = downloadhis.get_by_mediaid(
             tmdbid=subscribe.tmdbid,
@@ -4837,84 +5035,129 @@ class SubscribeChain(ChainBase):
             media_source=subscribe.media_source,
             media_id=subscribe.media_id,
         )
-        if download_his:
-            for his in download_his:
-                # 查询下载文件
-                files = downloadhis.get_files_by_hash(his.download_hash, state=1)
-                if files:
-                    for file in files:
-                        # 识别文件名
-                        file_meta = MetaInfo(file.filepath)
-                        # 下载文件信息
-                        file_info = schemas.SubscribeDownloadFileInfo(
-                            torrent_title=his.torrent_name,
-                            site_name=his.torrent_site,
-                            downloader=file.downloader,
-                            hash=his.download_hash,
-                            file_path=file.fullpath,
-                        )
-                        if subscribe.type == MediaType.TV.value:
-                            season_number = file_meta.begin_season
-                            if season_number is not None and season_number != subscribe.season:
-                                continue
-                            episode_number = file_meta.begin_episode
-                            if episode_number and episodes.get(episode_number):
-                                episodes[episode_number].download.append(file_info)
-                        else:
-                            episodes[0].download.append(file_info)
+        for his in download_his or []:
+            if not his.download_hash:
+                continue
+            files = downloadhis.get_files_by_hash(his.download_hash, state=1)
+            for file in files or []:
+                if not file.filepath:
+                    continue
+                file_info = schemas.SubscribeDownloadFileInfo(
+                    torrent_title=his.torrent_name,
+                    site_name=his.torrent_site,
+                    downloader=file.downloader,
+                    hash=his.download_hash,
+                    file_path=file.fullpath,
+                )
+                target_episode = self._match_episode_bucket(
+                    subscribe, episodes, file.filepath, is_tv=is_tv
+                )
+                if target_episode is not None:
+                    downloads = target_episode.download or []
+                    target_episode.download = downloads
+                    downloads.append(file_info)
 
-        try:
-            meta = build_subscribe_meta(subscribe)
-        except ValueError:
-            logger.error(f'订阅 {subscribe.name} 类型错误：{subscribe.type}')
-            return subscribe_info
-        # 识别媒体信息
+    def _resolve_subscribe_files_mediainfo(
+        self,
+        subscribe: Subscribe,
+        meta: MetaBase,
+    ) -> MediaInfo:
+        """
+        查询用于本地库与媒体服务器匹配的媒体信息；远端识别失败时返回订阅降级媒体对象。
+        """
         mediainfo: MediaInfo = self.recognize_media(
             meta=meta,
             mtype=meta.type,
             **_subscribe_recognize_kwargs(subscribe),
             episode_group=subscribe.episode_group,
-            cache=False,
+            cache=True,
         )
-        if not mediainfo:
-            logger.warn(
-                f'未识别到媒体信息，标题：{subscribe.name}，tmdbid：{subscribe.tmdbid}，doubanid：{subscribe.doubanid}')
-            return subscribe_info
+        if mediainfo:
+            return mediainfo
+        logger.warn(
+            f"未识别到媒体信息，将使用订阅基础信息降级展示文件统计，标题：{subscribe.name}，"
+            f"tmdbid：{subscribe.tmdbid}，doubanid：{subscribe.doubanid}"
+        )
+        return _build_fallback_subscribe_mediainfo(subscribe, meta)
 
-        # 所有媒体库文件记录
+    def _append_subscribe_library_files(
+        self,
+        subscribe: Subscribe,
+        mediainfo: MediaInfo,
+        episodes: Dict[int, schemas.SubscribeEpisodeInfo],
+        *,
+        is_tv: bool,
+    ) -> None:
+        """
+        将本地或网盘媒体库扫描到的文件归并到对应集号。
+        """
         library_fileitems = self.media_files(mediainfo)
-        if library_fileitems:
-            for fileitem in library_fileitems:
-                # 识别文件名
-                file_meta = MetaInfo(fileitem.path)
-                # 媒体库文件信息
-                file_info = schemas.SubscribeLibraryFileInfo(
-                    storage=fileitem.storage,
-                    file_path=fileitem.path,
-                )
-                if subscribe.type == MediaType.TV.value:
-                    season_number = file_meta.begin_season
-                    if season_number is not None and season_number != subscribe.season:
-                        continue
-                    episode_number = file_meta.begin_episode
-                    if episode_number and episodes.get(episode_number):
-                        episodes[episode_number].library.append(file_info)
-                else:
-                    episodes[0].library.append(file_info)
+        for fileitem in library_fileitems or []:
+            if not fileitem.path:
+                continue
+            file_info = schemas.SubscribeLibraryFileInfo(
+                storage=fileitem.storage,
+                file_path=fileitem.path,
+            )
+            target_episode = self._match_episode_bucket(
+                subscribe, episodes, fileitem.path, is_tv=is_tv
+            )
+            if target_episode is not None:
+                library = target_episode.library or []
+                target_episode.library = library
+                library.append(file_info)
 
-        # 合并所有媒体服务器已存在条目（逐台查询，不只取第一个命中）
+    @staticmethod
+    def _match_episode_bucket(
+        subscribe: Subscribe,
+        episodes: Dict[int, schemas.SubscribeEpisodeInfo],
+        filepath: str,
+        *,
+        is_tv: bool,
+    ) -> Optional[schemas.SubscribeEpisodeInfo]:
+        """
+        根据文件路径解析季集并返回匹配的分集条目；不匹配当前季或不存在槽位时返回 None。
+        """
+        if not is_tv:
+            return episodes.get(0)
+        file_meta = MetaInfo(filepath)
+        season_number = file_meta.begin_season
+        if season_number is not None and season_number != subscribe.season:
+            return None
+        episode_number = file_meta.begin_episode
+        if not episode_number:
+            return None
+        return episodes.get(episode_number)
+
+    def _append_subscribe_media_servers(
+        self,
+        subscribe: Subscribe,
+        mediainfo: MediaInfo,
+        episodes: Dict[int, schemas.SubscribeEpisodeInfo],
+        *,
+        is_tv: bool,
+    ) -> None:
+        """
+        合并所有媒体服务器已存在条目（逐台查询，不只取第一个命中）。
+        """
         mediaserver_chain = MediaServerChain()
         server_names = list(MediaServerHelper().get_services().keys())
 
-        def _has_server_entry(library_list: List[schemas.SubscribeLibraryFileInfo],
-                              server_name: Optional[str],
-                              server_type: Optional[str]) -> bool:
+        def _has_server_entry(
+            library_list: List[schemas.SubscribeLibraryFileInfo],
+            server_name: Optional[str],
+            server_type: Optional[str],
+        ) -> bool:
             for info in library_list or []:
                 if info.server and server_name and info.server == server_name:
                     return True
-                if info.server_type and server_type and info.server_type == server_type \
-                        and info.server == server_name \
-                        and (not info.file_path or str(info.file_path).startswith(("http://", "https://"))):
+                if (
+                    info.server_type
+                    and server_type
+                    and info.server_type == server_type
+                    and info.server == server_name
+                    and (not info.file_path or str(info.file_path).startswith(("http://", "https://")))
+                ):
                     return True
             return False
 
@@ -4934,7 +5177,7 @@ class SubscribeChain(ChainBase):
                     item_id=exists_media.itemid,
                 )
 
-            if subscribe.type == MediaType.TV.value:
+            if is_tv:
                 season_number = subscribe.season if subscribe.season is not None else 1
                 exist_episodes = (exists_media.seasons or {}).get(season_number) or []
                 episode_item_ids: Dict[int, str] = {}
@@ -4953,11 +5196,16 @@ class SubscribeChain(ChainBase):
                     episode_itemid = episode_item_ids.get(episode_number) or server_itemid
                     detail_url = series_detail_url
                     if resolved_server and episode_item_ids.get(episode_number):
-                        detail_url = mediaserver_chain.get_play_url(
-                            server=resolved_server,
-                            item_id=episode_itemid,
-                        ) or series_detail_url
-                    episode_info.library.append(
+                        detail_url = (
+                            mediaserver_chain.get_play_url(
+                                server=resolved_server,
+                                item_id=episode_itemid,
+                            )
+                            or series_detail_url
+                        )
+                    library = episode_info.library or []
+                    episode_info.library = library
+                    library.append(
                         schemas.SubscribeLibraryFileInfo(
                             storage=server_storage,
                             file_path=detail_url,
@@ -4969,8 +5217,11 @@ class SubscribeChain(ChainBase):
             else:
                 episode_info = episodes.get(0)
                 if episode_info and not _has_server_entry(
-                        episode_info.library, resolved_server, exists_media.server_type):
-                    episode_info.library.append(
+                    episode_info.library, resolved_server, exists_media.server_type
+                ):
+                    library = episode_info.library or []
+                    episode_info.library = library
+                    library.append(
                         schemas.SubscribeLibraryFileInfo(
                             storage=server_storage,
                             file_path=series_detail_url,
@@ -4979,11 +5230,6 @@ class SubscribeChain(ChainBase):
                             itemid=server_itemid,
                         )
                     )
-
-        # 更新订阅信息
-        subscribe_info.subscribe = Subscribe(**subscribe.to_dict())
-        subscribe_info.episodes = episodes
-        return subscribe_info
 
     def check_and_handle_existing_media(self, subscribe: Subscribe, meta: MetaBase,
                                         mediainfo: MediaInfo, mediakey: Union[str, int]):

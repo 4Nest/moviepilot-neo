@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Tuple, Optional, List, Set, Union, Dict, Any
 from urllib.parse import unquote
 
+import requests
 from torrentool.api import Torrent
 
 from app.core.cache import TTLCache, FileCache
@@ -255,6 +256,17 @@ def _parse_filter_size_range(size_range: str) -> Tuple[str, float, Optional[floa
     return "unknown", 0, None
 
 
+_INVALID_TORRENT_REGION = "invalid_torrents"
+_INVALID_TORRENT_MAXSIZE = 128
+_INVALID_TORRENT_TTL = 24 * 3600
+
+
+class TorrentRequestError(RuntimeError):
+    """
+    种子传输请求返回的安全网络诊断，不包含下载地址、Cookie 或代理凭据。
+    """
+
+
 class TorrentHelper:
     """
     种子帮助类
@@ -262,7 +274,61 @@ class TorrentHelper:
 
     def __init__(self):
         """初始化种子失败地址缓存"""
-        self._invalid_torrents = TTLCache(region="invalid_torrents", maxsize=128, ttl=3600 * 24)
+        self._invalid_torrents = TTLCache(
+            region=_INVALID_TORRENT_REGION,
+            maxsize=_INVALID_TORRENT_MAXSIZE,
+            ttl=_INVALID_TORRENT_TTL,
+        )
+
+    @staticmethod
+    def _request_torrent(
+        *,
+        method: str,
+        url: str,
+        cookie: Optional[str] = None,
+        ua: Optional[str] = None,
+        referer: Optional[str] = None,
+        proxy: Optional[bool] = False,
+        allow_redirects: bool = True,
+        data: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        发起种子 HTTP 请求，把传输异常转换为不含 URL 或凭据的故障类别。
+        """
+        client = RequestUtils(
+            ua=ua,
+            cookies=cookie,
+            referer=referer,
+            proxies=settings.PROXY if proxy else None,
+        )
+        try:
+            if method == "POST":
+                return client.post_res(
+                    url=url,
+                    data=data,
+                    allow_redirects=allow_redirects,
+                    raise_exception=True,
+                )
+            return client.get_res(
+                url=url,
+                allow_redirects=allow_redirects,
+                raise_exception=True,
+            )
+        except requests.exceptions.RequestException as err:
+            reason = next(
+                (
+                    label
+                    for kind, label in (
+                        (requests.exceptions.ProxyError, "代理连接失败，请检查站点代理配置"),
+                        (requests.exceptions.Timeout, "请求超时"),
+                        (requests.exceptions.SSLError, "TLS 连接失败"),
+                        (requests.exceptions.ConnectionError, "网络连接失败"),
+                    )
+                    if isinstance(err, kind)
+                ),
+                "网络请求失败",
+            )
+            raise TorrentRequestError(f"无法打开链接：{reason}") from None
 
     def download_torrent(self, url: str,
                          cookie: Optional[str] = None,
@@ -307,27 +373,36 @@ class TorrentHelper:
             if is_fluxtorrent_download_url(url) and (not ua or ua == settings.USER_AGENT)
             else ua
         )
-        req = RequestUtils(
-            ua=effective_ua,
-            cookies=cookie,
-            referer=referer,
-            proxies=settings.PROXY if proxy else None
-        ).get_res(url=url, allow_redirects=False)
-        while req and req.status_code in [301, 302]:
-            url = req.headers['Location']
-            if url and url.startswith("magnet:"):
-                return None, url, "", [], f"获取到磁力链接"
-            effective_ua = (
-                FluxTorrentSpider.get_user_agent(ua)
-                if is_fluxtorrent_download_url(url) and (not ua or ua == settings.USER_AGENT)
-                else effective_ua
-            )
-            req = RequestUtils(
+        try:
+            req = self._request_torrent(
+                method="GET",
+                url=url,
+                cookie=cookie,
                 ua=effective_ua,
-                cookies=cookie,
                 referer=referer,
-                proxies=settings.PROXY if proxy else None
-            ).get_res(url=url, allow_redirects=False)
+                proxy=proxy,
+                allow_redirects=False,
+            )
+            while req and req.status_code in [301, 302]:
+                url = req.headers['Location']
+                if url and url.startswith("magnet:"):
+                    return None, url, "", [], f"获取到磁力链接"
+                effective_ua = (
+                    FluxTorrentSpider.get_user_agent(ua)
+                    if is_fluxtorrent_download_url(url) and (not ua or ua == settings.USER_AGENT)
+                    else effective_ua
+                )
+                req = self._request_torrent(
+                    method="GET",
+                    url=url,
+                    cookie=cookie,
+                    ua=effective_ua,
+                    referer=referer,
+                    proxy=proxy,
+                    allow_redirects=False,
+                )
+        except TorrentRequestError as err:
+            return cache_path, None, "", [], str(err)
         if req and req.status_code == 200:
             if not req.content:
                 return cache_path, None, "", [], "未下载到种子数据"
@@ -351,12 +426,15 @@ class TorrentHelper:
                             for item in inputs:
                                 data[item[0]] = item[1]
                             # 改写req
-                            req = RequestUtils(
+                            req = self._request_torrent(
+                                method="POST",
+                                url=action,
+                                cookie=cookie,
                                 ua=effective_ua,
-                                cookies=cookie,
                                 referer=referer,
-                                proxies=settings.PROXY if proxy else None
-                            ).post_res(url=action, data=data)
+                                proxy=proxy,
+                                data=data,
+                            )
                             if req and req.status_code == 200:
                                 # 检查是不是种子文件，如果不是抛出异常
                                 Torrent.from_string(req.content)
@@ -369,6 +447,8 @@ class TorrentHelper:
                             else:
                                 logger.warn("触发了站点首次种子下载，且无法自动跳过")
                         break
+                except TorrentRequestError as err:
+                    return cache_path, None, "", [], str(err)
                 except Exception as err:
                     logger.warn(f"触发了站点首次种子下载，尝试自动跳过时出现错误：{str(err)}")
                 if not skip_flag:
@@ -618,6 +698,19 @@ class TorrentHelper:
         """
         if url not in self._invalid_torrents:
             self._invalid_torrents[url] = True
+
+    def remove_invalid(self, url: Optional[str]) -> None:
+        """
+        人工确认资源后清除该下载地址的无效标记，其他地址的保护继续生效。
+        """
+        if url:
+            self._invalid_torrents.pop(url, False)
+
+    async def async_remove_invalid(self, url: Optional[str]) -> None:
+        """
+        异步清除该下载地址的无效标记，与同步写入共用同一缓存区域。
+        """
+        self.remove_invalid(url)
 
     @staticmethod
     def match_torrent(mediainfo: MediaInfo, torrent_meta: MetaBase, torrent: TorrentInfo) -> bool:

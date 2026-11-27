@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from app.modules.jellyfin import jellyfin as jellyfin_module
 from app.modules.jellyfin.jellyfin import Jellyfin
+from app.schemas.types import MediaType
 
 
 class _FakeResponse:
@@ -158,3 +159,46 @@ class JellyfinUserResolutionTest(unittest.TestCase):
             "http://jellyfin.local:8096/Users/user-id/Views",
             {"api_key": "api-key"},
         )
+
+
+    def test_get_latest_queries_movies_and_series_by_date_created(self):
+        """
+        最新入库按入库时间查询电影与剧集顶层条目，混排返回并过滤同步库外的条目。
+        """
+        client = self._build_client()
+        payload = {
+            "Items": [
+                {"Id": "series-1", "Name": "Show", "Type": "Series", "Path": "/media/tv/Show"},
+                {"Id": "other-1", "Name": "Other", "Type": "Movie", "Path": "/other/Other"},
+                {
+                    "Id": "movie-1",
+                    "Name": "Film",
+                    "Type": "Movie",
+                    "Path": "/media/movies/Film",
+                    "ProductionYear": 2026,
+                },
+                {"Id": "movie-2", "Name": "Film 2", "Type": "Movie", "Path": "/media/movies/Film2"},
+            ]
+        }
+
+        with (
+            patch.object(jellyfin_module, "RequestUtils") as request_utils_cls,
+            patch.object(client, "get_user_library_folders", return_value=["/media/tv", "/media/movies"]),
+            patch.object(client, "get_play_url", return_value="http://jellyfin.local/play"),
+            patch.object(client, "_Jellyfin__get_local_image_by_id", return_value="http://jellyfin.local/image"),
+        ):
+            request_utils_cls.return_value.get_res.return_value = _FakeResponse(payload)
+
+            items = client.get_latest(num=2)
+
+        url, params = request_utils_cls.return_value.get_res.call_args.args
+        self.assertEqual(url, "http://jellyfin.local:8096Users/fallback-user/Items")
+        self.assertEqual(params["Recursive"], "true")
+        self.assertEqual(params["IncludeItemTypes"], "Movie,Series")
+        self.assertEqual(params["SortBy"], "DateCreated")
+        self.assertEqual(params["SortOrder"], "Descending")
+        self.assertEqual(params["Limit"], 200)
+        self.assertEqual([item.id for item in items], ["series-1", "movie-1"])
+        self.assertEqual([item.type for item in items], [MediaType.TV.value, MediaType.MOVIE.value])
+        self.assertEqual(items[1].subtitle, "2026")
+        self.assertTrue(all(item.server_type == "jellyfin" for item in items))
