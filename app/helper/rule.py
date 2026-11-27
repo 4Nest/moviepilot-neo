@@ -38,6 +38,48 @@ class RuleHelper:
     规划帮助类
     """
 
+    SINGLE_RULE_PREFIX = "rule:"
+
+    @classmethod
+    def parse_single_rule_id(cls, name: Optional[str]) -> Optional[str]:
+        """
+        解析单条规则引用（格式：rule:<rule_id>），非单条规则返回 None。
+        """
+        if not isinstance(name, str) or not name.startswith(cls.SINGLE_RULE_PREFIX):
+            return None
+        rule_id = name[len(cls.SINGLE_RULE_PREFIX):].strip()
+        return rule_id or None
+
+    def _resolve_single_rule_group(
+            self,
+            rule_id: str,
+            custom_rules_by_id: Optional[dict[str, CustomRule]] = None,
+    ) -> Optional[FilterRuleGroup]:
+        """
+        将单条自定义/内置规则 ID 包装为临时 FilterRuleGroup，复用现有过滤引擎。
+        """
+        if custom_rules_by_id is None:
+            custom_rules_by_id = {
+                rule.id: rule for rule in self.get_custom_rules() if rule.id
+            }
+        custom_rule = custom_rules_by_id.get(rule_id)
+        if custom_rule is not None:
+            return FilterRuleGroup(
+                name=custom_rule.name or rule_id,
+                rule_string=rule_id,
+                media_type="",
+                category="",
+            )
+        from app.modules.filter.builtin_rules import BUILTIN_RULE_SET
+        if rule_id in BUILTIN_RULE_SET:
+            return FilterRuleGroup(
+                name=rule_id,
+                rule_string=rule_id,
+                media_type="",
+                category="",
+            )
+        return None
+
     @staticmethod
     def get_rule_groups() -> List[FilterRuleGroup]:
         """
@@ -62,17 +104,31 @@ class RuleHelper:
         """
         根据媒体信息获取规则组。
 
-        按传入 group_names 顺序（未传时按配置顺序）返回适用规则组。
+        按传入 group_names 顺序（未传时按配置顺序）返回适用规则组；
+        支持使用 `rule:<rule_id>` 引用单条自定义/内置规则。
         """
         ret_groups = []
         rule_groups = self.get_rule_groups()
         if group_names:
             groups_by_name = {group.name: group for group in rule_groups}
-            rule_groups = [
-                groups_by_name[name]
-                for name in dict.fromkeys(group_names)
-                if name in groups_by_name
-            ]
+            custom_rules_by_id: Optional[dict[str, CustomRule]] = None
+            selected_groups: List[FilterRuleGroup] = []
+            for name in dict.fromkeys(group_names):
+                single_rule_id = self.parse_single_rule_id(name)
+                if single_rule_id is not None:
+                    if custom_rules_by_id is None:
+                        custom_rules_by_id = {
+                            rule.id: rule for rule in self.get_custom_rules() if rule.id
+                        }
+                    single_group = self._resolve_single_rule_group(
+                        single_rule_id,
+                        custom_rules_by_id=custom_rules_by_id,
+                    )
+                    if single_group is not None:
+                        selected_groups.append(single_group)
+                elif name in groups_by_name:
+                    selected_groups.append(groups_by_name[name])
+            rule_groups = selected_groups
         for group in rule_groups:
             if not group.media_type:
                 if not group.category or (media and group.category == media.category):
@@ -95,18 +151,46 @@ class RuleHelper:
         使用现有规则组选择策略说明所选规则组的适用范围，不执行资源过滤。
 
         :param media: 当前媒体上下文
-        :param group_names: 本次搜索选择的规则组名称
+        :param group_names: 本次搜索选择的规则组名称（支持 rule:<rule_id> 单条规则）
         :return: 按选择去重顺序排列的规则适用性诊断
         """
         if not group_names:
             return []
         configured = {group.name: group for group in self.get_rule_groups()}
+        custom_rules_by_id: Optional[dict[str, CustomRule]] = None
         effective = {
             group.name
             for group in self.get_rule_group_by_media(media=media, group_names=group_names)
         }
         diagnostics = []
         for name in dict.fromkeys(group_names):
+            single_rule_id = self.parse_single_rule_id(name)
+            if single_rule_id is not None:
+                if custom_rules_by_id is None:
+                    custom_rules_by_id = {
+                        rule.id: rule for rule in self.get_custom_rules() if rule.id
+                    }
+                single_group = self._resolve_single_rule_group(
+                    single_rule_id,
+                    custom_rules_by_id=custom_rules_by_id,
+                )
+                if single_group is None:
+                    diagnostics.append(SearchDiagnosticRuleGroup(
+                        name=name,
+                        status="skipped",
+                        reason="rule_group_missing",
+                        media_type=None,
+                        categories=[],
+                    ))
+                else:
+                    diagnostics.append(SearchDiagnosticRuleGroup(
+                        name=single_group.name,
+                        status="effective",
+                        reason=None,
+                        media_type=None,
+                        categories=[],
+                    ))
+                continue
             group = configured.get(name)
             if group is None:
                 status = "skipped"

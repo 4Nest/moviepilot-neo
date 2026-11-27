@@ -148,6 +148,18 @@ class SearchChain(ChainBase):
         return ",".join(str(site) for site in sites) if sites else ""
 
     @staticmethod
+    def _stringify_rule_groups(rule_groups: Optional[List[str]]) -> str:
+        """
+        将过滤规则参数转换为前端可直接复用的查询字符串。
+        None 表示默认规则（空串），空列表表示不过滤（__none__）。
+        """
+        if rule_groups is None:
+            return ""
+        if len(rule_groups) == 0:
+            return "__none__"
+        return ",".join(str(group) for group in rule_groups if group)
+
+    @staticmethod
     def _normalize_search_params(params: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
         """
         规范化上次搜索参数，供前端结果页重新搜索使用。
@@ -164,6 +176,7 @@ class SearchChain(ChainBase):
             "season": str(params["season"]) if params.get("season") is not None else "",
             "episode": str(params.get("episode") or ""),
             "sites": str(params.get("sites") or ""),
+            "rule_groups": str(params.get("rule_groups") or ""),
             "result_type": str(params.get("result_type") or "torrent"),
         }
         return normalized if normalized["keyword"] else None
@@ -179,6 +192,7 @@ class SearchChain(ChainBase):
             season: Optional[int] = None,
             episode: Optional[int] = None,
             sites: Optional[List[int]] = None,
+            rule_groups: Optional[List[str]] = None,
             result_type: Optional[str] = "torrent",
     ) -> None:
         """
@@ -194,6 +208,7 @@ class SearchChain(ChainBase):
                 "season": season,
                 "episode": episode,
                 "sites": self._stringify_sites(sites),
+                "rule_groups": self._stringify_rule_groups(rule_groups),
                 "result_type": result_type or "torrent",
             }
         )
@@ -212,6 +227,7 @@ class SearchChain(ChainBase):
             season: Optional[int] = None,
             episode: Optional[int] = None,
             sites: Optional[List[int]] = None,
+            rule_groups: Optional[List[str]] = None,
             result_type: Optional[str] = "torrent",
     ) -> None:
         """
@@ -227,6 +243,7 @@ class SearchChain(ChainBase):
                 "season": season,
                 "episode": episode,
                 "sites": self._stringify_sites(sites),
+                "rule_groups": self._stringify_rule_groups(rule_groups),
                 "result_type": result_type or "torrent",
             }
         )
@@ -420,6 +437,7 @@ class SearchChain(ChainBase):
             cache_local: bool = False,
             bangumiid: Optional[int] = None, anilistid: Optional[int] = None,
             source: Optional[str] = None, mediaid: Optional[str] = None,
+            rule_groups: Optional[List[str]] = None,
     ) -> List[Context]:
         """
         根据数据源媒体 ID 搜索资源，精确匹配，不过滤本地存在的资源
@@ -434,6 +452,7 @@ class SearchChain(ChainBase):
         :param season: 季数
         :param sites: 站点ID列表
         :param cache_local: 是否缓存到本地
+        :param rule_groups: 过滤规则组/单条规则列表，None 表示使用系统默认，[] 表示不过滤
         """
         if cache_local:
             self.save_last_search_params(
@@ -444,6 +463,7 @@ class SearchChain(ChainBase):
                 area=area,
                 season=season,
                 sites=sites,
+                rule_groups=rule_groups,
             )
         mediainfo = self.recognize_media(
             source=source, mediaid=mediaid, tmdbid=tmdbid, doubanid=doubanid,
@@ -460,26 +480,35 @@ class SearchChain(ChainBase):
                     season: NotExistMediaInfo(episodes=[])
                 }
             }
-        results = self.process(mediainfo=mediainfo, sites=sites, area=area, no_exists=no_exists)
+        results = self.process(
+            mediainfo=mediainfo,
+            sites=sites,
+            rule_groups=rule_groups,
+            area=area,
+            no_exists=no_exists,
+        )
         # 保存到本地文件
         if cache_local:
             self.save_cache(results, self.__result_temp_file)
         return results
 
     def search_by_title(self, title: str, page: Optional[int] = 0,
-                        sites: List[int] = None, cache_local: Optional[bool] = False) -> List[Context]:
+                        sites: List[int] = None, cache_local: Optional[bool] = False,
+                        rule_groups: Optional[List[str]] = None) -> List[Context]:
         """
         根据标题搜索资源，不识别媒体信息，按默认搜索过滤规则返回站点内容
         :param title: 标题，为空时返回所有站点首页内容
         :param page: 页码
         :param sites: 站点ID列表
         :param cache_local: 是否缓存到本地
+        :param rule_groups: 过滤规则组/单条规则列表，None 表示使用系统默认，[] 表示不过滤
         """
         if cache_local:
             self.save_last_search_params(
                 keyword=title,
                 area="title",
                 sites=sites,
+                rule_groups=rule_groups,
             )
         if title:
             logger.info(f'开始搜索资源，关键词：{title} ...')
@@ -490,7 +519,7 @@ class SearchChain(ChainBase):
         if not torrents:
             logger.warn(f'{title} 未搜索到资源')
             return []
-        torrents = self.__filter_title_search_torrents(torrents=torrents)
+        torrents = self.__filter_title_search_torrents(torrents=torrents, rule_groups=rule_groups)
         if not torrents:
             logger.warn(f'{title} 没有符合过滤规则的资源')
             return []
@@ -730,6 +759,7 @@ class SearchChain(ChainBase):
             cache_local: bool = False,
             bangumiid: Optional[int] = None, anilistid: Optional[int] = None,
             source: Optional[str] = None, mediaid: Optional[str] = None,
+            rule_groups: Optional[List[str]] = None,
     ) -> List[Context]:
         """
         根据数据源媒体 ID 异步搜索资源，精确匹配，不过滤本地存在的资源
@@ -744,6 +774,7 @@ class SearchChain(ChainBase):
         :param season: 季数
         :param sites: 站点ID列表
         :param cache_local: 是否缓存到本地
+        :param rule_groups: 过滤规则组/单条规则列表，None 表示使用系统默认，[] 表示不过滤
         """
         if cache_local:
             await self.async_save_last_search_params(
@@ -754,6 +785,7 @@ class SearchChain(ChainBase):
                 area=area,
                 season=season,
                 sites=sites,
+                rule_groups=rule_groups,
             )
         mediainfo = await self.async_recognize_media(
             source=source, mediaid=mediaid, tmdbid=tmdbid, doubanid=doubanid,
@@ -773,26 +805,35 @@ class SearchChain(ChainBase):
                     season: NotExistMediaInfo(episodes=[])
                 }
             }
-        results = await self.async_process(mediainfo=mediainfo, sites=sites, area=area, no_exists=no_exists)
+        results = await self.async_process(
+            mediainfo=mediainfo,
+            sites=sites,
+            rule_groups=rule_groups,
+            area=area,
+            no_exists=no_exists,
+        )
         # 保存到本地文件
         if cache_local:
             await self.async_save_cache(results, self.__result_temp_file)
         return results
 
     async def async_search_by_title(self, title: str, page: Optional[int] = 0,
-                                    sites: List[int] = None, cache_local: Optional[bool] = False) -> List[Context]:
+                                    sites: List[int] = None, cache_local: Optional[bool] = False,
+                                    rule_groups: Optional[List[str]] = None) -> List[Context]:
         """
         根据标题异步搜索资源，不识别媒体信息，按默认搜索过滤规则返回站点内容
         :param title: 标题，为空时返回所有站点首页内容
         :param page: 页码
         :param sites: 站点ID列表
         :param cache_local: 是否缓存到本地
+        :param rule_groups: 过滤规则组/单条规则列表，None 表示使用系统默认，[] 表示不过滤
         """
         if cache_local:
             await self.async_save_last_search_params(
                 keyword=title,
                 area="title",
                 sites=sites,
+                rule_groups=rule_groups,
             )
         if title:
             logger.info(f'开始搜索资源，关键词：{title} ...')
@@ -803,7 +844,11 @@ class SearchChain(ChainBase):
         if not torrents:
             logger.warn(f'{title} 未搜索到资源')
             return []
-        torrents = await run_in_threadpool(self.__filter_title_search_torrents, torrents=torrents)
+        torrents = await run_in_threadpool(
+            self.__filter_title_search_torrents,
+            torrents=torrents,
+            rule_groups=rule_groups,
+        )
         if not torrents:
             logger.warn(f'{title} 没有符合过滤规则的资源')
             return []
@@ -822,15 +867,17 @@ class SearchChain(ChainBase):
 
     async def async_search_by_title_stream(self, title: str, page: Optional[int] = 0,
                                            sites: List[int] = None,
-                                           cache_local: Optional[bool] = False) -> AsyncIterator[dict]:
+                                           cache_local: Optional[bool] = False,
+                                           rule_groups: Optional[List[str]] = None) -> AsyncIterator[dict]:
         """
-        根据标题渐进式搜索资源，不识别媒体信息，按默认搜索过滤规则返回结果
+        根据标题渐进式搜索资源，不识别媒体信息，按指定或默认搜索过滤规则返回结果
         """
         if cache_local:
             await self.async_save_last_search_params(
                 keyword=title,
                 area="title",
                 sites=sites,
+                rule_groups=rule_groups,
             )
         if title:
             logger.info(f'开始渐进式搜索资源，关键词：{title} ...')
@@ -843,7 +890,11 @@ class SearchChain(ChainBase):
         rejection_details = []
         rejected_items: List[dict] = []
         candidates = 0
-        rule_groups: List[str] = SystemConfigOper().get(SystemConfigKey.SearchFilterRuleGroups) or []
+        effective_rule_groups: List[str] = (
+            SystemConfigOper().get(SystemConfigKey.SearchFilterRuleGroups) or []
+            if rule_groups is None
+            else rule_groups
+        )
         async for event in self.__async_search_all_sites_stream(keyword=title, sites=sites, page=page):
             result = event.pop("items", []) or []
             candidates += len(result)
@@ -862,7 +913,7 @@ class SearchChain(ChainBase):
             filtered_result = await run_in_threadpool(
                 self.__filter_title_search_torrents,
                 torrents=result,
-                rule_groups=rule_groups,
+                rule_groups=effective_rule_groups,
                 rejection_details=rejection_details,
             )
             counts["filter_rules"] += len(result) - len(filtered_result)
@@ -895,7 +946,7 @@ class SearchChain(ChainBase):
             candidates=candidates,
             retained=len(contexts),
             counts=counts,
-            rule_groups=rule_groups,
+            rule_groups=effective_rule_groups,
             rejection_details=rejection_details,
         )
         if cache_local:
@@ -946,6 +997,7 @@ class SearchChain(ChainBase):
             cache_local: bool = False,
             bangumiid: Optional[int] = None, anilistid: Optional[int] = None,
             source: Optional[str] = None, mediaid: Optional[str] = None,
+            rule_groups: Optional[List[str]] = None,
     ) -> AsyncIterator[dict]:
         """
         根据数据源媒体 ID 渐进式搜索资源，先返回站点原始候选，再返回过滤匹配后的最终结果
@@ -959,6 +1011,7 @@ class SearchChain(ChainBase):
                 area=area,
                 season=season,
                 sites=sites,
+                rule_groups=rule_groups,
             )
         mediainfo = await self.async_recognize_media(
             source=source, mediaid=mediaid, tmdbid=tmdbid, doubanid=doubanid,
@@ -986,7 +1039,13 @@ class SearchChain(ChainBase):
             }
 
         contexts: List[Context] = []
-        async for event in self.async_process_stream(mediainfo=mediainfo, sites=sites, area=area, no_exists=no_exists):
+        async for event in self.async_process_stream(
+            mediainfo=mediainfo,
+            sites=sites,
+            rule_groups=rule_groups,
+            area=area,
+            no_exists=no_exists,
+        ):
             if event.get("type") == "done":
                 contexts = event.get("contexts") or []
                 if cache_local:

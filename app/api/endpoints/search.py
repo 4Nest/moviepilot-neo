@@ -33,11 +33,30 @@ _SSE_RESPONSE_HEADERS = {
 }
 
 
+_NO_FILTER_RULE_TOKEN = "__none__"
+
+
 def _parse_site_list(sites: Optional[str]) -> Optional[List[int]]:
     """
     解析站点ID列表
     """
     return [int(site) for site in sites.split(",") if site] if sites else None
+
+
+def _parse_rule_groups(rule_groups: Optional[str]) -> Optional[List[str]]:
+    """
+    解析搜索过滤规则参数：
+    - None：沿用系统默认搜索过滤规则
+    - "" 或 "__none__"：本次搜索不过滤
+    - 逗号分隔列表：按指定规则组或单条规则（rule:<id>）过滤
+    """
+    if rule_groups is None:
+        return None
+    cleaned = rule_groups.strip()
+    if not cleaned or cleaned == _NO_FILTER_RULE_TOKEN:
+        return []
+    parsed = [item.strip() for item in cleaned.split(",") if item.strip()]
+    return list(dict.fromkeys(parsed))
 
 
 def _parse_media_type(mtype: Optional[str]) -> Optional[MediaType]:
@@ -409,6 +428,7 @@ async def search_by_id_stream(
     year: Optional[str] = None,
     season: Optional[str] = None,
     sites: Optional[str] = None,
+    rule_groups: Optional[str] = None,
     _: schemas.TokenPayload = Depends(verify_resource_token),
 ) -> Any:
     """
@@ -418,6 +438,7 @@ async def search_by_id_stream(
     media_type = _parse_media_type(mtype)
     media_season = int(season) if season else None
     site_list = _parse_site_list(sites)
+    parsed_rule_groups = _parse_rule_groups(rule_groups)
     search_chain = SearchChain()
 
     async def event_source():
@@ -438,6 +459,7 @@ async def search_by_id_stream(
             area=area,
             season=media_season,
             sites=site_list,
+            rule_groups=parsed_rule_groups,
             cache_local=True,
         )
         async for event in torrents:
@@ -459,6 +481,7 @@ async def search_by_id(
     year: Optional[str] = None,
     season: Optional[str] = None,
     sites: Optional[str] = None,
+    rule_groups: Optional[str] = None,
     _: schemas.TokenPayload = Depends(verify_token),
 ) -> Any:
     """
@@ -481,6 +504,7 @@ async def search_by_id(
         area=area,
         season=media_season,
         sites=_parse_site_list(sites),
+        rule_groups=_parse_rule_groups(rule_groups),
         cache_local=True,
     )
     if not torrents:
@@ -496,6 +520,7 @@ async def search_by_title_stream(
     keyword: Optional[str] = None,
     page: Optional[int] = 0,
     sites: Optional[str] = None,
+    rule_groups: Optional[str] = None,
     _: schemas.TokenPayload = Depends(verify_resource_token),
 ) -> Any:
     """
@@ -503,7 +528,11 @@ async def search_by_title_stream(
     """
 
     event_source = SearchChain().async_search_by_title_stream(
-        title=keyword, page=page, sites=_parse_site_list(sites), cache_local=True
+        title=keyword,
+        page=page,
+        sites=_parse_site_list(sites),
+        rule_groups=_parse_rule_groups(rule_groups),
+        cache_local=True,
     )
     return StreamingResponse(
         _stream_search_events(request, event_source),
@@ -517,13 +546,18 @@ async def search_by_title(
     keyword: Optional[str] = None,
     page: Optional[int] = 0,
     sites: Optional[str] = None,
+    rule_groups: Optional[str] = None,
     _: schemas.TokenPayload = Depends(verify_token),
 ) -> Any:
     """
     根据名称模糊搜索站点资源，支持分页，关键词为空是返回首页资源
     """
     torrents = await SearchChain().async_search_by_title(
-        title=keyword, page=page, sites=_parse_site_list(sites), cache_local=True
+        title=keyword,
+        page=page,
+        sites=_parse_site_list(sites),
+        rule_groups=_parse_rule_groups(rule_groups),
+        cache_local=True,
     )
     if not torrents:
         return schemas.Response(success=False, message="未搜索到任何资源")
